@@ -1,0 +1,159 @@
+"""
+Chainlit UI for A/B Testing Agent
+
+Provides a web-based chat interface for:
+- Uploading CSV files
+- Interacting with the A/B testing agent
+- Viewing conversation history
+- Displaying analysis results
+"""
+
+import os
+import chainlit as cl
+from chainlit.input_widget import TextInput, Select
+from dotenv import load_dotenv
+
+from src import ABTestingAgent
+
+load_dotenv()
+
+
+@cl.on_chat_start
+async def start():
+    """Initialize the chat session"""
+
+    # Create the agent for this session
+    agent = ABTestingAgent()
+    cl.user_session.set("agent", agent)
+    cl.user_session.set("uploaded_file", None)
+
+    # Welcome message
+    welcome_message = """# Welcome to the A/B Testing Analysis Agent
+
+I'm your AI assistant for analyzing A/B test experiments. I can help you:
+
+- **Load and explore CSV data** containing experiment results
+- **Run statistical A/B tests** for individual segments or overall
+- **Generate comprehensive reports** with significance tests and effect sizes
+- **Answer questions** about your data
+
+## Getting Started
+
+1. **Upload your CSV file** using the attachment button (📎)
+2. I'll analyze the columns and help you set up the correct mappings
+3. Specify which column contains treatment/control groups
+4. Run the analysis!
+
+## What Your CSV Should Contain
+
+Your data should include:
+- **Customer/User ID** - Unique identifier for each customer
+- **Group indicator** - Which group (treatment or control) each customer belongs to
+- **Effect/Metric value** - The outcome measure for each customer
+- **Segment** (optional) - Customer segments for segmented analysis
+- **Duration** (optional) - Experiment duration
+
+**Upload a CSV file or describe your data to get started!**
+"""
+
+    await cl.Message(content=welcome_message).send()
+
+
+@cl.on_message
+async def main(message: cl.Message):
+    """Handle incoming messages"""
+
+    agent = cl.user_session.get("agent")
+
+    # Check for file attachments
+    if message.elements:
+        for element in message.elements:
+            if element.name.endswith('.csv'):
+                # Save the file temporarily
+                file_path = element.path
+
+                # Update session
+                cl.user_session.set("uploaded_file", file_path)
+
+                # Inform user and process
+                await cl.Message(
+                    content=f"Received file: **{element.name}**\n\nAnalyzing the data structure..."
+                ).send()
+
+                # Load the file using the agent
+                response = await cl.make_async(agent.run)(
+                    f"Load the CSV file at path: {file_path}"
+                )
+
+                await cl.Message(content=response).send()
+                return
+
+    # Process the text message
+    user_message = message.content
+
+    # Show thinking indicator
+    msg = cl.Message(content="")
+    await msg.send()
+
+    # Get response from agent
+    response = await cl.make_async(agent.run)(user_message)
+
+    # Update the message with the response
+    msg.content = response
+    await msg.update()
+
+
+@cl.on_settings_update
+async def setup_agent(settings):
+    """Handle settings updates"""
+    print(f"Settings updated: {settings}")
+
+
+# Custom action handlers for common operations
+@cl.action_callback("run_full_analysis")
+async def on_action_full_analysis(action):
+    """Callback for full analysis action button"""
+    agent = cl.user_session.get("agent")
+
+    await cl.Message(content="Running full segmented analysis...").send()
+
+    response = await cl.make_async(agent.run)(
+        "Run a full A/B test analysis for all segments and provide a comprehensive summary"
+    )
+
+    await cl.Message(content=response).send()
+
+
+@cl.action_callback("show_data_summary")
+async def on_action_data_summary(action):
+    """Callback for data summary action button"""
+    agent = cl.user_session.get("agent")
+
+    response = await cl.make_async(agent.run)(
+        "Show me a summary of the loaded data"
+    )
+
+    await cl.Message(content=response).send()
+
+
+@cl.action_callback("clear_conversation")
+async def on_action_clear(action):
+    """Callback for clearing conversation"""
+    agent = cl.user_session.get("agent")
+    agent.clear_memory()
+
+    await cl.Message(content="Conversation history cleared. You can start fresh!").send()
+
+
+# Enable file upload
+@cl.on_chat_resume
+async def on_chat_resume():
+    """Handle chat resume"""
+    agent = ABTestingAgent()
+    cl.user_session.set("agent", agent)
+
+
+# Configure Chainlit settings
+if __name__ == "__main__":
+    from chainlit.cli import run_chainlit
+    run_chainlit(__file__)
