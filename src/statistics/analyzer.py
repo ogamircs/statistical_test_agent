@@ -127,6 +127,92 @@ class ABTestAnalyzer:
         self.treatment_label = treatment_label
         self.control_label = control_label
 
+    def auto_configure(self) -> Dict[str, Any]:
+        """
+        Automatically configure column mappings and group labels based on best guesses.
+        Returns a dict with the configuration used and any warnings.
+        """
+        if self.df is None:
+            return {"success": False, "error": "No data loaded"}
+
+        config = {"success": True, "warnings": [], "mapping": {}, "labels": {}}
+
+        # Auto-detect columns
+        suggestions = self.detect_columns()
+
+        # Set group column (required)
+        if suggestions["group"]:
+            config["mapping"]["group"] = suggestions["group"][0]
+        else:
+            # Try to find any column with exactly 2 unique values
+            for col in self.df.columns:
+                if self.df[col].nunique() == 2:
+                    config["mapping"]["group"] = col
+                    config["warnings"].append(f"Guessed '{col}' as group column (has 2 unique values)")
+                    break
+
+        if "group" not in config["mapping"]:
+            return {"success": False, "error": "Could not detect group column"}
+
+        # Set effect value column (required)
+        if suggestions["effect_value"]:
+            config["mapping"]["effect_value"] = suggestions["effect_value"][0]
+        else:
+            # Try to find any numeric column
+            numeric_cols = self.df.select_dtypes(include=['float64', 'int64', 'float32', 'int32']).columns
+            for col in numeric_cols:
+                if col != config["mapping"].get("group"):
+                    config["mapping"]["effect_value"] = col
+                    config["warnings"].append(f"Guessed '{col}' as effect value column (numeric)")
+                    break
+
+        if "effect_value" not in config["mapping"]:
+            return {"success": False, "error": "Could not detect effect value column"}
+
+        # Set optional columns
+        if suggestions["segment"]:
+            config["mapping"]["segment"] = suggestions["segment"][0]
+        if suggestions["customer_id"]:
+            config["mapping"]["customer_id"] = suggestions["customer_id"][0]
+
+        # Apply column mapping
+        self.set_column_mapping(config["mapping"])
+
+        # Auto-detect treatment/control labels
+        group_col = config["mapping"]["group"]
+        unique_values = self.df[group_col].unique().tolist()
+
+        treatment_patterns = ['treatment', 'treat', 'test', 'experiment', 'variant', 'exposed', '1', 'true', 'yes', 'a']
+        control_patterns = ['control', 'ctrl', 'baseline', 'placebo', 'unexposed', '0', 'false', 'no', 'b']
+
+        treatment_label = None
+        control_label = None
+
+        for val in unique_values:
+            val_lower = str(val).lower().strip()
+            if any(p in val_lower for p in treatment_patterns):
+                treatment_label = val
+            elif any(p in val_lower for p in control_patterns):
+                control_label = val
+
+        # If we couldn't detect, use first two values
+        if treatment_label is None or control_label is None:
+            if len(unique_values) >= 2:
+                # Assume alphabetically/numerically first is control, second is treatment
+                sorted_vals = sorted(unique_values, key=lambda x: str(x).lower())
+                control_label = sorted_vals[0]
+                treatment_label = sorted_vals[1] if len(sorted_vals) > 1 else sorted_vals[0]
+                config["warnings"].append(f"Guessed treatment='{treatment_label}', control='{control_label}' based on order")
+
+        if treatment_label is None or control_label is None:
+            return {"success": False, "error": "Could not detect treatment/control labels"}
+
+        config["labels"]["treatment"] = treatment_label
+        config["labels"]["control"] = control_label
+        self.set_group_labels(treatment_label, control_label)
+
+        return config
+
     def calculate_cohens_d(self, treatment_data: np.ndarray, control_data: np.ndarray) -> float:
         """Calculate Cohen's d effect size"""
         n1, n2 = len(treatment_data), len(control_data)

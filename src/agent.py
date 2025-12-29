@@ -430,6 +430,188 @@ class ABTestingAgent:
             description="Calculate detailed statistics for a numeric column including mean, median, std dev, percentiles."
         )
 
+        # Tool: Configure and Analyze (Combined one-step tool)
+        class ConfigureAnalyzeInput(BaseModel):
+            group_column: str = Field(..., description="Column name for treatment/control group")
+            effect_column: str = Field(..., description="Column name for the metric/effect value")
+            treatment_label: str = Field(..., description="Value that represents the treatment group")
+            control_label: str = Field(..., description="Value that represents the control group")
+            segment_column: Optional[str] = Field(None, description="Column for segments (optional)")
+            customer_id_column: Optional[str] = Field(None, description="Column for customer ID (optional)")
+
+        def configure_and_analyze(
+            group_column: str,
+            effect_column: str,
+            treatment_label: str,
+            control_label: str,
+            segment_column: Optional[str] = None,
+            customer_id_column: Optional[str] = None
+        ) -> str:
+            """Configure column mappings, set group labels, and run full analysis in one step"""
+            try:
+                # Build column mapping
+                mapping = {
+                    "group": group_column,
+                    "effect_value": effect_column
+                }
+                if segment_column:
+                    mapping["segment"] = segment_column
+                if customer_id_column:
+                    mapping["customer_id"] = customer_id_column
+
+                # Set column mapping
+                self.analyzer.set_column_mapping(mapping)
+
+                # Set group labels
+                self.analyzer.set_group_labels(treatment_label, control_label)
+
+                # Run full segmented analysis
+                results = self.analyzer.run_segmented_analysis()
+                summary = self.analyzer.generate_summary(results)
+
+                # Store for chart generation
+                self._last_results = results
+                self._last_summary = summary
+
+                # Build output
+                output = f"Configuration Applied:\n"
+                output += f"  Group Column: {group_column}\n"
+                output += f"  Effect Column: {effect_column}\n"
+                output += f"  Treatment Label: '{treatment_label}'\n"
+                output += f"  Control Label: '{control_label}'\n"
+                if segment_column:
+                    output += f"  Segment Column: {segment_column}\n"
+                output += "\n"
+
+                output += f"{'='*60}\n"
+                output += f"FULL A/B TEST ANALYSIS RESULTS\n"
+                output += f"{'='*60}\n\n"
+
+                output += f"OVERVIEW:\n"
+                output += f"  Segments Analyzed: {summary['total_segments_analyzed']}\n"
+                output += f"  Significant Results: {summary['significant_segments']}\n"
+                output += f"  Non-Significant: {summary['non_significant_segments']}\n"
+                output += f"  Significance Rate: {summary['significance_rate']:.1%}\n\n"
+
+                output += f"SAMPLE INFORMATION:\n"
+                output += f"  Total Treatment: {summary['total_treatment_customers']}\n"
+                output += f"  Total Control: {summary['total_control_customers']}\n\n"
+
+                output += f"EFFECT SIZE SUMMARY:\n"
+                output += f"  Average Significant Effect: {summary['average_significant_effect']:.4f}\n"
+                output += f"  Total Effect: {summary['effect_calculation']}\n\n"
+
+                output += f"SEGMENT DETAILS:\n"
+                output += "-" * 90 + "\n"
+                output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<8}\n"
+                output += "-" * 90 + "\n"
+
+                for r in summary['detailed_results']:
+                    sig = "YES" if r['significant'] else "NO"
+                    output += f"{r['segment']:<20} {r['treatment_n']:<10} {r['control_n']:<10} {r['effect']:<12.4f} {r['p_value']:<12.6f} {sig:<8}\n"
+
+                output += "-" * 90 + "\n\n"
+
+                output += f"RECOMMENDATIONS:\n"
+                for i, rec in enumerate(summary['recommendations'], 1):
+                    output += f"  {i}. {rec}\n"
+
+                return output
+
+            except Exception as e:
+                return f"Error in configure and analyze: {str(e)}"
+
+        configure_analyze_tool = StructuredTool.from_function(
+            func=configure_and_analyze,
+            name="configure_and_analyze",
+            description="""Configure column mappings, set treatment/control labels, and run full A/B test analysis in ONE step.
+Use this tool to quickly set up and analyze data without multiple separate steps.
+Required: group_column, effect_column, treatment_label, control_label
+Optional: segment_column, customer_id_column"""
+        )
+
+        # Tool: Auto Configure and Analyze (Best Guess Mode)
+        def auto_configure_and_analyze(_: str = "") -> str:
+            """Automatically configure everything using best guesses and run full analysis"""
+            try:
+                if self.analyzer.df is None:
+                    return "No data loaded. Please load a CSV file first."
+
+                # Use auto_configure to set everything up
+                config = self.analyzer.auto_configure()
+
+                if not config["success"]:
+                    return f"Auto-configuration failed: {config.get('error', 'Unknown error')}"
+
+                # Build output with configuration info
+                output = f"AUTO-CONFIGURATION RESULTS (Best Guess Mode)\n"
+                output += f"{'='*60}\n\n"
+
+                output += f"Detected Configuration:\n"
+                for key, value in config["mapping"].items():
+                    output += f"  {key}: {value}\n"
+                output += f"  Treatment Label: '{config['labels'].get('treatment', 'N/A')}'\n"
+                output += f"  Control Label: '{config['labels'].get('control', 'N/A')}'\n\n"
+
+                if config["warnings"]:
+                    output += f"Warnings:\n"
+                    for warning in config["warnings"]:
+                        output += f"  ⚠ {warning}\n"
+                    output += "\n"
+
+                # Run full analysis
+                results = self.analyzer.run_segmented_analysis()
+                summary = self.analyzer.generate_summary(results)
+
+                # Store for chart generation
+                self._last_results = results
+                self._last_summary = summary
+
+                output += f"{'='*60}\n"
+                output += f"A/B TEST ANALYSIS RESULTS\n"
+                output += f"{'='*60}\n\n"
+
+                output += f"OVERVIEW:\n"
+                output += f"  Segments Analyzed: {summary['total_segments_analyzed']}\n"
+                output += f"  Significant Results: {summary['significant_segments']}\n"
+                output += f"  Significance Rate: {summary['significance_rate']:.1%}\n\n"
+
+                output += f"SAMPLE INFORMATION:\n"
+                output += f"  Total Treatment: {summary['total_treatment_customers']}\n"
+                output += f"  Total Control: {summary['total_control_customers']}\n\n"
+
+                output += f"EFFECT SIZE SUMMARY:\n"
+                output += f"  Average Significant Effect: {summary['average_significant_effect']:.4f}\n"
+                output += f"  Total Effect: {summary['effect_calculation']}\n\n"
+
+                output += f"SEGMENT DETAILS:\n"
+                output += "-" * 90 + "\n"
+                output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<8}\n"
+                output += "-" * 90 + "\n"
+
+                for r in summary['detailed_results']:
+                    sig = "YES" if r['significant'] else "NO"
+                    output += f"{r['segment']:<20} {r['treatment_n']:<10} {r['control_n']:<10} {r['effect']:<12.4f} {r['p_value']:<12.6f} {sig:<8}\n"
+
+                output += "-" * 90 + "\n\n"
+
+                output += f"RECOMMENDATIONS:\n"
+                for i, rec in enumerate(summary['recommendations'], 1):
+                    output += f"  {i}. {rec}\n"
+
+                return output
+
+            except Exception as e:
+                return f"Error in auto-configure and analyze: {str(e)}"
+
+        auto_analyze_tool = Tool(
+            name="auto_configure_and_analyze",
+            func=auto_configure_and_analyze,
+            description="""Automatically detect column mappings and treatment/control labels using best guesses, then run full A/B test analysis.
+Use this when the user says 'best guess', 'auto', 'automatic', or wants you to figure out the configuration yourself.
+This is the fastest way to analyze data without manual configuration."""
+        )
+
         # Visualization Tools
         def generate_charts(chart_type: str = "all") -> str:
             """Generate visualization charts for the A/B test results"""
@@ -544,6 +726,8 @@ Use this tool when the user asks to see charts, visualizations, or graphs."""
             set_labels_tool,
             run_test_tool,
             full_analysis_tool,
+            configure_analyze_tool,  # Combined one-step tool
+            auto_analyze_tool,       # Best guess mode
             query_tool,
             summary_tool,
             dist_tool,
@@ -562,28 +746,38 @@ Use this tool when the user asks to see charts, visualizations, or graphs."""
 
 ## Your Capabilities:
 1. **Load and explore CSV files** - Understand the data structure
-2. **Configure column mappings** - Map columns to required fields (customer_id, group, effect_value, segment, duration)
-3. **Run A/B tests** - Perform statistical analysis for individual segments or overall data
-4. **Generate comprehensive reports** - Provide summaries with significance, effect sizes, and recommendations
-5. **Answer data questions** - Query and analyze the data to answer user questions
+2. **Configure and analyze in ONE step** - Map columns and run analysis together
+3. **Auto-configure (Best Guess Mode)** - Automatically detect everything and run analysis
+4. **Run A/B tests** - Perform statistical analysis for individual segments or overall data
+5. **Generate comprehensive reports** - Provide summaries with significance, effect sizes, and recommendations
 6. **Create visualizations** - Generate interactive charts to visualize results
 
-## Workflow:
-1. When a user provides a CSV file, load it and examine the columns
-2. Attempt to auto-detect column mappings, but ASK THE USER TO CONFIRM if uncertain
-3. Once columns are mapped, identify treatment/control labels in the group column
-4. Run the requested analysis (individual segments or full analysis)
-5. Provide clear interpretations and recommendations
-6. Generate charts when requested or when they would help explain results
+## Simplified Workflow (PREFERRED):
+1. When a user provides a CSV file, load it and show the detected columns
+2. Present a SINGLE confirmation step showing:
+   - Detected group column and its values (treatment/control labels)
+   - Detected effect/metric column
+   - Detected segment column (if any)
+3. Use `configure_and_analyze` to set everything AND run analysis in ONE step
+4. Default to analyzing ALL segments (not just one)
+5. Generate charts when requested
+
+## Best Guess Mode:
+If the user says "best guess", "auto", "automatic", "figure it out", or similar:
+- Use `auto_configure_and_analyze` tool immediately
+- This will automatically detect all columns and treatment/control labels
+- Runs full analysis without asking for confirmation
+- Shows what configuration was detected and any warnings
 
 ## Important Guidelines:
-- Always ask for clarification if column names are ambiguous
+- PREFER the combined `configure_and_analyze` tool over separate set_column_mapping and set_group_labels calls
+- DEFAULT to full segmented analysis (all segments) unless user specifies otherwise
+- Only ask for clarification if auto-detection completely fails
 - Explain statistical concepts in accessible language
 - Provide actionable recommendations based on results
 - When sample sizes are inadequate, clearly communicate this limitation
 - Calculate total effect size as: average significant effect x number of treatment customers in significant segments
-- When users ask for visualizations or charts, use the generate_charts tool
-- Offer to show charts after running analysis to help visualize results
+- Offer to show charts after running analysis
 
 ## Statistical Measures You Report:
 - Sample sizes (treatment and control)
@@ -605,7 +799,7 @@ Use this tool when the user asks to see charts, visualizations, or graphs."""
 - Sample Sizes: Group sizes comparison
 - Waterfall: Effect contribution by segment
 
-Be conversational, helpful, and thorough in your analysis."""
+Be conversational, helpful, and efficient - minimize steps to get users their results."""
 
         return create_react_agent(self.llm, tools, prompt=system_prompt)
 
