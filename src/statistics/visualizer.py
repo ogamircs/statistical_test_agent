@@ -37,7 +37,10 @@ class ABTestVisualizer:
             'inadequate': '#F59E0B',      # Amber
             'background': '#FFFFFF',
             'grid': '#E5E7EB',
-            'text': '#374151'
+            'text': '#374151',
+            't_test': '#3B82F6',          # Blue for t-test
+            'proportion': '#8B5CF6',      # Purple for proportion test
+            'combined': '#10B981'         # Green for combined
         }
 
         # Common layout settings
@@ -375,15 +378,128 @@ class ABTestVisualizer:
 
         return fig
 
+    def plot_combined_effects(self, results: List[ABTestResult]) -> go.Figure:
+        """Create stacked bar chart showing T-test and Proportion effects per segment"""
+        segments = [r.segment for r in results]
+
+        # Calculate effects (using per-customer values for clearer comparison)
+        t_test_effects = [r.effect_size if r.is_significant else 0 for r in results]
+        prop_effects = [r.proportion_effect_per_customer for r in results]
+        total_effects = [r.total_effect_per_customer for r in results]
+
+        fig = go.Figure()
+
+        # T-test effect bars
+        fig.add_trace(go.Bar(
+            name='T-test Effect',
+            x=segments,
+            y=t_test_effects,
+            marker_color=self.colors['t_test'],
+            marker_line_width=0
+        ))
+
+        # Proportion effect bars (stacked)
+        fig.add_trace(go.Bar(
+            name='Proportion Effect',
+            x=segments,
+            y=prop_effects,
+            marker_color=self.colors['proportion'],
+            marker_line_width=0
+        ))
+
+        # Add total line markers
+        fig.add_trace(go.Scatter(
+            name='Combined Total',
+            x=segments,
+            y=total_effects,
+            mode='markers+text',
+            marker=dict(
+                color=self.colors['combined'],
+                size=12,
+                symbol='diamond'
+            ),
+            text=[f'{t:.3f}' for t in total_effects],
+            textposition='top center',
+            textfont=dict(size=9)
+        ))
+
+        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], line_width=1)
+
+        self._apply_layout(fig, 'Combined Effects by Segment (T-test + Proportion)', 450)
+        fig.update_layout(
+            barmode='stack',
+            xaxis_title='Segment',
+            yaxis_title='Effect per Customer',
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='center',
+                x=0.5,
+                bgcolor='rgba(255,255,255,0.8)'
+            )
+        )
+
+        return fig
+
+    def plot_proportion_comparison(self, results: List[ABTestResult]) -> go.Figure:
+        """Create grouped bar chart comparing treatment vs control proportions"""
+        segments = [r.segment for r in results]
+        treatment_props = [r.treatment_proportion * 100 for r in results]
+        control_props = [r.control_proportion * 100 for r in results]
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            name='Treatment %',
+            x=segments,
+            y=treatment_props,
+            marker_color=self.colors['treatment'],
+            marker_line_width=0,
+            text=[f'{v:.1f}%' for v in treatment_props],
+            textposition='outside',
+            textfont=dict(size=10)
+        ))
+
+        fig.add_trace(go.Bar(
+            name='Control %',
+            x=segments,
+            y=control_props,
+            marker_color=self.colors['control'],
+            marker_line_width=0,
+            text=[f'{v:.1f}%' for v in control_props],
+            textposition='outside',
+            textfont=dict(size=10)
+        ))
+
+        self._apply_layout(fig, 'Conversion Rate: Treatment vs Control', 400)
+        fig.update_layout(
+            barmode='group',
+            bargap=0.2,
+            bargroupgap=0.1,
+            xaxis_title='Segment',
+            yaxis_title='Conversion Rate (%)',
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='center',
+                x=0.5,
+                bgcolor='rgba(255,255,255,0.8)'
+            )
+        )
+
+        return fig
+
     def plot_summary_dashboard(self, results: List[ABTestResult], summary: Dict[str, Any]) -> go.Figure:
         """Create a comprehensive dashboard with multiple visualizations"""
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=(
-                '<b>Treatment vs Control</b>',
-                '<b>Effect Sizes</b>',
-                '<b>Statistical Power</b>',
-                '<b>P-Values</b>'
+                '<b>Treatment vs Control Means</b>',
+                '<b>Combined Effects (T-test + Proportion)</b>',
+                '<b>Conversion Rates</b>',
+                '<b>P-Values (T-test)</b>'
             ),
             vertical_spacing=0.18,
             horizontal_spacing=0.12
@@ -409,49 +525,47 @@ class ABTestVisualizer:
             showlegend=True
         ), row=1, col=1)
 
-        # Plot 2: Effect Sizes with CI
-        effects = [r.effect_size for r in results]
-        effect_colors = [
-            self.colors['significant_pos'] if r.is_significant and r.effect_size > 0
-            else self.colors['significant_neg'] if r.is_significant and r.effect_size < 0
-            else self.colors['not_significant']
-            for r in results
-        ]
+        # Plot 2: Combined Effects (stacked T-test + Proportion)
+        t_test_effects = [r.effect_size * r.treatment_size if r.is_significant else 0 for r in results]
+        prop_effects = [r.proportion_effect for r in results]
 
         fig.add_trace(go.Bar(
+            name='T-test Effect',
             x=segments,
-            y=effects,
-            marker_color=effect_colors,
+            y=t_test_effects,
+            marker_color=self.colors['t_test'],
             marker_line_width=0,
-            error_y=dict(
-                type='data',
-                symmetric=False,
-                array=[r.confidence_interval[1] - r.effect_size for r in results],
-                arrayminus=[r.effect_size - r.confidence_interval[0] for r in results],
-                color='rgba(0,0,0,0.2)',
-                thickness=1.5,
-                width=3
-            ),
-            showlegend=False
+            showlegend=True
+        ), row=1, col=2)
+        fig.add_trace(go.Bar(
+            name='Proportion Effect',
+            x=segments,
+            y=prop_effects,
+            marker_color=self.colors['proportion'],
+            marker_line_width=0,
+            showlegend=True
         ), row=1, col=2)
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=2)
 
-        # Plot 3: Power Analysis
-        powers = [r.power * 100 for r in results]
-        power_colors = [
-            self.colors['adequate'] if r.is_sample_adequate else self.colors['inadequate']
-            for r in results
-        ]
+        # Plot 3: Conversion Rates (Proportion comparison)
         fig.add_trace(go.Bar(
+            name='Treatment Conv',
             x=segments,
-            y=powers,
-            marker_color=power_colors,
+            y=[r.treatment_proportion * 100 for r in results],
+            marker_color=self.colors['treatment'],
             marker_line_width=0,
             showlegend=False
         ), row=2, col=1)
-        fig.add_hline(y=80, line_dash="dash", line_color=self.colors['inadequate'], line_width=1.5, row=2, col=1)
+        fig.add_trace(go.Bar(
+            name='Control Conv',
+            x=segments,
+            y=[r.control_proportion * 100 for r in results],
+            marker_color=self.colors['control'],
+            marker_line_width=0,
+            showlegend=False
+        ), row=2, col=1)
 
-        # Plot 4: P-Values
+        # Plot 4: P-Values (T-test)
         p_values = [r.p_value for r in results]
         p_colors = [
             self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant']
@@ -467,19 +581,20 @@ class ABTestVisualizer:
         fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=1.5, row=2, col=2)
 
         # Apply layout
-        sig_count = summary['significant_segments']
+        t_test_sig = summary.get('t_test_significant_segments', summary.get('significant_segments', 0))
+        prop_sig = summary.get('prop_test_significant_segments', 0)
         total_count = summary['total_segments_analyzed']
-        total_effect = summary['total_effect_size']
+        combined_effect = summary.get('combined_total_effect', summary.get('total_effect_size', 0))
 
         fig.update_layout(
             **self.layout_defaults,
             title=dict(
-                text=f"<b>A/B Test Analysis Dashboard</b><br><span style='font-size:12px;color:#6B7280'>{sig_count}/{total_count} significant segments · Total effect: {total_effect:,.0f}</span>",
+                text=f"<b>A/B Test Analysis Dashboard</b><br><span style='font-size:12px;color:#6B7280'>T-test sig: {t_test_sig}/{total_count} · Prop sig: {prop_sig}/{total_count} · Combined effect: {combined_effect:,.0f}</span>",
                 x=0.5,
                 xanchor='center',
                 font=dict(size=18)
             ),
-            height=600,
+            height=650,
             barmode='group',
             bargap=0.15,
             bargroupgap=0.1,
@@ -496,9 +611,14 @@ class ABTestVisualizer:
 
         # Update axes
         fig.update_yaxes(title_text='Mean', row=1, col=1, title_font=dict(size=11))
-        fig.update_yaxes(title_text='Effect', row=1, col=2, title_font=dict(size=11))
-        fig.update_yaxes(title_text='Power %', row=2, col=1, range=[0, 105], title_font=dict(size=11))
+        fig.update_yaxes(title_text='Total Effect', row=1, col=2, title_font=dict(size=11))
+        fig.update_yaxes(title_text='Conv Rate %', row=2, col=1, title_font=dict(size=11))
         fig.update_yaxes(title_text='P-Value', row=2, col=2, title_font=dict(size=11))
+
+        # Make effect chart stacked
+        fig.update_layout(barmode='group')
+        fig.data[2].offsetgroup = 0  # T-test effect
+        fig.data[3].offsetgroup = 0  # Proportion effect (stack on top)
 
         for i in range(1, 3):
             for j in range(1, 3):
@@ -547,14 +667,15 @@ class ABTestVisualizer:
         return fig
 
     def plot_effect_waterfall(self, results: List[ABTestResult]) -> go.Figure:
-        """Create waterfall chart showing cumulative effect contribution by segment"""
-        sorted_results = sorted(results, key=lambda r: r.effect_size * r.treatment_size, reverse=True)
+        """Create waterfall chart showing combined effect contribution by segment"""
+        # Sort by combined total effect
+        sorted_results = sorted(results, key=lambda r: r.total_effect, reverse=True)
 
         segments = [r.segment for r in sorted_results]
-        contributions = [r.effect_size * r.treatment_size for r in sorted_results]
+        contributions = [r.total_effect for r in sorted_results]
 
         fig = go.Figure(go.Waterfall(
-            name="Effect Contribution",
+            name="Combined Effect",
             orientation="v",
             measure=["relative"] * len(segments) + ["total"],
             x=segments + ["Total"],
@@ -565,13 +686,13 @@ class ABTestVisualizer:
             connector={"line": {"color": self.colors['grid'], "width": 1}},
             increasing={"marker": {"color": self.colors['significant_pos']}},
             decreasing={"marker": {"color": self.colors['significant_neg']}},
-            totals={"marker": {"color": self.colors['control']}}
+            totals={"marker": {"color": self.colors['combined']}}
         ))
 
-        self._apply_layout(fig, 'Effect Contribution by Segment', 400)
+        self._apply_layout(fig, 'Combined Effect Contribution (T-test + Proportion)', 400)
         fig.update_layout(
             xaxis_title='Segment',
-            yaxis_title='Effect × Sample Size'
+            yaxis_title='Total Effect'
         )
 
         return fig
@@ -589,6 +710,8 @@ class ABTestVisualizer:
             'dashboard': self.plot_summary_dashboard(results, summary),
             'treatment_vs_control': self.plot_treatment_vs_control(results),
             'effect_sizes': self.plot_effect_sizes(results),
+            'combined_effects': self.plot_combined_effects(results),
+            'proportion_comparison': self.plot_proportion_comparison(results),
             'p_values': self.plot_p_values(results),
             'sample_sizes': self.plot_sample_sizes(results),
             'power_analysis': self.plot_power_analysis(results),

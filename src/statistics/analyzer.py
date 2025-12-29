@@ -262,12 +262,71 @@ class ABTestAnalyzer:
         except Exception:
             return float('inf')
 
+    def run_proportion_test(self, treatment_data: np.ndarray, control_data: np.ndarray) -> Dict[str, float]:
+        """
+        Run a two-proportion z-test to compare conversion rates.
+        Conversion = having a non-zero effect value.
+
+        Returns proportion test statistics.
+        """
+        # Count non-zero values (conversions/activations)
+        treatment_conversions = np.sum(treatment_data != 0)
+        control_conversions = np.sum(control_data != 0)
+
+        n_treatment = len(treatment_data)
+        n_control = len(control_data)
+
+        # Proportions
+        p_treatment = treatment_conversions / n_treatment if n_treatment > 0 else 0
+        p_control = control_conversions / n_control if n_control > 0 else 0
+
+        # Pooled proportion for z-test
+        p_pooled = (treatment_conversions + control_conversions) / (n_treatment + n_control)
+
+        # Standard error for difference of proportions
+        if p_pooled == 0 or p_pooled == 1:
+            # No variation in conversions
+            return {
+                "treatment_proportion": p_treatment,
+                "control_proportion": p_control,
+                "proportion_diff": p_treatment - p_control,
+                "z_stat": 0.0,
+                "p_value": 1.0
+            }
+
+        se = np.sqrt(p_pooled * (1 - p_pooled) * (1/n_treatment + 1/n_control))
+
+        if se == 0:
+            return {
+                "treatment_proportion": p_treatment,
+                "control_proportion": p_control,
+                "proportion_diff": p_treatment - p_control,
+                "z_stat": 0.0,
+                "p_value": 1.0
+            }
+
+        # Z-statistic
+        z_stat = (p_treatment - p_control) / se
+
+        # Two-tailed p-value
+        p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))
+
+        return {
+            "treatment_proportion": p_treatment,
+            "control_proportion": p_control,
+            "proportion_diff": p_treatment - p_control,
+            "z_stat": z_stat,
+            "p_value": p_value
+        }
+
     def run_ab_test(self, segment_filter: Optional[str] = None) -> ABTestResult:
         """
         Run A/B test for overall data or a specific segment
 
         Returns comprehensive test results including:
-        - Effect size and statistical significance
+        - T-test for continuous metric (effect size, significance)
+        - Proportion test for conversion rates
+        - Combined effect calculation
         - Power analysis
         - Sample size adequacy
         """
@@ -299,7 +358,7 @@ class ABTestAnalyzer:
             raise ValueError(f"Insufficient data for segment '{segment_name}': "
                            f"Treatment n={len(treatment_data)}, Control n={len(control_data)}")
 
-        # Calculate statistics
+        # ============ T-TEST (continuous metric) ============
         treatment_mean = treatment_data.mean()
         control_mean = control_data.mean()
         effect_size = treatment_mean - control_mean
@@ -324,21 +383,64 @@ class ABTestAnalyzer:
             ratio=len(control_data) / len(treatment_data) if len(treatment_data) > 0 else 1
         )
 
+        is_significant = p_value < self.significance_level
+
+        # ============ PROPORTION TEST (conversion rate) ============
+        prop_results = self.run_proportion_test(treatment_data.values, control_data.values)
+
+        proportion_is_significant = prop_results["p_value"] < self.significance_level
+
+        # Calculate proportion-based effect
+        # If treatment has higher conversion rate, the additional converters
+        # would generate value at the control mean rate (since they wouldn't exist without treatment)
+        proportion_diff = prop_results["proportion_diff"]
+
+        # Proportion effect: additional proportion × control mean × treatment N
+        # This represents value from customers who converted ONLY because of treatment
+        if proportion_is_significant and proportion_diff > 0:
+            # These are NEW conversions that wouldn't exist without treatment
+            # Their value is estimated at control_mean (what a typical converter generates)
+            proportion_effect_per_customer = proportion_diff * control_mean
+            proportion_effect = proportion_effect_per_customer * len(treatment_data)
+        else:
+            proportion_effect_per_customer = 0.0
+            proportion_effect = 0.0
+
+        # ============ COMBINED EFFECT ============
+        # T-test effect: difference in value for existing converters
+        # Proportion effect: value from new converters
+        t_test_total_effect = effect_size * len(treatment_data) if is_significant else 0
+        total_effect = t_test_total_effect + proportion_effect
+        total_effect_per_customer = (effect_size if is_significant else 0) + proportion_effect_per_customer
+
         return ABTestResult(
             segment=segment_name,
             treatment_size=len(treatment_data),
             control_size=len(control_data),
+            # T-test results
             treatment_mean=treatment_mean,
             control_mean=control_mean,
             effect_size=effect_size,
             cohens_d=cohens_d,
             t_statistic=t_stat,
             p_value=p_value,
-            is_significant=p_value < self.significance_level,
+            is_significant=is_significant,
             confidence_interval=ci,
             power=power,
             required_sample_size=required_n,
-            is_sample_adequate=power >= self.power_threshold
+            is_sample_adequate=power >= self.power_threshold,
+            # Proportion test results
+            treatment_proportion=prop_results["treatment_proportion"],
+            control_proportion=prop_results["control_proportion"],
+            proportion_diff=proportion_diff,
+            proportion_z_stat=prop_results["z_stat"],
+            proportion_p_value=prop_results["p_value"],
+            proportion_is_significant=proportion_is_significant,
+            proportion_effect=proportion_effect,
+            proportion_effect_per_customer=proportion_effect_per_customer,
+            # Combined effects
+            total_effect=total_effect,
+            total_effect_per_customer=total_effect_per_customer
         )
 
     def run_segmented_analysis(self) -> List[ABTestResult]:
@@ -364,23 +466,39 @@ class ABTestAnalyzer:
         Generate comprehensive summary of A/B test results
 
         Includes:
-        - Overall significance summary
-        - Total effect size calculation
+        - T-test significance summary
+        - Proportion test significance summary
+        - Combined effect size calculation
         - Sample size adequacy assessment
         - Recommendations
         """
         if not results:
             return {"error": "No results to summarize"}
 
-        significant_results = [r for r in results if r.is_significant]
+        # T-test significant results
+        t_significant_results = [r for r in results if r.is_significant]
 
-        # Calculate total effect size
-        total_effect = sum(r.effect_size * r.treatment_size for r in significant_results)
-        avg_significant_effect = (
-            np.mean([r.effect_size for r in significant_results])
-            if significant_results else 0
+        # Proportion test significant results
+        prop_significant_results = [r for r in results if r.proportion_is_significant]
+
+        # Calculate T-test total effect
+        t_test_total_effect = sum(r.effect_size * r.treatment_size for r in t_significant_results)
+        avg_t_test_effect = (
+            np.mean([r.effect_size for r in t_significant_results])
+            if t_significant_results else 0
         )
-        total_treatment_in_significant = sum(r.treatment_size for r in significant_results)
+        total_treatment_in_t_significant = sum(r.treatment_size for r in t_significant_results)
+
+        # Calculate Proportion test total effect
+        prop_total_effect = sum(r.proportion_effect for r in prop_significant_results)
+        avg_prop_effect = (
+            np.mean([r.proportion_effect_per_customer for r in prop_significant_results])
+            if prop_significant_results else 0
+        )
+        total_treatment_in_prop_significant = sum(r.treatment_size for r in prop_significant_results)
+
+        # Combined total effect
+        combined_total_effect = sum(r.total_effect for r in results)
 
         # Sample adequacy
         adequate_samples = [r for r in results if r.is_sample_adequate]
@@ -392,18 +510,37 @@ class ABTestAnalyzer:
 
         summary = {
             "total_segments_analyzed": len(results),
-            "significant_segments": len(significant_results),
-            "non_significant_segments": len(results) - len(significant_results),
-            "significance_rate": len(significant_results) / len(results) if results else 0,
+
+            # T-test summary
+            "t_test_significant_segments": len(t_significant_results),
+            "t_test_significance_rate": len(t_significant_results) / len(results) if results else 0,
+            "t_test_avg_effect": avg_t_test_effect,
+            "t_test_total_effect": t_test_total_effect,
+            "t_test_effect_calculation": f"{avg_t_test_effect:.4f} × {total_treatment_in_t_significant} = {t_test_total_effect:.2f}",
+
+            # Proportion test summary
+            "prop_test_significant_segments": len(prop_significant_results),
+            "prop_test_significance_rate": len(prop_significant_results) / len(results) if results else 0,
+            "prop_test_avg_effect": avg_prop_effect,
+            "prop_test_total_effect": prop_total_effect,
+            "prop_test_effect_calculation": f"{avg_prop_effect:.4f} × {total_treatment_in_prop_significant} = {prop_total_effect:.2f}",
+
+            # Combined totals
+            "combined_total_effect": combined_total_effect,
+            "combined_effect_calculation": f"T-test ({t_test_total_effect:.2f}) + Proportion ({prop_total_effect:.2f}) = {combined_total_effect:.2f}",
+
+            # Legacy fields for backward compatibility
+            "significant_segments": len(t_significant_results),
+            "non_significant_segments": len(results) - len(t_significant_results),
+            "significance_rate": len(t_significant_results) / len(results) if results else 0,
+            "average_significant_effect": avg_t_test_effect,
+            "total_treatment_in_significant_segments": total_treatment_in_t_significant,
+            "total_effect_size": t_test_total_effect,
+            "effect_calculation": f"{avg_t_test_effect:.4f} × {total_treatment_in_t_significant} = {t_test_total_effect:.2f}",
 
             "total_treatment_customers": total_treatment,
             "total_control_customers": total_control,
             "treatment_control_ratio": total_treatment / total_control if total_control > 0 else None,
-
-            "average_significant_effect": avg_significant_effect,
-            "total_treatment_in_significant_segments": total_treatment_in_significant,
-            "total_effect_size": total_effect,
-            "effect_calculation": f"{avg_significant_effect:.4f} x {total_treatment_in_significant} = {total_effect:.2f}",
 
             "segments_with_adequate_power": len(adequate_samples),
             "segments_with_inadequate_power": len(inadequate_samples),
@@ -414,6 +551,7 @@ class ABTestAnalyzer:
                     "segment": r.segment,
                     "treatment_n": r.treatment_size,
                     "control_n": r.control_size,
+                    # T-test results
                     "effect": r.effect_size,
                     "cohens_d": r.cohens_d,
                     "p_value": r.p_value,
@@ -421,7 +559,17 @@ class ABTestAnalyzer:
                     "power": r.power,
                     "adequate_sample": r.is_sample_adequate,
                     "ci_lower": r.confidence_interval[0],
-                    "ci_upper": r.confidence_interval[1]
+                    "ci_upper": r.confidence_interval[1],
+                    # Proportion test results
+                    "treatment_prop": r.treatment_proportion,
+                    "control_prop": r.control_proportion,
+                    "prop_diff": r.proportion_diff,
+                    "prop_p_value": r.proportion_p_value,
+                    "prop_significant": r.proportion_is_significant,
+                    "prop_effect": r.proportion_effect,
+                    # Combined
+                    "total_effect": r.total_effect,
+                    "total_effect_per_customer": r.total_effect_per_customer
                 }
                 for r in results
             ],

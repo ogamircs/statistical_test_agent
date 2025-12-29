@@ -137,24 +137,27 @@ class ABTestingAgent:
 
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
-                output += f"- **Significant Results:** {summary['significant_segments']}\n"
-                output += f"- **Significance Rate:** {summary['significance_rate']:.1%}\n\n"
+                output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
+                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n\n"
 
                 output += "### Sample Information\n"
                 output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
                 output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
-                output += "### Effect Size Summary\n"
-                output += f"- **Average Significant Effect:** {summary['average_significant_effect']:.4f}\n"
-                output += f"- **Total Effect:** {summary['effect_calculation']}\n\n"
+                output += "### Effect Summary\n"
+                output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
+                output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
+                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
 
                 output += "### Segment Details\n\n"
-                output += "| Segment | Treatment N | Control N | Effect | p-value | Significant |\n"
-                output += "|---------|-------------|-----------|--------|---------|-------------|\n"
+                output += "| Segment | Treat N | Ctrl N | T-test Effect | T p-val | T Sig | Prop Diff | Prop p-val | Prop Sig | Total Effect |\n"
+                output += "|---------|---------|--------|---------------|---------|-------|-----------|------------|----------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    sig = "**YES**" if r['significant'] else "NO"
-                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.6f} | {sig} |\n"
+                    t_sig = "**YES**" if r['significant'] else "NO"
+                    p_sig = "**YES**" if r['prop_significant'] else "NO"
+                    prop_diff_pct = r['prop_diff'] * 100
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.4f} | {t_sig} | {prop_diff_pct:+.2f}% | {r['prop_p_value']:.4f} | {p_sig} | {r['total_effect']:.2f} |\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -571,24 +574,27 @@ Input: file path. This is the FASTEST way to get results."""
 
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
-                output += f"- **Significant Results:** {summary['significant_segments']}\n"
-                output += f"- **Significance Rate:** {summary['significance_rate']:.1%}\n\n"
+                output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
+                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n\n"
 
                 output += "### Sample Information\n"
                 output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
                 output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
-                output += "### Effect Size Summary\n"
-                output += f"- **Average Significant Effect:** {summary['average_significant_effect']:.4f}\n"
-                output += f"- **Total Effect:** {summary['effect_calculation']}\n\n"
+                output += "### Effect Summary\n"
+                output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
+                output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
+                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
 
                 output += "### Segment Details\n\n"
-                output += "| Segment | Treatment N | Control N | Effect | p-value | Significant |\n"
-                output += "|---------|-------------|-----------|--------|---------|-------------|\n"
+                output += "| Segment | Treat N | Ctrl N | T-test Effect | T p-val | T Sig | Prop Diff | Prop p-val | Prop Sig | Total Effect |\n"
+                output += "|---------|---------|--------|---------------|---------|-------|-----------|------------|----------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    sig = "**YES**" if r['significant'] else "NO"
-                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.6f} | {sig} |\n"
+                    t_sig = "**YES**" if r['significant'] else "NO"
+                    p_sig = "**YES**" if r['prop_significant'] else "NO"
+                    prop_diff_pct = r['prop_diff'] * 100
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.4f} | {t_sig} | {prop_diff_pct:+.2f}% | {r['prop_p_value']:.4f} | {p_sig} | {r['total_effect']:.2f} |\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -652,24 +658,27 @@ Optional: segment_column, customer_id_column"""
 
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
-                output += f"- **Significant Results:** {summary['significant_segments']}\n"
-                output += f"- **Significance Rate:** {summary['significance_rate']:.1%}\n\n"
+                output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
+                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n\n"
 
                 output += "### Sample Information\n"
                 output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
                 output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
-                output += "### Effect Size Summary\n"
-                output += f"- **Average Significant Effect:** {summary['average_significant_effect']:.4f}\n"
-                output += f"- **Total Effect:** {summary['effect_calculation']}\n\n"
+                output += "### Effect Summary\n"
+                output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
+                output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
+                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
 
                 output += "### Segment Details\n\n"
-                output += "| Segment | Treatment N | Control N | Effect | p-value | Significant |\n"
-                output += "|---------|-------------|-----------|--------|---------|-------------|\n"
+                output += "| Segment | Treat N | Ctrl N | T-test Effect | T p-val | T Sig | Prop Diff | Prop p-val | Prop Sig | Total Effect |\n"
+                output += "|---------|---------|--------|---------------|---------|-------|-----------|------------|----------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    sig = "**YES**" if r['significant'] else "NO"
-                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.6f} | {sig} |\n"
+                    t_sig = "**YES**" if r['significant'] else "NO"
+                    p_sig = "**YES**" if r['prop_significant'] else "NO"
+                    prop_diff_pct = r['prop_diff'] * 100
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.4f} | {t_sig} | {prop_diff_pct:+.2f}% | {r['prop_p_value']:.4f} | {p_sig} | {r['total_effect']:.2f} |\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
