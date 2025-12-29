@@ -113,58 +113,54 @@ class ABTestingAgent:
                 self._last_results = results
                 self._last_summary = summary
 
-                # Build output
-                output = f"BEST GUESS MODE - Automatic Analysis Complete\n"
-                output += f"{'='*60}\n\n"
+                # Build output with markdown formatting
+                output = "## Best Guess Mode - Analysis Complete\n\n"
 
-                output += f"File: {filepath}\n"
-                output += f"Shape: {info['shape'][0]} rows, {info['shape'][1]} columns\n\n"
+                output += f"**File:** {filepath.split('/')[-1].split(chr(92))[-1]}\n"
+                output += f"**Shape:** {info['shape'][0]:,} rows × {info['shape'][1]} columns\n\n"
 
-                output += f"Auto-Detected Configuration:\n"
+                output += "### Auto-Detected Configuration\n"
+                output += "| Setting | Value |\n|---------|-------|\n"
                 for key, value in config["mapping"].items():
-                    output += f"  {key}: {value}\n"
-                output += f"  Treatment: '{config['labels'].get('treatment', 'N/A')}'\n"
-                output += f"  Control: '{config['labels'].get('control', 'N/A')}'\n\n"
+                    output += f"| {key} | `{value}` |\n"
+                output += f"| Treatment Label | `{config['labels'].get('treatment', 'N/A')}` |\n"
+                output += f"| Control Label | `{config['labels'].get('control', 'N/A')}` |\n\n"
 
                 if config["warnings"]:
-                    output += f"Warnings:\n"
+                    output += "**Warnings:**\n"
                     for warning in config["warnings"]:
-                        output += f"  - {warning}\n"
+                        output += f"- {warning}\n"
                     output += "\n"
 
-                output += f"{'='*60}\n"
-                output += f"A/B TEST RESULTS\n"
-                output += f"{'='*60}\n\n"
+                output += "---\n\n"
+                output += "## A/B Test Results\n\n"
 
-                output += f"OVERVIEW:\n"
-                output += f"  Segments Analyzed: {summary['total_segments_analyzed']}\n"
-                output += f"  Significant Results: {summary['significant_segments']}\n"
-                output += f"  Significance Rate: {summary['significance_rate']:.1%}\n\n"
+                output += "### Overview\n"
+                output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
+                output += f"- **Significant Results:** {summary['significant_segments']}\n"
+                output += f"- **Significance Rate:** {summary['significance_rate']:.1%}\n\n"
 
-                output += f"SAMPLE INFORMATION:\n"
-                output += f"  Total Treatment: {summary['total_treatment_customers']}\n"
-                output += f"  Total Control: {summary['total_control_customers']}\n\n"
+                output += "### Sample Information\n"
+                output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
+                output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
-                output += f"EFFECT SIZE SUMMARY:\n"
-                output += f"  Average Significant Effect: {summary['average_significant_effect']:.4f}\n"
-                output += f"  Total Effect: {summary['effect_calculation']}\n\n"
+                output += "### Effect Size Summary\n"
+                output += f"- **Average Significant Effect:** {summary['average_significant_effect']:.4f}\n"
+                output += f"- **Total Effect:** {summary['effect_calculation']}\n\n"
 
-                output += f"SEGMENT DETAILS:\n"
-                output += "-" * 90 + "\n"
-                output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<8}\n"
-                output += "-" * 90 + "\n"
+                output += "### Segment Details\n\n"
+                output += "| Segment | Treatment N | Control N | Effect | p-value | Significant |\n"
+                output += "|---------|-------------|-----------|--------|---------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    sig = "YES" if r['significant'] else "NO"
-                    output += f"{r['segment']:<20} {r['treatment_n']:<10} {r['control_n']:<10} {r['effect']:<12.4f} {r['p_value']:<12.6f} {sig:<8}\n"
+                    sig = "**YES**" if r['significant'] else "NO"
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.6f} | {sig} |\n"
 
-                output += "-" * 90 + "\n\n"
-
-                output += f"RECOMMENDATIONS:\n"
+                output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
-                    output += f"  {i}. {rec}\n"
+                    output += f"{i}. {rec}\n"
 
-                output += "\nWould you like to see the visualizations?"
+                output += "\n---\n*Would you like to see the visualizations?*"
 
                 return output
 
@@ -560,48 +556,45 @@ Input: file path. This is the FASTEST way to get results."""
                 self._last_results = results
                 self._last_summary = summary
 
-                # Build output
-                output = f"Configuration Applied:\n"
-                output += f"  Group Column: {group_column}\n"
-                output += f"  Effect Column: {effect_column}\n"
-                output += f"  Treatment Label: '{treatment_label}'\n"
-                output += f"  Control Label: '{control_label}'\n"
+                # Build output with markdown formatting
+                output = "## Configuration Applied\n\n"
+                output += "| Setting | Value |\n|---------|-------|\n"
+                output += f"| Group Column | `{group_column}` |\n"
+                output += f"| Effect Column | `{effect_column}` |\n"
+                output += f"| Treatment Label | `{treatment_label}` |\n"
+                output += f"| Control Label | `{control_label}` |\n"
                 if segment_column:
-                    output += f"  Segment Column: {segment_column}\n"
-                output += "\n"
+                    output += f"| Segment Column | `{segment_column}` |\n"
+                output += "\n---\n\n"
 
-                output += f"{'='*60}\n"
-                output += f"FULL A/B TEST ANALYSIS RESULTS\n"
-                output += f"{'='*60}\n\n"
+                output += "## A/B Test Results\n\n"
 
-                output += f"OVERVIEW:\n"
-                output += f"  Segments Analyzed: {summary['total_segments_analyzed']}\n"
-                output += f"  Significant Results: {summary['significant_segments']}\n"
-                output += f"  Non-Significant: {summary['non_significant_segments']}\n"
-                output += f"  Significance Rate: {summary['significance_rate']:.1%}\n\n"
+                output += "### Overview\n"
+                output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
+                output += f"- **Significant Results:** {summary['significant_segments']}\n"
+                output += f"- **Significance Rate:** {summary['significance_rate']:.1%}\n\n"
 
-                output += f"SAMPLE INFORMATION:\n"
-                output += f"  Total Treatment: {summary['total_treatment_customers']}\n"
-                output += f"  Total Control: {summary['total_control_customers']}\n\n"
+                output += "### Sample Information\n"
+                output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
+                output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
-                output += f"EFFECT SIZE SUMMARY:\n"
-                output += f"  Average Significant Effect: {summary['average_significant_effect']:.4f}\n"
-                output += f"  Total Effect: {summary['effect_calculation']}\n\n"
+                output += "### Effect Size Summary\n"
+                output += f"- **Average Significant Effect:** {summary['average_significant_effect']:.4f}\n"
+                output += f"- **Total Effect:** {summary['effect_calculation']}\n\n"
 
-                output += f"SEGMENT DETAILS:\n"
-                output += "-" * 90 + "\n"
-                output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<8}\n"
-                output += "-" * 90 + "\n"
+                output += "### Segment Details\n\n"
+                output += "| Segment | Treatment N | Control N | Effect | p-value | Significant |\n"
+                output += "|---------|-------------|-----------|--------|---------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    sig = "YES" if r['significant'] else "NO"
-                    output += f"{r['segment']:<20} {r['treatment_n']:<10} {r['control_n']:<10} {r['effect']:<12.4f} {r['p_value']:<12.6f} {sig:<8}\n"
+                    sig = "**YES**" if r['significant'] else "NO"
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.6f} | {sig} |\n"
 
-                output += "-" * 90 + "\n\n"
-
-                output += f"RECOMMENDATIONS:\n"
+                output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
-                    output += f"  {i}. {rec}\n"
+                    output += f"{i}. {rec}\n"
+
+                output += "\n---\n*Would you like to see the visualizations?*"
 
                 return output
 
@@ -630,22 +623,6 @@ Optional: segment_column, customer_id_column"""
                 if not config["success"]:
                     return f"Auto-configuration failed: {config.get('error', 'Unknown error')}"
 
-                # Build output with configuration info
-                output = f"AUTO-CONFIGURATION RESULTS (Best Guess Mode)\n"
-                output += f"{'='*60}\n\n"
-
-                output += f"Detected Configuration:\n"
-                for key, value in config["mapping"].items():
-                    output += f"  {key}: {value}\n"
-                output += f"  Treatment Label: '{config['labels'].get('treatment', 'N/A')}'\n"
-                output += f"  Control Label: '{config['labels'].get('control', 'N/A')}'\n\n"
-
-                if config["warnings"]:
-                    output += f"Warnings:\n"
-                    for warning in config["warnings"]:
-                        output += f"  ⚠ {warning}\n"
-                    output += "\n"
-
                 # Run full analysis
                 results = self.analyzer.run_segmented_analysis()
                 summary = self.analyzer.generate_summary(results)
@@ -654,37 +631,51 @@ Optional: segment_column, customer_id_column"""
                 self._last_results = results
                 self._last_summary = summary
 
-                output += f"{'='*60}\n"
-                output += f"A/B TEST ANALYSIS RESULTS\n"
-                output += f"{'='*60}\n\n"
+                # Build output with markdown formatting
+                output = "## Best Guess Mode - Analysis Complete\n\n"
 
-                output += f"OVERVIEW:\n"
-                output += f"  Segments Analyzed: {summary['total_segments_analyzed']}\n"
-                output += f"  Significant Results: {summary['significant_segments']}\n"
-                output += f"  Significance Rate: {summary['significance_rate']:.1%}\n\n"
+                output += "### Auto-Detected Configuration\n"
+                output += "| Setting | Value |\n|---------|-------|\n"
+                for key, value in config["mapping"].items():
+                    output += f"| {key} | `{value}` |\n"
+                output += f"| Treatment Label | `{config['labels'].get('treatment', 'N/A')}` |\n"
+                output += f"| Control Label | `{config['labels'].get('control', 'N/A')}` |\n\n"
 
-                output += f"SAMPLE INFORMATION:\n"
-                output += f"  Total Treatment: {summary['total_treatment_customers']}\n"
-                output += f"  Total Control: {summary['total_control_customers']}\n\n"
+                if config["warnings"]:
+                    output += "**Warnings:**\n"
+                    for warning in config["warnings"]:
+                        output += f"- {warning}\n"
+                    output += "\n"
 
-                output += f"EFFECT SIZE SUMMARY:\n"
-                output += f"  Average Significant Effect: {summary['average_significant_effect']:.4f}\n"
-                output += f"  Total Effect: {summary['effect_calculation']}\n\n"
+                output += "---\n\n"
+                output += "## A/B Test Results\n\n"
 
-                output += f"SEGMENT DETAILS:\n"
-                output += "-" * 90 + "\n"
-                output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<8}\n"
-                output += "-" * 90 + "\n"
+                output += "### Overview\n"
+                output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
+                output += f"- **Significant Results:** {summary['significant_segments']}\n"
+                output += f"- **Significance Rate:** {summary['significance_rate']:.1%}\n\n"
+
+                output += "### Sample Information\n"
+                output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
+                output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
+
+                output += "### Effect Size Summary\n"
+                output += f"- **Average Significant Effect:** {summary['average_significant_effect']:.4f}\n"
+                output += f"- **Total Effect:** {summary['effect_calculation']}\n\n"
+
+                output += "### Segment Details\n\n"
+                output += "| Segment | Treatment N | Control N | Effect | p-value | Significant |\n"
+                output += "|---------|-------------|-----------|--------|---------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    sig = "YES" if r['significant'] else "NO"
-                    output += f"{r['segment']:<20} {r['treatment_n']:<10} {r['control_n']:<10} {r['effect']:<12.4f} {r['p_value']:<12.6f} {sig:<8}\n"
+                    sig = "**YES**" if r['significant'] else "NO"
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.6f} | {sig} |\n"
 
-                output += "-" * 90 + "\n\n"
-
-                output += f"RECOMMENDATIONS:\n"
+                output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
-                    output += f"  {i}. {rec}\n"
+                    output += f"{i}. {rec}\n"
+
+                output += "\n---\n*Would you like to see the visualizations?*"
 
                 return output
 

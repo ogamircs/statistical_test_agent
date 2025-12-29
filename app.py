@@ -120,8 +120,8 @@ async def main(message: cl.Message):
                 user_text = message.content.strip() if message.content else ""
 
                 if user_text:
-                    # User provided instructions along with the file
-                    agent_message = f"Load the CSV file at path: {file_path}\n\nUser request: {user_text}"
+                    # User provided instructions - put their intent FIRST
+                    agent_message = f"User request: {user_text}\n\nCSV file path: {file_path}"
                 else:
                     # Just the file, no additional instructions
                     agent_message = f"Load the CSV file at path: {file_path}"
