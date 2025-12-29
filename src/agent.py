@@ -6,10 +6,11 @@ An intelligent agent that can:
 - Perform comprehensive A/B testing
 - Answer questions about the data
 - Provide statistical insights and recommendations
+- Generate interactive visualizations
 """
 
 import os
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI
@@ -17,8 +18,9 @@ from langchain_core.tools import Tool, StructuredTool
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel, Field
+import plotly.graph_objects as go
 
-from .statistics import ABTestAnalyzer
+from .statistics import ABTestAnalyzer, ABTestVisualizer
 
 load_dotenv()
 
@@ -32,14 +34,27 @@ class ABTestingAgent:
     - Configuring column mappings
     - Running A/B tests
     - Answering data-related questions
+    - Generating interactive visualizations
     """
 
     def __init__(self, model_name: str = "gpt-4o", temperature: float = 0):
         self.llm = ChatOpenAI(model=model_name, temperature=temperature)
         self.analyzer = ABTestAnalyzer()
+        self.visualizer = ABTestVisualizer()
         self.chat_history: List[Any] = []
         self.agent = self._create_agent()
         self._pending_confirmation = None
+        self._last_charts: Dict[str, go.Figure] = {}
+        self._last_results = None
+        self._last_summary = None
+
+    def get_charts(self) -> Dict[str, go.Figure]:
+        """Get the last generated charts"""
+        return self._last_charts
+
+    def clear_charts(self):
+        """Clear the stored charts"""
+        self._last_charts = {}
 
     def _create_tools(self) -> List[Tool]:
         """Create the tools for the agent"""
@@ -196,6 +211,10 @@ class ABTestingAgent:
             try:
                 results = self.analyzer.run_segmented_analysis()
                 summary = self.analyzer.generate_summary(results)
+
+                # Store results for chart generation
+                self._last_results = results
+                self._last_summary = summary
 
                 output = f"\n{'='*60}\n"
                 output += f"FULL A/B TEST ANALYSIS SUMMARY\n"
@@ -411,6 +430,114 @@ class ABTestingAgent:
             description="Calculate detailed statistics for a numeric column including mean, median, std dev, percentiles."
         )
 
+        # Visualization Tools
+        def generate_charts(chart_type: str = "all") -> str:
+            """Generate visualization charts for the A/B test results"""
+            try:
+                # Check if data is loaded and configured
+                if self.analyzer.df is None:
+                    return "No data loaded. Please load a CSV file first before generating charts."
+
+                if "group" not in self.analyzer.column_mapping:
+                    return "Column mapping not set. Please configure the group and effect_value columns first."
+
+                if self.analyzer.treatment_label is None:
+                    return "Group labels not set. Please specify which values represent treatment and control."
+
+                # Run analysis if not done yet
+                if self._last_results is None:
+                    results = self.analyzer.run_segmented_analysis()
+                    if not results:
+                        return "No results from analysis. Please check your data configuration."
+                    summary = self.analyzer.generate_summary(results)
+                    self._last_results = results
+                    self._last_summary = summary
+                else:
+                    results = self._last_results
+                    summary = self._last_summary
+
+                # Check for valid summary
+                if summary is None or "error" in summary:
+                    return "Could not generate summary. Please run the full analysis first."
+
+                chart_type = chart_type.lower().strip()
+
+                # Clear previous charts
+                self._last_charts = {}
+
+                if chart_type in ["all", "dashboard"]:
+                    self._last_charts["dashboard"] = self.visualizer.plot_summary_dashboard(results, summary)
+
+                if chart_type in ["all", "treatment_control", "comparison", "means"]:
+                    self._last_charts["treatment_vs_control"] = self.visualizer.plot_treatment_vs_control(results)
+
+                if chart_type in ["all", "effect", "effect_size", "effects"]:
+                    self._last_charts["effect_sizes"] = self.visualizer.plot_effect_sizes(results)
+
+                if chart_type in ["all", "pvalue", "p_value", "significance"]:
+                    self._last_charts["p_values"] = self.visualizer.plot_p_values(results)
+
+                if chart_type in ["all", "power", "power_analysis"]:
+                    self._last_charts["power_analysis"] = self.visualizer.plot_power_analysis(results)
+
+                if chart_type in ["all", "cohens_d", "cohen", "effect_magnitude"]:
+                    self._last_charts["cohens_d"] = self.visualizer.plot_cohens_d(results)
+
+                if chart_type in ["all", "sample", "sample_size", "samples"]:
+                    self._last_charts["sample_sizes"] = self.visualizer.plot_sample_sizes(results)
+
+                if chart_type in ["all", "waterfall", "contribution"]:
+                    self._last_charts["effect_waterfall"] = self.visualizer.plot_effect_waterfall(results)
+
+                chart_names = list(self._last_charts.keys())
+                return f"Generated {len(chart_names)} chart(s): {', '.join(chart_names)}. The charts are now displayed in the UI."
+
+            except Exception as e:
+                return f"Error generating charts: {str(e)}. Please ensure you have loaded data, configured columns, and set group labels."
+
+        generate_charts_tool = Tool(
+            name="generate_charts",
+            func=generate_charts,
+            description="""Generate visualization charts for A/B test results.
+Input options:
+- 'all' or 'dashboard': Generate all charts including summary dashboard
+- 'treatment_control' or 'comparison': Treatment vs Control means chart
+- 'effect' or 'effect_size': Effect sizes with confidence intervals
+- 'pvalue' or 'significance': P-values chart
+- 'power' or 'power_analysis': Statistical power chart
+- 'cohens_d' or 'cohen': Cohen's d effect size chart
+- 'sample' or 'sample_size': Sample sizes chart
+- 'waterfall' or 'contribution': Effect contribution waterfall chart
+Use this tool when the user asks to see charts, visualizations, or graphs."""
+        )
+
+        def show_distribution_chart(_: str = "") -> str:
+            """Generate distribution chart showing treatment/control split"""
+            try:
+                if self.analyzer.df is None:
+                    return "No data loaded. Please load a CSV file first."
+
+                if "group" not in self.analyzer.column_mapping:
+                    return "Group column not set. Please configure column mappings first."
+
+                group_col = self.analyzer.column_mapping["group"]
+                segment_col = self.analyzer.column_mapping.get("segment")
+
+                self._last_charts["distribution"] = self.visualizer.plot_segment_distribution(
+                    self.analyzer.df, group_col, segment_col
+                )
+
+                return "Generated distribution chart showing treatment/control split. The chart is now displayed in the UI."
+
+            except Exception as e:
+                return f"Error generating distribution chart: {str(e)}"
+
+        distribution_chart_tool = Tool(
+            name="show_distribution_chart",
+            func=show_distribution_chart,
+            description="Generate a pie/sunburst chart showing the distribution of customers across treatment and control groups. Use when user asks about group distribution or wants to visualize the experiment split."
+        )
+
         return [
             load_csv_tool,
             set_mapping_tool,
@@ -421,7 +548,9 @@ class ABTestingAgent:
             summary_tool,
             dist_tool,
             column_values_tool,
-            stats_tool
+            stats_tool,
+            generate_charts_tool,
+            distribution_chart_tool
         ]
 
     def _create_agent(self):
@@ -437,6 +566,7 @@ class ABTestingAgent:
 3. **Run A/B tests** - Perform statistical analysis for individual segments or overall data
 4. **Generate comprehensive reports** - Provide summaries with significance, effect sizes, and recommendations
 5. **Answer data questions** - Query and analyze the data to answer user questions
+6. **Create visualizations** - Generate interactive charts to visualize results
 
 ## Workflow:
 1. When a user provides a CSV file, load it and examine the columns
@@ -444,6 +574,7 @@ class ABTestingAgent:
 3. Once columns are mapped, identify treatment/control labels in the group column
 4. Run the requested analysis (individual segments or full analysis)
 5. Provide clear interpretations and recommendations
+6. Generate charts when requested or when they would help explain results
 
 ## Important Guidelines:
 - Always ask for clarification if column names are ambiguous
@@ -451,6 +582,8 @@ class ABTestingAgent:
 - Provide actionable recommendations based on results
 - When sample sizes are inadequate, clearly communicate this limitation
 - Calculate total effect size as: average significant effect x number of treatment customers in significant segments
+- When users ask for visualizations or charts, use the generate_charts tool
+- Offer to show charts after running analysis to help visualize results
 
 ## Statistical Measures You Report:
 - Sample sizes (treatment and control)
@@ -461,6 +594,16 @@ class ABTestingAgent:
 - Statistical power
 - Required sample size for adequate power
 - Recommendations for action
+
+## Available Visualizations:
+- Dashboard: Comprehensive overview with multiple charts
+- Treatment vs Control: Compare means across segments
+- Effect Sizes: Show effects with confidence intervals
+- P-values: Significance testing results
+- Power Analysis: Statistical power by segment
+- Cohen's d: Standardized effect sizes
+- Sample Sizes: Group sizes comparison
+- Waterfall: Effect contribution by segment
 
 Be conversational, helpful, and thorough in your analysis."""
 
