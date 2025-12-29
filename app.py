@@ -113,13 +113,20 @@ async def main(message: cl.Message):
 
                 # Inform user and process
                 await cl.Message(
-                    content=f"Received file: **{element.name}**\n\nAnalyzing the data structure..."
+                    content=f"Received file: **{element.name}**\n\nProcessing..."
                 ).send()
 
-                # Load the file using the agent
-                response = await cl.make_async(agent.run)(
-                    f"Load the CSV file at path: {file_path}"
-                )
+                # Build the agent message - include user's text if provided
+                user_text = message.content.strip() if message.content else ""
+
+                if user_text:
+                    # User provided instructions along with the file
+                    agent_message = f"Load the CSV file at path: {file_path}\n\nUser request: {user_text}"
+                else:
+                    # Just the file, no additional instructions
+                    agent_message = f"Load the CSV file at path: {file_path}"
+
+                response = await cl.make_async(agent.run)(agent_message)
 
                 await cl.Message(content=response).send()
 

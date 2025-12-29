@@ -89,7 +89,94 @@ class ABTestingAgent:
         load_csv_tool = Tool(
             name="load_csv",
             func=load_csv,
-            description="Load a CSV file for A/B test analysis. Input should be the file path."
+            description="Load a CSV file for A/B test analysis. Input should be the file path. Use this when you need to inspect the data before analysis. For best-guess mode, use load_and_auto_analyze instead."
+        )
+
+        # Tool: Load and Auto-Analyze (Best Guess - Single Step)
+        def load_and_auto_analyze(filepath: str) -> str:
+            """Load CSV and automatically run full analysis using best guesses"""
+            try:
+                # Load the data
+                info = self.analyzer.load_data(filepath)
+
+                # Auto-configure
+                config = self.analyzer.auto_configure()
+
+                if not config["success"]:
+                    return f"Loaded file but auto-configuration failed: {config.get('error', 'Unknown error')}"
+
+                # Run analysis
+                results = self.analyzer.run_segmented_analysis()
+                summary = self.analyzer.generate_summary(results)
+
+                # Store for charts
+                self._last_results = results
+                self._last_summary = summary
+
+                # Build output
+                output = f"BEST GUESS MODE - Automatic Analysis Complete\n"
+                output += f"{'='*60}\n\n"
+
+                output += f"File: {filepath}\n"
+                output += f"Shape: {info['shape'][0]} rows, {info['shape'][1]} columns\n\n"
+
+                output += f"Auto-Detected Configuration:\n"
+                for key, value in config["mapping"].items():
+                    output += f"  {key}: {value}\n"
+                output += f"  Treatment: '{config['labels'].get('treatment', 'N/A')}'\n"
+                output += f"  Control: '{config['labels'].get('control', 'N/A')}'\n\n"
+
+                if config["warnings"]:
+                    output += f"Warnings:\n"
+                    for warning in config["warnings"]:
+                        output += f"  - {warning}\n"
+                    output += "\n"
+
+                output += f"{'='*60}\n"
+                output += f"A/B TEST RESULTS\n"
+                output += f"{'='*60}\n\n"
+
+                output += f"OVERVIEW:\n"
+                output += f"  Segments Analyzed: {summary['total_segments_analyzed']}\n"
+                output += f"  Significant Results: {summary['significant_segments']}\n"
+                output += f"  Significance Rate: {summary['significance_rate']:.1%}\n\n"
+
+                output += f"SAMPLE INFORMATION:\n"
+                output += f"  Total Treatment: {summary['total_treatment_customers']}\n"
+                output += f"  Total Control: {summary['total_control_customers']}\n\n"
+
+                output += f"EFFECT SIZE SUMMARY:\n"
+                output += f"  Average Significant Effect: {summary['average_significant_effect']:.4f}\n"
+                output += f"  Total Effect: {summary['effect_calculation']}\n\n"
+
+                output += f"SEGMENT DETAILS:\n"
+                output += "-" * 90 + "\n"
+                output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<8}\n"
+                output += "-" * 90 + "\n"
+
+                for r in summary['detailed_results']:
+                    sig = "YES" if r['significant'] else "NO"
+                    output += f"{r['segment']:<20} {r['treatment_n']:<10} {r['control_n']:<10} {r['effect']:<12.4f} {r['p_value']:<12.6f} {sig:<8}\n"
+
+                output += "-" * 90 + "\n\n"
+
+                output += f"RECOMMENDATIONS:\n"
+                for i, rec in enumerate(summary['recommendations'], 1):
+                    output += f"  {i}. {rec}\n"
+
+                output += "\nWould you like to see the visualizations?"
+
+                return output
+
+            except Exception as e:
+                return f"Error in load and auto-analyze: {str(e)}"
+
+        load_auto_analyze_tool = Tool(
+            name="load_and_auto_analyze",
+            func=load_and_auto_analyze,
+            description="""Load a CSV file AND automatically run full A/B test analysis using best guesses - ALL IN ONE STEP.
+Use this when the user says 'best guess', 'auto', 'automatic', 'figure it out', or wants quick analysis without manual configuration.
+Input: file path. This is the FASTEST way to get results."""
         )
 
         # Tool: Set Column Mapping
@@ -722,12 +809,13 @@ Use this tool when the user asks to see charts, visualizations, or graphs."""
 
         return [
             load_csv_tool,
+            load_auto_analyze_tool,  # Best guess: load + auto-analyze in one step
             set_mapping_tool,
             set_labels_tool,
             run_test_tool,
             full_analysis_tool,
             configure_analyze_tool,  # Combined one-step tool
-            auto_analyze_tool,       # Best guess mode
+            auto_analyze_tool,       # Best guess mode (data already loaded)
             query_tool,
             summary_tool,
             dist_tool,
@@ -744,62 +832,45 @@ Use this tool when the user asks to see charts, visualizations, or graphs."""
 
         system_prompt = """You are an expert A/B Testing Analyst AI assistant. Your role is to help users analyze A/B test experiments from CSV data.
 
+## CRITICAL - Tool Selection Based on User Intent:
+
+### BEST GUESS MODE (User wants automatic analysis):
+If the user mentions ANY of these: "best guess", "auto", "automatic", "figure it out", "just analyze", "quick analysis", or similar:
+=> Use `load_and_auto_analyze` tool with JUST the file path
+=> This loads the file, auto-detects everything, and runs full analysis - NO QUESTIONS ASKED
+=> Do NOT use load_csv, do NOT ask for confirmation
+
+### MANUAL MODE (User wants to review/confirm settings):
+If the user uploads a file WITHOUT mentioning auto/best guess:
+=> Use `load_csv` to show columns
+=> Then use `configure_and_analyze` with their confirmed settings
+
 ## Your Capabilities:
-1. **Load and explore CSV files** - Understand the data structure
-2. **Configure and analyze in ONE step** - Map columns and run analysis together
-3. **Auto-configure (Best Guess Mode)** - Automatically detect everything and run analysis
-4. **Run A/B tests** - Perform statistical analysis for individual segments or overall data
-5. **Generate comprehensive reports** - Provide summaries with significance, effect sizes, and recommendations
-6. **Create visualizations** - Generate interactive charts to visualize results
+1. **Best Guess Analysis** - `load_and_auto_analyze`: Load file + auto-detect + run analysis in ONE step
+2. **Manual Configuration** - `load_csv` then `configure_and_analyze`: For users who want control
+3. **Generate visualizations** - Interactive charts after analysis
 
-## Simplified Workflow (PREFERRED):
-1. When a user provides a CSV file, load it and show the detected columns
-2. Present a SINGLE confirmation step showing:
-   - Detected group column and its values (treatment/control labels)
-   - Detected effect/metric column
-   - Detected segment column (if any)
-3. Use `configure_and_analyze` to set everything AND run analysis in ONE step
-4. Default to analyzing ALL segments (not just one)
-5. Generate charts when requested
-
-## Best Guess Mode:
-If the user says "best guess", "auto", "automatic", "figure it out", or similar:
-- Use `auto_configure_and_analyze` tool immediately
-- This will automatically detect all columns and treatment/control labels
-- Runs full analysis without asking for confirmation
-- Shows what configuration was detected and any warnings
+## Workflow Decision Tree:
+1. User uploads file with "best guess"/"auto" keywords => `load_and_auto_analyze`
+2. User uploads file without keywords => `load_csv`, then ask to confirm, then `configure_and_analyze`
+3. Data already loaded + user wants best guess => `auto_configure_and_analyze`
 
 ## Important Guidelines:
-- PREFER the combined `configure_and_analyze` tool over separate set_column_mapping and set_group_labels calls
 - DEFAULT to full segmented analysis (all segments) unless user specifies otherwise
-- Only ask for clarification if auto-detection completely fails
 - Explain statistical concepts in accessible language
 - Provide actionable recommendations based on results
-- When sample sizes are inadequate, clearly communicate this limitation
-- Calculate total effect size as: average significant effect x number of treatment customers in significant segments
-- Offer to show charts after running analysis
+- Offer to show charts after analysis completes
 
-## Statistical Measures You Report:
-- Sample sizes (treatment and control)
-- Mean values and their difference (effect size)
-- Cohen's d (standardized effect size)
-- p-value and statistical significance
+## Statistical Measures:
+- Sample sizes, means, effect sizes
+- Cohen's d, p-values, significance
 - 95% confidence intervals
-- Statistical power
-- Required sample size for adequate power
-- Recommendations for action
+- Statistical power analysis
 
-## Available Visualizations:
-- Dashboard: Comprehensive overview with multiple charts
-- Treatment vs Control: Compare means across segments
-- Effect Sizes: Show effects with confidence intervals
-- P-values: Significance testing results
-- Power Analysis: Statistical power by segment
-- Cohen's d: Standardized effect sizes
-- Sample Sizes: Group sizes comparison
-- Waterfall: Effect contribution by segment
+## Visualizations:
+Dashboard, Treatment vs Control, Effect Sizes, P-values, Power Analysis, Cohen's d, Sample Sizes, Waterfall
 
-Be conversational, helpful, and efficient - minimize steps to get users their results."""
+Be efficient - minimize steps to get users their results."""
 
         return create_react_agent(self.llm, tools, prompt=system_prompt)
 
