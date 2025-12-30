@@ -12,6 +12,8 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 from statsmodels.stats.power import TTestIndPower
+from statsmodels.stats.weightstats import ttest_ind as sm_ttest_ind, CompareMeans, DescrStatsW
+from statsmodels.stats.proportion import proportions_ztest, confint_proportions_2indep
 from typing import Dict, List, Optional, Any
 
 from .models import ABTestResult
@@ -264,14 +266,14 @@ class ABTestAnalyzer:
 
     def run_proportion_test(self, treatment_data: np.ndarray, control_data: np.ndarray) -> Dict[str, float]:
         """
-        Run a two-proportion z-test to compare conversion rates.
+        Run a two-proportion z-test using statsmodels to compare conversion rates.
         Conversion = having a non-zero effect value.
 
         Returns proportion test statistics.
         """
         # Count non-zero values (conversions/activations)
-        treatment_conversions = np.sum(treatment_data != 0)
-        control_conversions = np.sum(control_data != 0)
+        treatment_conversions = int(np.sum(treatment_data != 0))
+        control_conversions = int(np.sum(control_data != 0))
 
         n_treatment = len(treatment_data)
         n_control = len(control_data)
@@ -280,44 +282,53 @@ class ABTestAnalyzer:
         p_treatment = treatment_conversions / n_treatment if n_treatment > 0 else 0
         p_control = control_conversions / n_control if n_control > 0 else 0
 
-        # Pooled proportion for z-test
-        p_pooled = (treatment_conversions + control_conversions) / (n_treatment + n_control)
-
-        # Standard error for difference of proportions
-        if p_pooled == 0 or p_pooled == 1:
-            # No variation in conversions
+        # Handle edge cases where there's no variation
+        if (treatment_conversions == 0 and control_conversions == 0) or \
+           (treatment_conversions == n_treatment and control_conversions == n_control):
             return {
                 "treatment_proportion": p_treatment,
                 "control_proportion": p_control,
                 "proportion_diff": p_treatment - p_control,
                 "z_stat": 0.0,
-                "p_value": 1.0
+                "p_value": 1.0,
+                "ci_lower": 0.0,
+                "ci_upper": 0.0
             }
 
-        se = np.sqrt(p_pooled * (1 - p_pooled) * (1/n_treatment + 1/n_control))
+        try:
+            # Use statsmodels proportions_ztest for two-proportion z-test
+            count = np.array([treatment_conversions, control_conversions])
+            nobs = np.array([n_treatment, n_control])
 
-        if se == 0:
+            z_stat, p_value = proportions_ztest(count, nobs, alternative='two-sided')
+
+            # Calculate confidence interval for difference in proportions
+            ci_lower, ci_upper = confint_proportions_2indep(
+                treatment_conversions, n_treatment,
+                control_conversions, n_control,
+                method='wald'
+            )
+
+            return {
+                "treatment_proportion": p_treatment,
+                "control_proportion": p_control,
+                "proportion_diff": p_treatment - p_control,
+                "z_stat": float(z_stat),
+                "p_value": float(p_value),
+                "ci_lower": float(ci_lower),
+                "ci_upper": float(ci_upper)
+            }
+        except Exception:
+            # Fallback if statsmodels fails
             return {
                 "treatment_proportion": p_treatment,
                 "control_proportion": p_control,
                 "proportion_diff": p_treatment - p_control,
                 "z_stat": 0.0,
-                "p_value": 1.0
+                "p_value": 1.0,
+                "ci_lower": 0.0,
+                "ci_upper": 0.0
             }
-
-        # Z-statistic
-        z_stat = (p_treatment - p_control) / se
-
-        # Two-tailed p-value
-        p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))
-
-        return {
-            "treatment_proportion": p_treatment,
-            "control_proportion": p_control,
-            "proportion_diff": p_treatment - p_control,
-            "z_stat": z_stat,
-            "p_value": p_value
-        }
 
     def run_ab_test(self, segment_filter: Optional[str] = None) -> ABTestResult:
         """
@@ -358,7 +369,7 @@ class ABTestAnalyzer:
             raise ValueError(f"Insufficient data for segment '{segment_name}': "
                            f"Treatment n={len(treatment_data)}, Control n={len(control_data)}")
 
-        # ============ T-TEST (continuous metric) ============
+        # ============ T-TEST (continuous metric) using statsmodels ============
         treatment_mean = treatment_data.mean()
         control_mean = control_data.mean()
         effect_size = treatment_mean - control_mean
@@ -366,15 +377,20 @@ class ABTestAnalyzer:
         # Cohen's d
         cohens_d = self.calculate_cohens_d(treatment_data.values, control_data.values)
 
-        # T-test
-        t_stat, p_value = stats.ttest_ind(treatment_data, control_data)
+        # T-test using statsmodels
+        # Create DescrStatsW objects for each group
+        d1 = DescrStatsW(treatment_data.values)
+        d2 = DescrStatsW(control_data.values)
 
-        # Confidence interval for the difference
-        se = np.sqrt(treatment_data.var() / len(treatment_data) +
-                    control_data.var() / len(control_data))
-        ci_margin = stats.t.ppf(1 - self.significance_level / 2,
-                               len(treatment_data) + len(control_data) - 2) * se
-        ci = (effect_size - ci_margin, effect_size + ci_margin)
+        # CompareMeans for the two groups
+        cm = CompareMeans(d1, d2)
+
+        # Get t-test results (using Welch's t-test for unequal variances)
+        t_stat, p_value, df = cm.ttest_ind(usevar='unequal')
+
+        # Get confidence interval for the difference using statsmodels
+        ci_low, ci_high = cm.tconfint_diff(alpha=self.significance_level, usevar='unequal')
+        ci = (ci_low, ci_high)
 
         # Power analysis
         power = self.calculate_power(cohens_d, len(treatment_data), len(control_data))
@@ -567,6 +583,7 @@ class ABTestAnalyzer:
                     "prop_p_value": r.proportion_p_value,
                     "prop_significant": r.proportion_is_significant,
                     "prop_effect": r.proportion_effect,
+                    "prop_effect_per_customer": r.proportion_effect_per_customer,
                     # Combined
                     "total_effect": r.total_effect,
                     "total_effect_per_customer": r.total_effect_per_customer

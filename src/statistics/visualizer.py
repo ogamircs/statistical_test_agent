@@ -442,6 +442,179 @@ class ABTestVisualizer:
 
         return fig
 
+    def plot_statistical_summary(self, results: List[ABTestResult]) -> go.Figure:
+        """
+        Create a comprehensive 2x3 dashboard showing all key metrics from the results table:
+        - T-test p-values
+        - T-test effect sizes
+        - Proportion test p-values
+        - Proportion test effect sizes
+        - Total effect sizes
+        """
+        fig = make_subplots(
+            rows=2, cols=3,
+            subplot_titles=(
+                '<b>T-test P-Values</b>',
+                '<b>T-test Effect Size</b>',
+                '<b>Total Effect Size</b>',
+                '<b>Proportion P-Values</b>',
+                '<b>Proportion Effect Size</b>',
+                '<b>All Effects Comparison</b>'
+            ),
+            vertical_spacing=0.25,
+            horizontal_spacing=0.12
+        )
+
+        segments = [r.segment for r in results]
+
+        # Row 1, Col 1: T-test P-Values
+        t_pvals = [r.p_value for r in results]
+        t_pval_colors = [self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant'] for p in t_pvals]
+        fig.add_trace(go.Bar(
+            x=segments, y=t_pvals,
+            marker_color=t_pval_colors,
+            text=[f'{p:.4f}' for p in t_pvals],
+            textposition='outside',
+            textfont=dict(size=11),
+            showlegend=False
+        ), row=1, col=1)
+        fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=2, row=1, col=1)
+
+        # Row 1, Col 2: T-test Effect Size
+        t_effects = [r.effect_size for r in results]
+        t_effect_colors = [
+            self.colors['significant_pos'] if r.is_significant and r.effect_size > 0
+            else self.colors['significant_neg'] if r.is_significant and r.effect_size < 0
+            else self.colors['not_significant']
+            for r in results
+        ]
+        fig.add_trace(go.Bar(
+            x=segments, y=t_effects,
+            marker_color=t_effect_colors,
+            text=[f'{e:.4f}' for e in t_effects],
+            textposition='outside',
+            textfont=dict(size=11),
+            showlegend=False
+        ), row=1, col=2)
+        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=2)
+
+        # Row 1, Col 3: Total Effect Size
+        total_effects = [r.total_effect_per_customer for r in results]
+        total_colors = [
+            self.colors['combined'] if t > 0 else self.colors['significant_neg'] if t < 0 else self.colors['not_significant']
+            for t in total_effects
+        ]
+        fig.add_trace(go.Bar(
+            x=segments, y=total_effects,
+            marker_color=total_colors,
+            text=[f'{t:.4f}' for t in total_effects],
+            textposition='outside',
+            textfont=dict(size=11),
+            showlegend=False
+        ), row=1, col=3)
+        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=3)
+
+        # Row 2, Col 1: Proportion P-Values
+        prop_pvals = [r.proportion_p_value for r in results]
+        prop_pval_colors = [self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant'] for p in prop_pvals]
+        fig.add_trace(go.Bar(
+            x=segments, y=prop_pvals,
+            marker_color=prop_pval_colors,
+            text=[f'{p:.4f}' for p in prop_pvals],
+            textposition='outside',
+            textfont=dict(size=11),
+            showlegend=False
+        ), row=2, col=1)
+        fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=2, row=2, col=1)
+
+        # Row 2, Col 2: Proportion Effect Size
+        prop_effects = [r.proportion_effect_per_customer for r in results]
+        prop_effect_colors = [
+            self.colors['proportion'] if r.proportion_is_significant and e > 0
+            else self.colors['significant_neg'] if r.proportion_is_significant and e < 0
+            else self.colors['not_significant']
+            for r, e in zip(results, prop_effects)
+        ]
+        fig.add_trace(go.Bar(
+            x=segments, y=prop_effects,
+            marker_color=prop_effect_colors,
+            text=[f'{e:.4f}' for e in prop_effects],
+            textposition='outside',
+            textfont=dict(size=11),
+            showlegend=False
+        ), row=2, col=2)
+        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=2, col=2)
+
+        # Row 2, Col 3: All Effects Comparison (grouped bar)
+        fig.add_trace(go.Bar(
+            name='T-test Effect',
+            x=segments, y=t_effects,
+            marker_color=self.colors['t_test'],
+            showlegend=True
+        ), row=2, col=3)
+        fig.add_trace(go.Bar(
+            name='Prop Effect',
+            x=segments, y=prop_effects,
+            marker_color=self.colors['proportion'],
+            showlegend=True
+        ), row=2, col=3)
+        fig.add_trace(go.Bar(
+            name='Total Effect',
+            x=segments, y=total_effects,
+            marker_color=self.colors['combined'],
+            showlegend=True
+        ), row=2, col=3)
+        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=2, col=3)
+
+        # Apply layout (without layout_defaults to avoid duplicate margin)
+        fig.update_layout(
+            template='plotly_white',
+            font=dict(family='Inter, system-ui, sans-serif', size=12, color=self.colors['text']),
+            paper_bgcolor=self.colors['background'],
+            plot_bgcolor=self.colors['background'],
+            hoverlabel=dict(bgcolor='white', font_size=12),
+            title=dict(
+                text='<b>Statistical Results Summary</b><br><span style="font-size:12px;color:#6B7280">T-test & Proportion Test: P-Values, Effect Sizes, and Total Effects</span>',
+                x=0.5,
+                xanchor='center',
+                font=dict(size=18)
+            ),
+            height=800,
+            barmode='group',
+            bargap=0.3,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='center',
+                x=0.5,
+                bgcolor='rgba(255,255,255,0.9)',
+                font=dict(size=11)
+            ),
+            margin=dict(l=70, r=50, t=120, b=60)
+        )
+
+        # Update axes labels
+        fig.update_yaxes(title_text='P-Value', row=1, col=1, title_font=dict(size=12))
+        fig.update_yaxes(title_text='Effect', row=1, col=2, title_font=dict(size=12))
+        fig.update_yaxes(title_text='Total Effect', row=1, col=3, title_font=dict(size=12))
+        fig.update_yaxes(title_text='P-Value', row=2, col=1, title_font=dict(size=12))
+        fig.update_yaxes(title_text='Effect', row=2, col=2, title_font=dict(size=12))
+        fig.update_yaxes(title_text='Effect', row=2, col=3, title_font=dict(size=12))
+
+        # Style all subplots
+        for i in range(1, 3):
+            for j in range(1, 4):
+                fig.update_xaxes(showgrid=False, row=i, col=j, tickfont=dict(size=11))
+                fig.update_yaxes(gridcolor=self.colors['grid'], row=i, col=j, tickfont=dict(size=11))
+
+        # Update subplot title styling
+        for annotation in fig['layout']['annotations']:
+            if annotation['text'].startswith('<b>'):
+                annotation['font'] = dict(size=14, color=self.colors['text'])
+
+        return fig
+
     def plot_proportion_comparison(self, results: List[ABTestResult]) -> go.Figure:
         """Create grouped bar chart comparing treatment vs control proportions"""
         segments = [r.segment for r in results]
@@ -707,6 +880,7 @@ class ABTestVisualizer:
         Returns a dictionary of chart name -> Plotly figure
         """
         charts = {
+            'statistical_summary': self.plot_statistical_summary(results),  # New focused chart
             'dashboard': self.plot_summary_dashboard(results, summary),
             'treatment_vs_control': self.plot_treatment_vs_control(results),
             'effect_sizes': self.plot_effect_sizes(results),

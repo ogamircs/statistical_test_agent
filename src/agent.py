@@ -149,15 +149,29 @@ class ABTestingAgent:
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
                 output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
 
-                output += "### Segment Details\n\n"
-                output += "| Segment | Treat N | Ctrl N | T-test Effect | T p-val | T Sig | Prop Diff | Prop p-val | Prop Sig | Total Effect |\n"
-                output += "|---------|---------|--------|---------------|---------|-------|-----------|------------|----------|-------------|\n"
+                output += "### Statistical Results Summary\n\n"
+                output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
+                output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    t_sig = "**YES**" if r['significant'] else "NO"
-                    p_sig = "**YES**" if r['prop_significant'] else "NO"
-                    prop_diff_pct = r['prop_diff'] * 100
-                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.4f} | {t_sig} | {prop_diff_pct:+.2f}% | {r['prop_p_value']:.4f} | {p_sig} | {r['total_effect']:.2f} |\n"
+                    t_effect = r['effect']
+                    t_pval = r['p_value']
+                    prop_pval = r['prop_p_value']
+                    prop_effect_per_cust = r.get('prop_effect_per_customer', 0)
+
+                    # Calculate total effect: t-test effect × treatment_n + prop effect × control_n
+                    t_total = t_effect * r['treatment_n'] if r['significant'] else 0
+                    prop_total = prop_effect_per_cust * r['control_n'] if r['prop_significant'] else 0
+                    total_effect = t_total + prop_total
+
+                    # Add significance markers
+                    t_sig_marker = "*" if r['significant'] else ""
+                    p_sig_marker = "*" if r['prop_significant'] else ""
+
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | {prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+
+                output += "\n*\\* indicates statistical significance (p < 0.05)*\n"
+                output += "*Total Effect = (T-test Effect × Treat N) + (Prop Effect × Ctrl N) for significant results*\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -586,15 +600,29 @@ Input: file path. This is the FASTEST way to get results."""
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
                 output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
 
-                output += "### Segment Details\n\n"
-                output += "| Segment | Treat N | Ctrl N | T-test Effect | T p-val | T Sig | Prop Diff | Prop p-val | Prop Sig | Total Effect |\n"
-                output += "|---------|---------|--------|---------------|---------|-------|-----------|------------|----------|-------------|\n"
+                output += "### Statistical Results Summary\n\n"
+                output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
+                output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    t_sig = "**YES**" if r['significant'] else "NO"
-                    p_sig = "**YES**" if r['prop_significant'] else "NO"
-                    prop_diff_pct = r['prop_diff'] * 100
-                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.4f} | {t_sig} | {prop_diff_pct:+.2f}% | {r['prop_p_value']:.4f} | {p_sig} | {r['total_effect']:.2f} |\n"
+                    t_effect = r['effect']
+                    t_pval = r['p_value']
+                    prop_pval = r['prop_p_value']
+                    prop_effect_per_cust = r.get('prop_effect_per_customer', 0)
+
+                    # Calculate total effect: t-test effect × treatment_n + prop effect × control_n
+                    t_total = t_effect * r['treatment_n'] if r['significant'] else 0
+                    prop_total = prop_effect_per_cust * r['control_n'] if r['prop_significant'] else 0
+                    total_effect = t_total + prop_total
+
+                    # Add significance markers
+                    t_sig_marker = "*" if r['significant'] else ""
+                    p_sig_marker = "*" if r['prop_significant'] else ""
+
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | {prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+
+                output += "\n*\\* indicates statistical significance (p < 0.05)*\n"
+                output += "*Total Effect = (T-test Effect × Treat N) + (Prop Effect × Ctrl N) for significant results*\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -670,15 +698,29 @@ Optional: segment_column, customer_id_column"""
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
                 output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
 
-                output += "### Segment Details\n\n"
-                output += "| Segment | Treat N | Ctrl N | T-test Effect | T p-val | T Sig | Prop Diff | Prop p-val | Prop Sig | Total Effect |\n"
-                output += "|---------|---------|--------|---------------|---------|-------|-----------|------------|----------|-------------|\n"
+                output += "### Statistical Results Summary\n\n"
+                output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
+                output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
                 for r in summary['detailed_results']:
-                    t_sig = "**YES**" if r['significant'] else "NO"
-                    p_sig = "**YES**" if r['prop_significant'] else "NO"
-                    prop_diff_pct = r['prop_diff'] * 100
-                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {r['effect']:.4f} | {r['p_value']:.4f} | {t_sig} | {prop_diff_pct:+.2f}% | {r['prop_p_value']:.4f} | {p_sig} | {r['total_effect']:.2f} |\n"
+                    t_effect = r['effect']
+                    t_pval = r['p_value']
+                    prop_pval = r['prop_p_value']
+                    prop_effect_per_cust = r.get('prop_effect_per_customer', 0)
+
+                    # Calculate total effect: t-test effect × treatment_n + prop effect × control_n
+                    t_total = t_effect * r['treatment_n'] if r['significant'] else 0
+                    prop_total = prop_effect_per_cust * r['control_n'] if r['prop_significant'] else 0
+                    total_effect = t_total + prop_total
+
+                    # Add significance markers
+                    t_sig_marker = "*" if r['significant'] else ""
+                    p_sig_marker = "*" if r['prop_significant'] else ""
+
+                    output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | {prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+
+                output += "\n*\\* indicates statistical significance (p < 0.05)*\n"
+                output += "*Total Effect = (T-test Effect × Treat N) + (Prop Effect × Ctrl N) for significant results*\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -734,6 +776,10 @@ This is the fastest way to analyze data without manual configuration."""
                 # Clear previous charts
                 self._last_charts = {}
 
+                # Statistical Summary - the main focused chart with table elements
+                if chart_type in ["all", "summary", "statistical_summary", "stats", "table"]:
+                    self._last_charts["statistical_summary"] = self.visualizer.plot_statistical_summary(results)
+
                 if chart_type in ["all", "dashboard"]:
                     self._last_charts["dashboard"] = self.visualizer.plot_summary_dashboard(results, summary)
 
@@ -769,7 +815,9 @@ This is the fastest way to analyze data without manual configuration."""
             func=generate_charts,
             description="""Generate visualization charts for A/B test results.
 Input options:
-- 'all' or 'dashboard': Generate all charts including summary dashboard
+- 'all': Generate all charts
+- 'summary' or 'statistical_summary': Statistical summary with T-test & Proportion test p-values, effects, and total effects (RECOMMENDED)
+- 'dashboard': Summary dashboard
 - 'treatment_control' or 'comparison': Treatment vs Control means chart
 - 'effect' or 'effect_size': Effect sizes with confidence intervals
 - 'pvalue' or 'significance': P-values chart
@@ -831,6 +879,11 @@ Use this tool when the user asks to see charts, visualizations, or graphs."""
         tools = self._create_tools()
 
         system_prompt = """You are an expert A/B Testing Analyst AI assistant. Your role is to help users analyze A/B test experiments from CSV data.
+
+## CRITICAL - OUTPUT FORMATTING RULES:
+**ALWAYS display the EXACT markdown tables returned by analysis tools. DO NOT summarize or rephrase the tables.**
+When a tool returns markdown tables (like the Statistical Results Summary table), you MUST include them verbatim in your response.
+The tables contain important statistical data that users need to see in tabular format.
 
 ## CRITICAL - Tool Selection Based on User Intent:
 
