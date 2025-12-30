@@ -138,7 +138,8 @@ class ABTestingAgent:
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
                 output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
-                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n\n"
+                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n"
+                output += f"- **Bayesian Significant:** {summary['bayesian_significant_segments']} ({summary['bayesian_significance_rate']:.1%})\n\n"
 
                 output += "### Sample Information\n"
                 output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
@@ -147,9 +148,11 @@ class ABTestingAgent:
                 output += "### Effect Summary\n"
                 output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
-                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
+                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n"
+                output += f"- **Avg P(Treatment Better):** {summary['bayesian_avg_prob_treatment_better']:.1%}\n"
+                output += f"- **Avg Expected Loss:** {summary['bayesian_avg_expected_loss']:.4f}\n\n"
 
-                output += "### Statistical Results Summary\n\n"
+                output += "### Frequentist Results\n\n"
                 output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
                 output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
@@ -170,8 +173,23 @@ class ABTestingAgent:
 
                     output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | {prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
 
-                output += "\n*\\* indicates statistical significance (p < 0.05)*\n"
-                output += "*Total Effect = (T-test Effect × Treat N) + (Prop Effect × Ctrl N) for significant results*\n"
+                output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
+
+                output += "### Bayesian Results\n\n"
+                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Relative Uplift |\n"
+                output += "|---------|---------------|----------------------|---------------|----------------|\n"
+
+                for r in summary['detailed_results']:
+                    bayesian_prob = r.get('bayesian_prob', 0.5)
+                    ci_lower = r.get('bayesian_credible_lower', 0)
+                    ci_upper = r.get('bayesian_credible_upper', 0)
+                    expected_loss = r.get('bayesian_expected_loss', 0)
+                    relative_uplift = r.get('bayesian_relative_uplift', 0)
+                    b_sig_marker = "*" if r.get('bayesian_significant', False) else ""
+
+                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {relative_uplift:.1%} |\n"
+
+                output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -589,7 +607,8 @@ Input: file path. This is the FASTEST way to get results."""
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
                 output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
-                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n\n"
+                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n"
+                output += f"- **Bayesian Significant:** {summary['bayesian_significant_segments']} ({summary['bayesian_significance_rate']:.1%})\n\n"
 
                 output += "### Sample Information\n"
                 output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
@@ -598,9 +617,11 @@ Input: file path. This is the FASTEST way to get results."""
                 output += "### Effect Summary\n"
                 output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
-                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
+                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n"
+                output += f"- **Avg P(Treatment Better):** {summary['bayesian_avg_prob_treatment_better']:.1%}\n"
+                output += f"- **Avg Expected Loss:** {summary['bayesian_avg_expected_loss']:.4f}\n\n"
 
-                output += "### Statistical Results Summary\n\n"
+                output += "### Frequentist Results\n\n"
                 output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
                 output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
@@ -621,8 +642,23 @@ Input: file path. This is the FASTEST way to get results."""
 
                     output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | {prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
 
-                output += "\n*\\* indicates statistical significance (p < 0.05)*\n"
-                output += "*Total Effect = (T-test Effect × Treat N) + (Prop Effect × Ctrl N) for significant results*\n"
+                output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
+
+                output += "### Bayesian Results\n\n"
+                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Relative Uplift |\n"
+                output += "|---------|---------------|----------------------|---------------|----------------|\n"
+
+                for r in summary['detailed_results']:
+                    bayesian_prob = r.get('bayesian_prob', 0.5)
+                    ci_lower = r.get('bayesian_credible_lower', 0)
+                    ci_upper = r.get('bayesian_credible_upper', 0)
+                    expected_loss = r.get('bayesian_expected_loss', 0)
+                    relative_uplift = r.get('bayesian_relative_uplift', 0)
+                    b_sig_marker = "*" if r.get('bayesian_significant', False) else ""
+
+                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {relative_uplift:.1%} |\n"
+
+                output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -687,7 +723,8 @@ Optional: segment_column, customer_id_column"""
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
                 output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
-                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n\n"
+                output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n"
+                output += f"- **Bayesian Significant:** {summary['bayesian_significant_segments']} ({summary['bayesian_significance_rate']:.1%})\n\n"
 
                 output += "### Sample Information\n"
                 output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
@@ -696,9 +733,11 @@ Optional: segment_column, customer_id_column"""
                 output += "### Effect Summary\n"
                 output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
-                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n\n"
+                output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n"
+                output += f"- **Avg P(Treatment Better):** {summary['bayesian_avg_prob_treatment_better']:.1%}\n"
+                output += f"- **Avg Expected Loss:** {summary['bayesian_avg_expected_loss']:.4f}\n\n"
 
-                output += "### Statistical Results Summary\n\n"
+                output += "### Frequentist Results\n\n"
                 output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
                 output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
@@ -719,8 +758,23 @@ Optional: segment_column, customer_id_column"""
 
                     output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | {prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
 
-                output += "\n*\\* indicates statistical significance (p < 0.05)*\n"
-                output += "*Total Effect = (T-test Effect × Treat N) + (Prop Effect × Ctrl N) for significant results*\n"
+                output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
+
+                output += "### Bayesian Results\n\n"
+                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Relative Uplift |\n"
+                output += "|---------|---------------|----------------------|---------------|----------------|\n"
+
+                for r in summary['detailed_results']:
+                    bayesian_prob = r.get('bayesian_prob', 0.5)
+                    ci_lower = r.get('bayesian_credible_lower', 0)
+                    ci_upper = r.get('bayesian_credible_upper', 0)
+                    expected_loss = r.get('bayesian_expected_loss', 0)
+                    relative_uplift = r.get('bayesian_relative_uplift', 0)
+                    b_sig_marker = "*" if r.get('bayesian_significant', False) else ""
+
+                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {relative_uplift:.1%} |\n"
+
+                output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
                 output += "\n### Recommendations\n\n"
                 for i, rec in enumerate(summary['recommendations'], 1):
@@ -804,6 +858,16 @@ This is the fastest way to analyze data without manual configuration."""
                 if chart_type in ["all", "waterfall", "contribution"]:
                     self._last_charts["effect_waterfall"] = self.visualizer.plot_effect_waterfall(results)
 
+                # Bayesian visualizations
+                if chart_type in ["all", "bayesian", "bayesian_probability", "probability"]:
+                    self._last_charts["bayesian_probability"] = self.visualizer.plot_bayesian_probability(results)
+
+                if chart_type in ["all", "bayesian", "bayesian_credible", "credible_interval", "credible"]:
+                    self._last_charts["bayesian_credible_intervals"] = self.visualizer.plot_bayesian_credible_intervals(results)
+
+                if chart_type in ["all", "bayesian", "bayesian_loss", "expected_loss", "loss"]:
+                    self._last_charts["bayesian_expected_loss"] = self.visualizer.plot_bayesian_expected_loss(results)
+
                 chart_names = list(self._last_charts.keys())
                 return f"Generated {len(chart_names)} chart(s): {', '.join(chart_names)}. The charts are now displayed in the UI."
 
@@ -815,7 +879,7 @@ This is the fastest way to analyze data without manual configuration."""
             func=generate_charts,
             description="""Generate visualization charts for A/B test results.
 Input options:
-- 'all': Generate all charts
+- 'all': Generate all charts (frequentist + Bayesian)
 - 'summary' or 'statistical_summary': Statistical summary with T-test & Proportion test p-values, effects, and total effects (RECOMMENDED)
 - 'dashboard': Summary dashboard
 - 'treatment_control' or 'comparison': Treatment vs Control means chart
@@ -825,6 +889,10 @@ Input options:
 - 'cohens_d' or 'cohen': Cohen's d effect size chart
 - 'sample' or 'sample_size': Sample sizes chart
 - 'waterfall' or 'contribution': Effect contribution waterfall chart
+- 'bayesian': All Bayesian charts (probability, credible intervals, expected loss)
+- 'bayesian_probability' or 'probability': P(Treatment > Control) chart
+- 'bayesian_credible' or 'credible': 95% credible intervals forest plot
+- 'bayesian_loss' or 'expected_loss': Expected loss chart
 Use this tool when the user asks to see charts, visualizations, or graphs."""
         )
 

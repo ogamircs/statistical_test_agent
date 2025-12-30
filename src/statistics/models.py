@@ -46,3 +46,11 @@ class ABTestResult:
     # Combined effects
     total_effect: float = 0.0          # T-test effect + proportion effect
     total_effect_per_customer: float = 0.0  # Combined per-customer effect
+
+    # Bayesian test results
+    bayesian_prob_treatment_better: float = 0.5  # P(treatment > control)
+    bayesian_expected_loss_treatment: float = 0.0  # Expected loss if choosing treatment
+    bayesian_expected_loss_control: float = 0.0    # Expected loss if choosing control
+    bayesian_credible_interval: Tuple[float, float] = (0.0, 0.0)  # 95% credible interval for difference
+    bayesian_relative_uplift: float = 0.0  # Relative improvement (treatment - control) / control
+    bayesian_is_significant: bool = False  # True if prob > 0.95 or prob < 0.05

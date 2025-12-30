@@ -615,6 +615,195 @@ class ABTestVisualizer:
 
         return fig
 
+    def plot_bayesian_probability(self, results: List[ABTestResult]) -> go.Figure:
+        """Create bar chart showing Bayesian probability that treatment is better"""
+        segments = [r.segment for r in results]
+        probs = [r.bayesian_prob_treatment_better * 100 for r in results]
+
+        colors = []
+        for r in results:
+            if r.bayesian_prob_treatment_better > 0.95:
+                colors.append(self.colors['significant_pos'])
+            elif r.bayesian_prob_treatment_better < 0.05:
+                colors.append(self.colors['significant_neg'])
+            else:
+                colors.append(self.colors['not_significant'])
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            x=segments,
+            y=probs,
+            marker_color=colors,
+            marker_line_width=0,
+            text=[f'{p:.1f}%' for p in probs],
+            textposition='outside',
+            textfont=dict(size=10)
+        ))
+
+        # Add threshold lines
+        fig.add_hline(
+            y=95,
+            line_dash="dash",
+            line_color=self.colors['significant_pos'],
+            line_width=2,
+            annotation_text="95% (Significant +)",
+            annotation_position="right",
+            annotation_font=dict(size=10, color=self.colors['significant_pos'])
+        )
+        fig.add_hline(
+            y=50,
+            line_dash="dot",
+            line_color=self.colors['grid'],
+            line_width=1,
+            annotation_text="50% (No difference)",
+            annotation_position="right",
+            annotation_font=dict(size=9, color=self.colors['grid'])
+        )
+        fig.add_hline(
+            y=5,
+            line_dash="dash",
+            line_color=self.colors['significant_neg'],
+            line_width=2,
+            annotation_text="5% (Significant -)",
+            annotation_position="right",
+            annotation_font=dict(size=10, color=self.colors['significant_neg'])
+        )
+
+        self._apply_layout(fig, 'Bayesian P(Treatment > Control)', 400)
+        fig.update_layout(
+            xaxis_title='Segment',
+            yaxis_title='Probability (%)',
+            yaxis=dict(range=[0, 105]),
+            bargap=0.3,
+            margin=dict(r=120)
+        )
+
+        return fig
+
+    def plot_bayesian_credible_intervals(self, results: List[ABTestResult]) -> go.Figure:
+        """Create forest plot showing Bayesian credible intervals for effect"""
+        segments = [r.segment for r in results]
+        effects = [r.effect_size for r in results]
+        ci_lower = [r.bayesian_credible_interval[0] for r in results]
+        ci_upper = [r.bayesian_credible_interval[1] for r in results]
+
+        colors = []
+        for r in results:
+            if r.bayesian_is_significant:
+                colors.append(self.colors['significant_pos'] if r.effect_size > 0
+                            else self.colors['significant_neg'])
+            else:
+                colors.append(self.colors['not_significant'])
+
+        fig = go.Figure()
+
+        # Error bars for credible intervals
+        fig.add_trace(go.Scatter(
+            x=effects,
+            y=segments,
+            mode='markers',
+            marker=dict(size=12, color=colors, symbol='diamond'),
+            error_x=dict(
+                type='data',
+                symmetric=False,
+                array=[ci_upper[i] - effects[i] for i in range(len(effects))],
+                arrayminus=[effects[i] - ci_lower[i] for i in range(len(effects))],
+                color='rgba(0,0,0,0.3)',
+                thickness=2,
+                width=6
+            ),
+            text=[f'{e:.4f} [{ci_lower[i]:.4f}, {ci_upper[i]:.4f}]' for i, e in enumerate(effects)],
+            hoverinfo='text+y',
+            showlegend=False
+        ))
+
+        # Add vertical line at 0
+        fig.add_vline(x=0, line_dash="solid", line_color=self.colors['grid'], line_width=2)
+
+        self._apply_layout(fig, 'Bayesian 95% Credible Intervals for Effect', 400)
+        fig.update_layout(
+            xaxis_title='Effect Size (Treatment - Control)',
+            yaxis_title='Segment',
+            yaxis=dict(autorange='reversed')  # Keep segments in order from top to bottom
+        )
+
+        # Add legend
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                marker=dict(size=10, color=self.colors['significant_pos'], symbol='diamond'),
+                                name='Significant (+)'))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                marker=dict(size=10, color=self.colors['significant_neg'], symbol='diamond'),
+                                name='Significant (-)'))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                marker=dict(size=10, color=self.colors['not_significant'], symbol='diamond'),
+                                name='Not Significant'))
+        fig.update_layout(
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='center',
+                x=0.5,
+                bgcolor='rgba(255,255,255,0.8)'
+            )
+        )
+
+        return fig
+
+    def plot_bayesian_expected_loss(self, results: List[ABTestResult]) -> go.Figure:
+        """Create bar chart showing expected loss for each segment"""
+        segments = [r.segment for r in results]
+        # For each segment, show the minimum expected loss (best decision)
+        min_losses = [min(r.bayesian_expected_loss_treatment, r.bayesian_expected_loss_control)
+                      for r in results]
+
+        # Color based on which option has lower loss
+        colors = [
+            self.colors['treatment'] if r.bayesian_expected_loss_treatment <= r.bayesian_expected_loss_control
+            else self.colors['control']
+            for r in results
+        ]
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            x=segments,
+            y=min_losses,
+            marker_color=colors,
+            marker_line_width=0,
+            text=[f'{loss:.4f}' for loss in min_losses],
+            textposition='outside',
+            textfont=dict(size=10)
+        ))
+
+        self._apply_layout(fig, 'Bayesian Expected Loss (Lower is Better)', 400)
+        fig.update_layout(
+            xaxis_title='Segment',
+            yaxis_title='Expected Loss',
+            bargap=0.3
+        )
+
+        # Add legend
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                marker=dict(size=10, color=self.colors['treatment'], symbol='square'),
+                                name='Recommend Treatment'))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                marker=dict(size=10, color=self.colors['control'], symbol='square'),
+                                name='Recommend Control'))
+        fig.update_layout(
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='center',
+                x=0.5,
+                bgcolor='rgba(255,255,255,0.8)'
+            )
+        )
+
+        return fig
+
     def plot_proportion_comparison(self, results: List[ABTestResult]) -> go.Figure:
         """Create grouped bar chart comparing treatment vs control proportions"""
         segments = [r.segment for r in results]
@@ -760,7 +949,11 @@ class ABTestVisualizer:
         combined_effect = summary.get('combined_total_effect', summary.get('total_effect_size', 0))
 
         fig.update_layout(
-            **self.layout_defaults,
+            template='plotly_white',
+            font=dict(family='Inter, system-ui, sans-serif', size=12, color=self.colors['text']),
+            paper_bgcolor=self.colors['background'],
+            plot_bgcolor=self.colors['background'],
+            hoverlabel=dict(bgcolor='white', font_size=12),
             title=dict(
                 text=f"<b>A/B Test Analysis Dashboard</b><br><span style='font-size:12px;color:#6B7280'>T-test sig: {t_test_sig}/{total_count} · Prop sig: {prop_sig}/{total_count} · Combined effect: {combined_effect:,.0f}</span>",
                 x=0.5,
@@ -890,7 +1083,11 @@ class ABTestVisualizer:
             'sample_sizes': self.plot_sample_sizes(results),
             'power_analysis': self.plot_power_analysis(results),
             'cohens_d': self.plot_cohens_d(results),
-            'effect_waterfall': self.plot_effect_waterfall(results)
+            'effect_waterfall': self.plot_effect_waterfall(results),
+            # Bayesian visualizations
+            'bayesian_probability': self.plot_bayesian_probability(results),
+            'bayesian_credible_intervals': self.plot_bayesian_credible_intervals(results),
+            'bayesian_expected_loss': self.plot_bayesian_expected_loss(results)
         }
 
         if df is not None and group_col:

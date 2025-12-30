@@ -330,6 +330,107 @@ class ABTestAnalyzer:
                 "ci_upper": 0.0
             }
 
+    def run_bayesian_test(self, treatment_data: np.ndarray, control_data: np.ndarray,
+                          n_samples: int = 10000) -> Dict[str, float]:
+        """
+        Run Bayesian A/B test using Monte Carlo simulation with conjugate priors.
+
+        For continuous data, uses Normal-Inverse-Gamma conjugate prior.
+        Estimates posterior distribution of difference in means.
+
+        Returns:
+            Dict with:
+            - prob_treatment_better: P(treatment > control)
+            - expected_loss_treatment: Expected loss if choosing treatment when control is better
+            - expected_loss_control: Expected loss if choosing control when treatment is better
+            - credible_interval: 95% credible interval for difference (treatment - control)
+            - relative_uplift: Relative improvement estimate
+        """
+        n_treatment = len(treatment_data)
+        n_control = len(control_data)
+
+        # Handle edge cases
+        if n_treatment < 2 or n_control < 2:
+            return {
+                "prob_treatment_better": 0.5,
+                "expected_loss_treatment": 0.0,
+                "expected_loss_control": 0.0,
+                "credible_interval": (0.0, 0.0),
+                "relative_uplift": 0.0
+            }
+
+        # Sample statistics
+        mean_t = treatment_data.mean()
+        mean_c = control_data.mean()
+        var_t = treatment_data.var(ddof=1)
+        var_c = control_data.var(ddof=1)
+
+        # Handle zero variance cases
+        if var_t == 0 and var_c == 0:
+            # Both groups have identical values
+            diff = mean_t - mean_c
+            return {
+                "prob_treatment_better": 1.0 if diff > 0 else (0.0 if diff < 0 else 0.5),
+                "expected_loss_treatment": 0.0 if diff >= 0 else abs(diff),
+                "expected_loss_control": 0.0 if diff <= 0 else abs(diff),
+                "credible_interval": (diff, diff),
+                "relative_uplift": diff / mean_c if mean_c != 0 else 0.0
+            }
+
+        # Use uninformative priors (Jeffreys prior for Normal-Inverse-Gamma)
+        # Posterior for mean given variance is Normal
+        # Posterior for variance is Inverse-Gamma (approximated as scaled inverse chi-squared)
+
+        # For computational efficiency, use Normal approximation for posterior of means
+        # Standard error for each group
+        se_t = np.sqrt(var_t / n_treatment)
+        se_c = np.sqrt(var_c / n_control)
+
+        # Draw samples from posterior distributions of means
+        # Using t-distribution would be more accurate for small samples,
+        # but Normal is a good approximation for n > 30
+        np.random.seed(42)  # For reproducibility
+
+        if n_treatment > 30 and n_control > 30:
+            # Normal approximation
+            treatment_samples = np.random.normal(mean_t, se_t, n_samples)
+            control_samples = np.random.normal(mean_c, se_c, n_samples)
+        else:
+            # Use t-distribution for small samples
+            treatment_samples = mean_t + se_t * np.random.standard_t(n_treatment - 1, n_samples)
+            control_samples = mean_c + se_c * np.random.standard_t(n_control - 1, n_samples)
+
+        # Compute difference samples
+        diff_samples = treatment_samples - control_samples
+
+        # Probability that treatment is better
+        prob_treatment_better = np.mean(diff_samples > 0)
+
+        # Expected loss calculations
+        # Loss if we choose treatment but control is actually better
+        treatment_worse = diff_samples < 0
+        expected_loss_treatment = np.mean(np.abs(diff_samples) * treatment_worse)
+
+        # Loss if we choose control but treatment is actually better
+        control_worse = diff_samples > 0
+        expected_loss_control = np.mean(np.abs(diff_samples) * control_worse)
+
+        # 95% credible interval (highest density interval approximated by percentiles)
+        ci_lower = np.percentile(diff_samples, 2.5)
+        ci_upper = np.percentile(diff_samples, 97.5)
+
+        # Relative uplift (using posterior mean of difference / control mean)
+        mean_diff = np.mean(diff_samples)
+        relative_uplift = mean_diff / mean_c if mean_c != 0 else 0.0
+
+        return {
+            "prob_treatment_better": float(prob_treatment_better),
+            "expected_loss_treatment": float(expected_loss_treatment),
+            "expected_loss_control": float(expected_loss_control),
+            "credible_interval": (float(ci_lower), float(ci_upper)),
+            "relative_uplift": float(relative_uplift)
+        }
+
     def run_ab_test(self, segment_filter: Optional[str] = None) -> ABTestResult:
         """
         Run A/B test for overall data or a specific segment
@@ -429,6 +530,11 @@ class ABTestAnalyzer:
         total_effect = t_test_total_effect + proportion_effect
         total_effect_per_customer = (effect_size if is_significant else 0) + proportion_effect_per_customer
 
+        # ============ BAYESIAN TEST ============
+        bayesian_results = self.run_bayesian_test(treatment_data.values, control_data.values)
+        bayesian_is_significant = (bayesian_results["prob_treatment_better"] > 0.95 or
+                                   bayesian_results["prob_treatment_better"] < 0.05)
+
         return ABTestResult(
             segment=segment_name,
             treatment_size=len(treatment_data),
@@ -456,7 +562,14 @@ class ABTestAnalyzer:
             proportion_effect_per_customer=proportion_effect_per_customer,
             # Combined effects
             total_effect=total_effect,
-            total_effect_per_customer=total_effect_per_customer
+            total_effect_per_customer=total_effect_per_customer,
+            # Bayesian test results
+            bayesian_prob_treatment_better=bayesian_results["prob_treatment_better"],
+            bayesian_expected_loss_treatment=bayesian_results["expected_loss_treatment"],
+            bayesian_expected_loss_control=bayesian_results["expected_loss_control"],
+            bayesian_credible_interval=bayesian_results["credible_interval"],
+            bayesian_relative_uplift=bayesian_results["relative_uplift"],
+            bayesian_is_significant=bayesian_is_significant
         )
 
     def run_segmented_analysis(self) -> List[ABTestResult]:
@@ -497,6 +610,9 @@ class ABTestAnalyzer:
         # Proportion test significant results
         prop_significant_results = [r for r in results if r.proportion_is_significant]
 
+        # Bayesian significant results (prob > 0.95 or prob < 0.05)
+        bayesian_significant_results = [r for r in results if r.bayesian_is_significant]
+
         # Calculate T-test total effect
         t_test_total_effect = sum(r.effect_size * r.treatment_size for r in t_significant_results)
         avg_t_test_effect = (
@@ -515,6 +631,10 @@ class ABTestAnalyzer:
 
         # Combined total effect
         combined_total_effect = sum(r.total_effect for r in results)
+
+        # Bayesian statistics
+        avg_bayesian_prob = np.mean([r.bayesian_prob_treatment_better for r in results])
+        avg_expected_loss = np.mean([min(r.bayesian_expected_loss_treatment, r.bayesian_expected_loss_control) for r in results])
 
         # Sample adequacy
         adequate_samples = [r for r in results if r.is_sample_adequate]
@@ -544,6 +664,12 @@ class ABTestAnalyzer:
             # Combined totals
             "combined_total_effect": combined_total_effect,
             "combined_effect_calculation": f"T-test ({t_test_total_effect:.2f}) + Proportion ({prop_total_effect:.2f}) = {combined_total_effect:.2f}",
+
+            # Bayesian test summary
+            "bayesian_significant_segments": len(bayesian_significant_results),
+            "bayesian_significance_rate": len(bayesian_significant_results) / len(results) if results else 0,
+            "bayesian_avg_prob_treatment_better": avg_bayesian_prob,
+            "bayesian_avg_expected_loss": avg_expected_loss,
 
             # Legacy fields for backward compatibility
             "significant_segments": len(t_significant_results),
@@ -586,7 +712,14 @@ class ABTestAnalyzer:
                     "prop_effect_per_customer": r.proportion_effect_per_customer,
                     # Combined
                     "total_effect": r.total_effect,
-                    "total_effect_per_customer": r.total_effect_per_customer
+                    "total_effect_per_customer": r.total_effect_per_customer,
+                    # Bayesian results
+                    "bayesian_prob": r.bayesian_prob_treatment_better,
+                    "bayesian_credible_lower": r.bayesian_credible_interval[0],
+                    "bayesian_credible_upper": r.bayesian_credible_interval[1],
+                    "bayesian_expected_loss": min(r.bayesian_expected_loss_treatment, r.bayesian_expected_loss_control),
+                    "bayesian_relative_uplift": r.bayesian_relative_uplift,
+                    "bayesian_significant": r.bayesian_is_significant
                 }
                 for r in results
             ],
