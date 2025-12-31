@@ -106,13 +106,13 @@ ab_testing_agent/
 
 2. **Create a virtual environment**:
    ```bash
-   python -m venv .venv
+   uv venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
 3. **Install dependencies**:
    ```bash
-   pip install -r requirements.txt
+   uv pip install -r requirements.txt
    ```
 
 4. **Set up environment variables**:
@@ -126,7 +126,7 @@ ab_testing_agent/
 ### Start the Chainlit UI
 
 ```bash
-chainlit run app.py
+python app.py
 ```
 
 This will start the web interface at `http://localhost:8000`.

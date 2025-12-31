@@ -137,6 +137,9 @@ class ABTestingAgent:
 
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
+                output += f"- **AA Test Passed:** {summary.get('aa_test_passed_segments', summary['total_segments_analyzed'])}\n"
+                output += f"- **AA Test Failed:** {summary.get('aa_test_failed_segments', 0)}\n"
+                output += f"- **Bootstrapped Segments:** {summary.get('bootstrapped_segments', 0)}\n"
                 output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
                 output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n"
                 output += f"- **Bayesian Significant:** {summary['bayesian_significant_segments']} ({summary['bayesian_significance_rate']:.1%})\n\n"
@@ -146,11 +149,31 @@ class ABTestingAgent:
                 output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
                 output += "### Effect Summary\n"
+                output += f"- **DiD Avg Effect:** {summary.get('did_avg_effect', 0):.4f}\n"
+                output += f"- **DiD Total Effect:** {summary.get('did_total_effect', 0):.2f}\n"
                 output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
                 output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n"
+                output += f"- **Bayesian Total Effect:** {summary.get('bayesian_total_effect', 0):.2f}\n"
                 output += f"- **Avg P(Treatment Better):** {summary['bayesian_avg_prob_treatment_better']:.1%}\n"
                 output += f"- **Avg Expected Loss:** {summary['bayesian_avg_expected_loss']:.4f}\n\n"
+
+                output += "### AA Test & Pre/Post Analysis\n\n"
+                output += "| Segment | AA Pass | Boot | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
+                output += "|---------|---------|------|-----------|----------|------------|-----------|------------|\n"
+
+                for r in summary['detailed_results']:
+                    aa_pass = "Yes" if r.get('aa_test_passed', True) else "No"
+                    boot = "Yes" if r.get('bootstrapping_applied', False) else "No"
+                    pre_treat = r.get('treatment_pre_mean', 0)
+                    pre_ctrl = r.get('control_pre_mean', 0)
+                    post_treat = r.get('treatment_post_mean', r.get('treatment_mean', 0))
+                    post_ctrl = r.get('control_post_mean', r.get('control_mean', 0))
+                    did_effect = r.get('did_effect', 0)
+
+                    output += f"| {r['segment']} | {aa_pass} | {boot} | {pre_treat:.2f} | {pre_ctrl:.2f} | {post_treat:.2f} | {post_ctrl:.2f} | {did_effect:.4f} |\n"
+
+                output += "\n"
 
                 output += "### Frequentist Results\n\n"
                 output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
@@ -175,19 +198,19 @@ class ABTestingAgent:
 
                 output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
 
-                output += "### Bayesian Results\n\n"
-                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Relative Uplift |\n"
-                output += "|---------|---------------|----------------------|---------------|----------------|\n"
+                output += "### Bayesian Results (with DiD Total Effect)\n\n"
+                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Bayesian Total Effect |\n"
+                output += "|---------|---------------|----------------------|---------------|----------------------|\n"
 
                 for r in summary['detailed_results']:
                     bayesian_prob = r.get('bayesian_prob', 0.5)
                     ci_lower = r.get('bayesian_credible_lower', 0)
                     ci_upper = r.get('bayesian_credible_upper', 0)
                     expected_loss = r.get('bayesian_expected_loss', 0)
-                    relative_uplift = r.get('bayesian_relative_uplift', 0)
+                    bayesian_total = r.get('bayesian_total_effect', 0)
                     b_sig_marker = "*" if r.get('bayesian_significant', False) else ""
 
-                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {relative_uplift:.1%} |\n"
+                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {bayesian_total:.2f} |\n"
 
                 output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
@@ -606,6 +629,9 @@ Input: file path. This is the FASTEST way to get results."""
 
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
+                output += f"- **AA Test Passed:** {summary.get('aa_test_passed_segments', summary['total_segments_analyzed'])}\n"
+                output += f"- **AA Test Failed:** {summary.get('aa_test_failed_segments', 0)}\n"
+                output += f"- **Bootstrapped Segments:** {summary.get('bootstrapped_segments', 0)}\n"
                 output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
                 output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n"
                 output += f"- **Bayesian Significant:** {summary['bayesian_significant_segments']} ({summary['bayesian_significance_rate']:.1%})\n\n"
@@ -615,11 +641,31 @@ Input: file path. This is the FASTEST way to get results."""
                 output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
                 output += "### Effect Summary\n"
+                output += f"- **DiD Avg Effect:** {summary.get('did_avg_effect', 0):.4f}\n"
+                output += f"- **DiD Total Effect:** {summary.get('did_total_effect', 0):.2f}\n"
                 output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
                 output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n"
+                output += f"- **Bayesian Total Effect:** {summary.get('bayesian_total_effect', 0):.2f}\n"
                 output += f"- **Avg P(Treatment Better):** {summary['bayesian_avg_prob_treatment_better']:.1%}\n"
                 output += f"- **Avg Expected Loss:** {summary['bayesian_avg_expected_loss']:.4f}\n\n"
+
+                output += "### AA Test & Pre/Post Analysis\n\n"
+                output += "| Segment | AA Pass | Boot | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
+                output += "|---------|---------|------|-----------|----------|------------|-----------|------------|\n"
+
+                for r in summary['detailed_results']:
+                    aa_pass = "Yes" if r.get('aa_test_passed', True) else "No"
+                    boot = "Yes" if r.get('bootstrapping_applied', False) else "No"
+                    pre_treat = r.get('treatment_pre_mean', 0)
+                    pre_ctrl = r.get('control_pre_mean', 0)
+                    post_treat = r.get('treatment_post_mean', r.get('treatment_mean', 0))
+                    post_ctrl = r.get('control_post_mean', r.get('control_mean', 0))
+                    did_effect = r.get('did_effect', 0)
+
+                    output += f"| {r['segment']} | {aa_pass} | {boot} | {pre_treat:.2f} | {pre_ctrl:.2f} | {post_treat:.2f} | {post_ctrl:.2f} | {did_effect:.4f} |\n"
+
+                output += "\n"
 
                 output += "### Frequentist Results\n\n"
                 output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
@@ -644,19 +690,19 @@ Input: file path. This is the FASTEST way to get results."""
 
                 output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
 
-                output += "### Bayesian Results\n\n"
-                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Relative Uplift |\n"
-                output += "|---------|---------------|----------------------|---------------|----------------|\n"
+                output += "### Bayesian Results (with DiD Total Effect)\n\n"
+                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Bayesian Total Effect |\n"
+                output += "|---------|---------------|----------------------|---------------|----------------------|\n"
 
                 for r in summary['detailed_results']:
                     bayesian_prob = r.get('bayesian_prob', 0.5)
                     ci_lower = r.get('bayesian_credible_lower', 0)
                     ci_upper = r.get('bayesian_credible_upper', 0)
                     expected_loss = r.get('bayesian_expected_loss', 0)
-                    relative_uplift = r.get('bayesian_relative_uplift', 0)
+                    bayesian_total = r.get('bayesian_total_effect', 0)
                     b_sig_marker = "*" if r.get('bayesian_significant', False) else ""
 
-                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {relative_uplift:.1%} |\n"
+                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {bayesian_total:.2f} |\n"
 
                 output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
@@ -722,6 +768,9 @@ Optional: segment_column, customer_id_column"""
 
                 output += "### Overview\n"
                 output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
+                output += f"- **AA Test Passed:** {summary.get('aa_test_passed_segments', summary['total_segments_analyzed'])}\n"
+                output += f"- **AA Test Failed:** {summary.get('aa_test_failed_segments', 0)}\n"
+                output += f"- **Bootstrapped Segments:** {summary.get('bootstrapped_segments', 0)}\n"
                 output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
                 output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n"
                 output += f"- **Bayesian Significant:** {summary['bayesian_significant_segments']} ({summary['bayesian_significance_rate']:.1%})\n\n"
@@ -731,11 +780,31 @@ Optional: segment_column, customer_id_column"""
                 output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
 
                 output += "### Effect Summary\n"
+                output += f"- **DiD Avg Effect:** {summary.get('did_avg_effect', 0):.4f}\n"
+                output += f"- **DiD Total Effect:** {summary.get('did_total_effect', 0):.2f}\n"
                 output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
                 output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
                 output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n"
+                output += f"- **Bayesian Total Effect:** {summary.get('bayesian_total_effect', 0):.2f}\n"
                 output += f"- **Avg P(Treatment Better):** {summary['bayesian_avg_prob_treatment_better']:.1%}\n"
                 output += f"- **Avg Expected Loss:** {summary['bayesian_avg_expected_loss']:.4f}\n\n"
+
+                output += "### AA Test & Pre/Post Analysis\n\n"
+                output += "| Segment | AA Pass | Boot | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
+                output += "|---------|---------|------|-----------|----------|------------|-----------|------------|\n"
+
+                for r in summary['detailed_results']:
+                    aa_pass = "Yes" if r.get('aa_test_passed', True) else "No"
+                    boot = "Yes" if r.get('bootstrapping_applied', False) else "No"
+                    pre_treat = r.get('treatment_pre_mean', 0)
+                    pre_ctrl = r.get('control_pre_mean', 0)
+                    post_treat = r.get('treatment_post_mean', r.get('treatment_mean', 0))
+                    post_ctrl = r.get('control_post_mean', r.get('control_mean', 0))
+                    did_effect = r.get('did_effect', 0)
+
+                    output += f"| {r['segment']} | {aa_pass} | {boot} | {pre_treat:.2f} | {pre_ctrl:.2f} | {post_treat:.2f} | {post_ctrl:.2f} | {did_effect:.4f} |\n"
+
+                output += "\n"
 
                 output += "### Frequentist Results\n\n"
                 output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
@@ -760,19 +829,19 @@ Optional: segment_column, customer_id_column"""
 
                 output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
 
-                output += "### Bayesian Results\n\n"
-                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Relative Uplift |\n"
-                output += "|---------|---------------|----------------------|---------------|----------------|\n"
+                output += "### Bayesian Results (with DiD Total Effect)\n\n"
+                output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Bayesian Total Effect |\n"
+                output += "|---------|---------------|----------------------|---------------|----------------------|\n"
 
                 for r in summary['detailed_results']:
                     bayesian_prob = r.get('bayesian_prob', 0.5)
                     ci_lower = r.get('bayesian_credible_lower', 0)
                     ci_upper = r.get('bayesian_credible_upper', 0)
                     expected_loss = r.get('bayesian_expected_loss', 0)
-                    relative_uplift = r.get('bayesian_relative_uplift', 0)
+                    bayesian_total = r.get('bayesian_total_effect', 0)
                     b_sig_marker = "*" if r.get('bayesian_significant', False) else ""
 
-                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {relative_uplift:.1%} |\n"
+                    output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {bayesian_total:.2f} |\n"
 
                 output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
