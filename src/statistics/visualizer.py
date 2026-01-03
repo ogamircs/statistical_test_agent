@@ -459,10 +459,10 @@ class ABTestVisualizer:
                 '<b>Total Effect Size</b>',
                 '<b>Proportion P-Values</b>',
                 '<b>Proportion Effect Size</b>',
-                '<b>All Effects Comparison</b>'
+                '<b>Effect Comparison</b>'
             ),
-            vertical_spacing=0.25,
-            horizontal_spacing=0.12
+            vertical_spacing=0.30,
+            horizontal_spacing=0.15
         )
 
         segments = [r.segment for r in results]
@@ -473,9 +473,9 @@ class ABTestVisualizer:
         fig.add_trace(go.Bar(
             x=segments, y=t_pvals,
             marker_color=t_pval_colors,
-            text=[f'{p:.4f}' for p in t_pvals],
+            text=[f'{p:.3f}' for p in t_pvals],
             textposition='outside',
-            textfont=dict(size=11),
+            textfont=dict(size=13),
             showlegend=False
         ), row=1, col=1)
         fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=2, row=1, col=1)
@@ -491,9 +491,9 @@ class ABTestVisualizer:
         fig.add_trace(go.Bar(
             x=segments, y=t_effects,
             marker_color=t_effect_colors,
-            text=[f'{e:.4f}' for e in t_effects],
+            text=[f'{e:.3f}' for e in t_effects],
             textposition='outside',
-            textfont=dict(size=11),
+            textfont=dict(size=13),
             showlegend=False
         ), row=1, col=2)
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=2)
@@ -507,9 +507,9 @@ class ABTestVisualizer:
         fig.add_trace(go.Bar(
             x=segments, y=total_effects,
             marker_color=total_colors,
-            text=[f'{t:.4f}' for t in total_effects],
+            text=[f'{t:.3f}' for t in total_effects],
             textposition='outside',
-            textfont=dict(size=11),
+            textfont=dict(size=13),
             showlegend=False
         ), row=1, col=3)
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=3)
@@ -520,9 +520,9 @@ class ABTestVisualizer:
         fig.add_trace(go.Bar(
             x=segments, y=prop_pvals,
             marker_color=prop_pval_colors,
-            text=[f'{p:.4f}' for p in prop_pvals],
+            text=[f'{p:.3f}' for p in prop_pvals],
             textposition='outside',
-            textfont=dict(size=11),
+            textfont=dict(size=13),
             showlegend=False
         ), row=2, col=1)
         fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=2, row=2, col=1)
@@ -538,30 +538,31 @@ class ABTestVisualizer:
         fig.add_trace(go.Bar(
             x=segments, y=prop_effects,
             marker_color=prop_effect_colors,
-            text=[f'{e:.4f}' for e in prop_effects],
+            text=[f'{e:.3f}' for e in prop_effects],
             textposition='outside',
-            textfont=dict(size=11),
+            textfont=dict(size=13),
             showlegend=False
         ), row=2, col=2)
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=2, col=2)
 
-        # Row 2, Col 3: All Effects Comparison (grouped bar)
+        # Row 2, Col 3: Effect Comparison (simplified stacked bar)
+        # Stack proportion on top of t-test effect
         fig.add_trace(go.Bar(
-            name='T-test Effect',
+            name='T-test',
             x=segments, y=t_effects,
             marker_color=self.colors['t_test'],
+            text=[f'{e:.3f}' for e in t_effects],
+            textposition='inside',
+            textfont=dict(size=12, color='white'),
             showlegend=True
         ), row=2, col=3)
         fig.add_trace(go.Bar(
-            name='Prop Effect',
+            name='Proportion',
             x=segments, y=prop_effects,
             marker_color=self.colors['proportion'],
-            showlegend=True
-        ), row=2, col=3)
-        fig.add_trace(go.Bar(
-            name='Total Effect',
-            x=segments, y=total_effects,
-            marker_color=self.colors['combined'],
+            text=[f'{e:.3f}' for e in prop_effects],
+            textposition='inside',
+            textfont=dict(size=12, color='white'),
             showlegend=True
         ), row=2, col=3)
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=2, col=3)
@@ -569,49 +570,56 @@ class ABTestVisualizer:
         # Apply layout (without layout_defaults to avoid duplicate margin)
         fig.update_layout(
             template='plotly_white',
-            font=dict(family='Inter, system-ui, sans-serif', size=12, color=self.colors['text']),
+            font=dict(family='Inter, system-ui, sans-serif', size=13, color=self.colors['text']),
             paper_bgcolor=self.colors['background'],
             plot_bgcolor=self.colors['background'],
-            hoverlabel=dict(bgcolor='white', font_size=12),
+            hoverlabel=dict(bgcolor='white', font_size=13),
             title=dict(
-                text='<b>Statistical Results Summary</b><br><span style="font-size:12px;color:#6B7280">T-test & Proportion Test: P-Values, Effect Sizes, and Total Effects</span>',
+                text='<b>Statistical Results Summary</b><br><span style="font-size:13px;color:#6B7280">T-test & Proportion Test: P-Values, Effect Sizes, and Comparison</span>',
                 x=0.5,
                 xanchor='center',
-                font=dict(size=18)
+                font=dict(size=20)
             ),
-            height=800,
+            height=950,
             barmode='group',
-            bargap=0.3,
+            bargap=0.35,
             legend=dict(
                 orientation='h',
                 yanchor='bottom',
-                y=1.02,
+                y=-0.08,
                 xanchor='center',
-                x=0.5,
+                x=0.83,
                 bgcolor='rgba(255,255,255,0.9)',
-                font=dict(size=11)
+                font=dict(size=12)
             ),
-            margin=dict(l=70, r=50, t=120, b=60)
+            margin=dict(l=80, r=60, t=140, b=80)
         )
 
-        # Update axes labels
-        fig.update_yaxes(title_text='P-Value', row=1, col=1, title_font=dict(size=12))
-        fig.update_yaxes(title_text='Effect', row=1, col=2, title_font=dict(size=12))
-        fig.update_yaxes(title_text='Total Effect', row=1, col=3, title_font=dict(size=12))
-        fig.update_yaxes(title_text='P-Value', row=2, col=1, title_font=dict(size=12))
-        fig.update_yaxes(title_text='Effect', row=2, col=2, title_font=dict(size=12))
-        fig.update_yaxes(title_text='Effect', row=2, col=3, title_font=dict(size=12))
+        # Update axes labels with larger fonts
+        fig.update_yaxes(title_text='P-Value', row=1, col=1, title_font=dict(size=13))
+        fig.update_yaxes(title_text='Effect', row=1, col=2, title_font=dict(size=13))
+        fig.update_yaxes(title_text='Total Effect', row=1, col=3, title_font=dict(size=13))
+        fig.update_yaxes(title_text='P-Value', row=2, col=1, title_font=dict(size=13))
+        fig.update_yaxes(title_text='Effect', row=2, col=2, title_font=dict(size=13))
+        fig.update_yaxes(title_text='Effect', row=2, col=3, title_font=dict(size=13))
 
-        # Style all subplots
+        # Style all subplots with larger fonts
         for i in range(1, 3):
             for j in range(1, 4):
-                fig.update_xaxes(showgrid=False, row=i, col=j, tickfont=dict(size=11))
-                fig.update_yaxes(gridcolor=self.colors['grid'], row=i, col=j, tickfont=dict(size=11))
+                fig.update_xaxes(showgrid=False, row=i, col=j, tickfont=dict(size=12))
+                fig.update_yaxes(gridcolor=self.colors['grid'], row=i, col=j, tickfont=dict(size=12))
 
-        # Update subplot title styling
+        # Update subplot title styling with larger fonts
         for annotation in fig['layout']['annotations']:
             if annotation['text'].startswith('<b>'):
-                annotation['font'] = dict(size=14, color=self.colors['text'])
+                annotation['font'] = dict(size=15, color=self.colors['text'])
+
+        # Make the comparison chart stacked instead of grouped
+        fig.update_layout(barmode='stack')
+        # Force only the last two traces (in row 2, col 3) to stack
+        for trace_idx in [6, 7]:  # The two bar traces in row 2, col 3
+            if trace_idx < len(fig.data):
+                fig.data[trace_idx].offsetgroup = 0
 
         return fig
 

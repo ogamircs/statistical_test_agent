@@ -22,6 +22,16 @@ import plotly.graph_objects as go
 
 from .statistics import ABTestAnalyzer, ABTestVisualizer
 
+# Try to import PySpark analyzer (optional dependency)
+try:
+    from .statistics.pyspark_analyzer import PySparkABTestAnalyzer
+    PYSPARK_AVAILABLE = True
+except (ImportError, AttributeError):
+    # ImportError: pyspark not installed
+    # AttributeError: pyspark installed but not compatible (e.g., Windows)
+    PYSPARK_AVAILABLE = False
+    PySparkABTestAnalyzer = None
+
 load_dotenv()
 
 
@@ -40,6 +50,7 @@ class ABTestingAgent:
     def __init__(self, model_name: str = "gpt-4o", temperature: float = 0):
         self.llm = ChatOpenAI(model=model_name, temperature=temperature)
         self.analyzer = ABTestAnalyzer()
+        self.spark_analyzer = None  # Will be initialized if needed for large files
         self.visualizer = ABTestVisualizer()
         self.chat_history: List[Any] = []
         self.agent = self._create_agent()
@@ -47,6 +58,8 @@ class ABTestingAgent:
         self._last_charts: Dict[str, go.Figure] = {}
         self._last_results = None
         self._last_summary = None
+        self._using_spark = False  # Track which backend is in use
+        self.FILE_SIZE_THRESHOLD_MB = 2  # Auto-switch to PySpark for files >2MB
 
     def get_charts(self) -> Dict[str, go.Figure]:
         """Get the last generated charts"""
@@ -56,6 +69,27 @@ class ABTestingAgent:
         """Clear the stored charts"""
         self._last_charts = {}
 
+    def _get_file_size_mb(self, filepath: str) -> float:
+        """Get file size in megabytes"""
+        try:
+            file_size = os.path.getsize(filepath)
+            return file_size / (1024 * 1024)
+        except Exception:
+            return 0
+
+    def _should_use_spark(self, filepath: str) -> bool:
+        """Determine if PySpark should be used based on file size"""
+        if not PYSPARK_AVAILABLE:
+            return False
+        file_size_mb = self._get_file_size_mb(filepath)
+        return file_size_mb > self.FILE_SIZE_THRESHOLD_MB
+
+    def _get_active_analyzer(self):
+        """Get the currently active analyzer (pandas or PySpark)"""
+        if self._using_spark and self.spark_analyzer is not None:
+            return self.spark_analyzer
+        return self.analyzer
+
     def _create_tools(self) -> List[Tool]:
         """Create the tools for the agent"""
 
@@ -63,14 +97,34 @@ class ABTestingAgent:
         def load_csv(filepath: str) -> str:
             """Load a CSV file for analysis"""
             try:
-                info = self.analyzer.load_data(filepath)
-                columns = info["columns"]
-                shape = info["shape"]
+                # Check file size and determine which backend to use
+                file_size_mb = self._get_file_size_mb(filepath)
+                use_spark = self._should_use_spark(filepath)
 
-                suggestions = self.analyzer.detect_columns()
+                result = f"File size: {file_size_mb:.2f} MB\n"
 
-                result = f"Successfully loaded data from '{filepath}'\n"
-                result += f"Shape: {shape[0]} rows, {shape[1]} columns\n\n"
+                if use_spark:
+                    result += f"[LARGE FILE DETECTED] Using PySpark for distributed processing (file size > {self.FILE_SIZE_THRESHOLD_MB}MB)\n\n"
+                    # Initialize Spark analyzer if not already done
+                    if self.spark_analyzer is None:
+                        self.spark_analyzer = PySparkABTestAnalyzer()
+                    self._using_spark = True
+
+                    info = self.spark_analyzer.load_data(filepath, format="csv")
+                    columns = info["columns"]
+                    shape = info["shape"]
+                    suggestions = self.spark_analyzer.detect_columns()
+                else:
+                    result += f"Using pandas for in-memory processing\n\n"
+                    self._using_spark = False
+
+                    info = self.analyzer.load_data(filepath)
+                    columns = info["columns"]
+                    shape = info["shape"]
+                    suggestions = self.analyzer.detect_columns()
+
+                result += f"Successfully loaded data from '{filepath}'\n"
+                result += f"Shape: {shape[0]:,} rows, {shape[1]} columns\n\n"
                 result += f"Columns found: {', '.join(columns)}\n\n"
                 result += "Column suggestions based on naming patterns:\n"
 
@@ -96,18 +150,35 @@ class ABTestingAgent:
         def load_and_auto_analyze(filepath: str) -> str:
             """Load CSV and automatically run full analysis using best guesses"""
             try:
-                # Load the data
-                info = self.analyzer.load_data(filepath)
+                # Check file size and determine which backend to use
+                file_size_mb = self._get_file_size_mb(filepath)
+                use_spark = self._should_use_spark(filepath)
+
+                # Initialize the appropriate analyzer
+                if use_spark:
+                    if self.spark_analyzer is None:
+                        self.spark_analyzer = PySparkABTestAnalyzer()
+                    self._using_spark = True
+                    analyzer = self.spark_analyzer
+
+                    # Load the data
+                    info = analyzer.load_data(filepath, format="csv")
+                else:
+                    self._using_spark = False
+                    analyzer = self.analyzer
+
+                    # Load the data
+                    info = analyzer.load_data(filepath)
 
                 # Auto-configure
-                config = self.analyzer.auto_configure()
+                config = analyzer.auto_configure()
 
                 if not config["success"]:
                     return f"Loaded file but auto-configuration failed: {config.get('error', 'Unknown error')}"
 
                 # Run analysis
-                results = self.analyzer.run_segmented_analysis()
-                summary = self.analyzer.generate_summary(results)
+                results = analyzer.run_segmented_analysis()
+                summary = analyzer.generate_summary(results)
 
                 # Store for charts
                 self._last_results = results
@@ -116,7 +187,14 @@ class ABTestingAgent:
                 # Build output with markdown formatting
                 output = "## Best Guess Mode - Analysis Complete\n\n"
 
+                # Add backend info
+                if use_spark:
+                    output += f"**Backend:** PySpark (distributed processing for large files)\n"
+                else:
+                    output += f"**Backend:** pandas (in-memory processing)\n"
+
                 output += f"**File:** {filepath.split('/')[-1].split(chr(92))[-1]}\n"
+                output += f"**File Size:** {file_size_mb:.2f} MB\n"
                 output += f"**Shape:** {info['shape'][0]:,} rows × {info['shape'][1]} columns\n\n"
 
                 output += "### Auto-Detected Configuration\n"
@@ -262,16 +340,18 @@ Input: file path. This is the FASTEST way to get results."""
                 mapping["duration"] = duration
 
             try:
-                self.analyzer.set_column_mapping(mapping)
+                analyzer = self._get_active_analyzer()
+                analyzer.set_column_mapping(mapping)
 
-                group_info = self.analyzer.get_group_values()
+                group_info = analyzer.get_group_values() if hasattr(analyzer, 'get_group_values') else {'unique_values': []}
 
                 result = f"Column mapping set successfully:\n"
                 for key, value in mapping.items():
                     result += f"  - {key}: {value}\n"
 
-                result += f"\nUnique values in '{group}' column: {group_info['unique_values']}\n"
-                result += "Please specify which value represents 'treatment' and which represents 'control'."
+                if group_info.get('unique_values'):
+                    result += f"\nUnique values in '{group}' column: {group_info['unique_values']}\n"
+                    result += "Please specify which value represents 'treatment' and which represents 'control'."
 
                 return result
 
@@ -288,7 +368,8 @@ Input: file path. This is the FASTEST way to get results."""
         def set_group_labels(treatment_label: str, control_label: str) -> str:
             """Set the labels used for treatment and control groups"""
             try:
-                self.analyzer.set_group_labels(treatment_label, control_label)
+                analyzer = self._get_active_analyzer()
+                analyzer.set_group_labels(treatment_label, control_label)
                 return f"Group labels set: Treatment='{treatment_label}', Control='{control_label}'"
             except Exception as e:
                 return f"Error setting group labels: {str(e)}"
@@ -590,6 +671,9 @@ Input: file path. This is the FASTEST way to get results."""
         ) -> str:
             """Configure column mappings, set group labels, and run full analysis in one step"""
             try:
+                # Use the active analyzer (pandas or PySpark)
+                analyzer = self._get_active_analyzer()
+
                 # Build column mapping
                 mapping = {
                     "group": group_column,
@@ -601,14 +685,14 @@ Input: file path. This is the FASTEST way to get results."""
                     mapping["customer_id"] = customer_id_column
 
                 # Set column mapping
-                self.analyzer.set_column_mapping(mapping)
+                analyzer.set_column_mapping(mapping)
 
                 # Set group labels
-                self.analyzer.set_group_labels(treatment_label, control_label)
+                analyzer.set_group_labels(treatment_label, control_label)
 
                 # Run full segmented analysis
-                results = self.analyzer.run_segmented_analysis()
-                summary = self.analyzer.generate_summary(results)
+                results = analyzer.run_segmented_analysis()
+                summary = analyzer.generate_summary(results)
 
                 # Store for chart generation
                 self._last_results = results
@@ -730,18 +814,21 @@ Optional: segment_column, customer_id_column"""
         def auto_configure_and_analyze(_: str = "") -> str:
             """Automatically configure everything using best guesses and run full analysis"""
             try:
-                if self.analyzer.df is None:
+                analyzer = self._get_active_analyzer()
+
+                # Check if data is loaded
+                if not hasattr(analyzer, 'df') or analyzer.df is None:
                     return "No data loaded. Please load a CSV file first."
 
                 # Use auto_configure to set everything up
-                config = self.analyzer.auto_configure()
+                config = analyzer.auto_configure()
 
                 if not config["success"]:
                     return f"Auto-configuration failed: {config.get('error', 'Unknown error')}"
 
                 # Run full analysis
-                results = self.analyzer.run_segmented_analysis()
-                summary = self.analyzer.generate_summary(results)
+                results = analyzer.run_segmented_analysis()
+                summary = analyzer.generate_summary(results)
 
                 # Store for chart generation
                 self._last_results = results

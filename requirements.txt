@@ -22,3 +22,7 @@ plotly>=5.0.0
 python-dotenv>=1.0.0
 tabulate>=0.9.0
 pydantic>=2.0.0
+
+# Big Data Processing (optional - for files >2MB)
+# Uncomment the following line to enable PySpark for large file support:
+# pyspark>=3.5.0
