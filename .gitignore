@@ -68,3 +68,6 @@ htmlcov/
 
 # Claude Code
 .claude/
+
+# Large test files (generate locally with scripts/generate_large_sample_data.py)
+data/sample_ab_data_large.csv
