@@ -48,34 +48,43 @@ def generate_sample_data(
     # Define segments with different characteristics
     # Note: "Imbalanced" segment has intentionally different pre_effect distributions
     # between treatment and control to trigger AA test failure
+    # "Premium" segment has higher conversion rate in treatment to trigger proportion test significance
     segments = {
         "Premium": {
             "proportion": 0.15,
             "base_effect": 50.0,
             "treatment_lift": 8.0,
             "effect_std": 15.0,
-            "imbalanced": False
+            "imbalanced": False,
+            "control_conversion_rate": 0.45,  # 45% of control convert (non-zero effect)
+            "treatment_conversion_rate": 0.68  # 68% of treatment convert (significant increase)
         },
         "Standard": {
             "proportion": 0.35,
             "base_effect": 30.0,
             "treatment_lift": 3.0,
             "effect_std": 12.0,
-            "imbalanced": False
+            "imbalanced": False,
+            "control_conversion_rate": 0.55,
+            "treatment_conversion_rate": 0.62  # Modest increase
         },
         "Basic": {
             "proportion": 0.20,
             "base_effect": 15.0,
             "treatment_lift": 0.5,
             "effect_std": 8.0,
-            "imbalanced": False
+            "imbalanced": False,
+            "control_conversion_rate": 0.60,
+            "treatment_conversion_rate": 0.63  # Small increase
         },
         "New": {
             "proportion": 0.15,
             "base_effect": 20.0,
             "treatment_lift": -2.0,
             "effect_std": 10.0,
-            "imbalanced": False
+            "imbalanced": False,
+            "control_conversion_rate": 0.50,
+            "treatment_conversion_rate": 0.48  # Slight decrease
         },
         "Imbalanced": {
             "proportion": 0.15,
@@ -83,7 +92,9 @@ def generate_sample_data(
             "treatment_lift": 5.0,
             "effect_std": 10.0,
             "imbalanced": True,  # Treatment will have higher pre_effect than control
-            "treatment_pre_boost": 8.0  # Treatment group starts 8 units higher
+            "treatment_pre_boost": 8.0,  # Treatment group starts 8 units higher
+            "control_conversion_rate": 0.52,
+            "treatment_conversion_rate": 0.65  # Good increase
         }
     }
 
@@ -112,16 +123,24 @@ def generate_sample_data(
                 )
 
             # Generate post_effect (after experiment)
-            # For treatment: pre_effect + treatment_lift + noise
-            # For control: pre_effect + noise (no treatment effect)
-            if is_treatment:
-                post_effect = pre_effect + params["treatment_lift"] + np.random.normal(0, 2)
-            else:
-                post_effect = pre_effect + np.random.normal(0, 2)
+            # Determine if customer converts (has non-zero effect) based on conversion rates
+            conversion_rate = params["treatment_conversion_rate"] if is_treatment else params["control_conversion_rate"]
+            converts = np.random.random() < conversion_rate
 
-            # Ensure non-negative values
+            if converts:
+                # Customer converts - has non-zero effect
+                if is_treatment:
+                    post_effect = pre_effect + params["treatment_lift"] + np.random.normal(0, 2)
+                else:
+                    post_effect = pre_effect + np.random.normal(0, 2)
+                # Ensure non-negative values
+                post_effect = max(0, post_effect)
+            else:
+                # Customer does not convert - zero effect
+                post_effect = 0.0
+
+            # Ensure non-negative pre_effect
             pre_effect = max(0, pre_effect)
-            post_effect = max(0, post_effect)
 
             duration_days = np.random.randint(7, 31)
 
