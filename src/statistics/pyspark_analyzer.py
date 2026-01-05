@@ -453,7 +453,7 @@ class PySparkABTestAnalyzer:
         conversions2: int, n2: int
     ) -> Tuple[float, float, float, float]:
         """
-        Two-proportion z-test
+        Two-proportion z-test using statsmodels test_proportions_2indep
         Returns (z_stat, p_value, prop_diff, pooled_proportion)
         """
         if n1 == 0 or n2 == 0:
@@ -466,20 +466,32 @@ class PySparkABTestAnalyzer:
         # Pooled proportion
         p_pooled = (conversions1 + conversions2) / (n1 + n2)
 
-        # Standard error
-        se = np.sqrt(p_pooled * (1 - p_pooled) * (1/n1 + 1/n2))
+        # Use statsmodels test_proportions_2indep for two-proportion z-test
+        try:
+            from statsmodels.stats.proportion import test_proportions_2indep
 
-        if se == 0:
-            return 0.0, 1.0, p_diff, p_pooled
+            # Returns (z_stat, p_value) tuple
+            z_stat, p_value = test_proportions_2indep(
+                conversions1, n1,
+                conversions2, n2,
+                method='wald',
+                alternative='two-sided'
+            )
 
-        # Z-statistic
-        z_stat = p_diff / se
+            return float(z_stat), float(p_value), float(p_diff), float(p_pooled)
+        except Exception:
+            # Fallback to manual calculation if statsmodels not available
+            se = np.sqrt(p_pooled * (1 - p_pooled) * (1/n1 + 1/n2))
 
-        # P-value (two-tailed)
-        from scipy import stats
-        p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))
+            if se == 0:
+                return 0.0, 1.0, p_diff, p_pooled
 
-        return float(z_stat), float(p_value), float(p_diff), float(p_pooled)
+            z_stat = p_diff / se
+
+            from scipy import stats
+            p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))
+
+            return float(z_stat), float(p_value), float(p_diff), float(p_pooled)
 
     def _calculate_power(self, effect_size: float, n1: int, n2: int) -> float:
         """Calculate statistical power"""
