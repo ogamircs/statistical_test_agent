@@ -13,7 +13,7 @@ import numpy as np
 from scipy import stats
 from statsmodels.stats.power import TTestIndPower
 from statsmodels.stats.weightstats import ttest_ind as sm_ttest_ind, CompareMeans, DescrStatsW
-from statsmodels.stats.proportion import proportions_ztest, confint_proportions_2indep
+from statsmodels.stats.proportion import test_proportions_2indep, confint_proportions_2indep
 from typing import Dict, List, Optional, Any, Tuple
 
 from .models import ABTestResult, AATestResult
@@ -455,11 +455,14 @@ class ABTestAnalyzer:
             }
 
         try:
-            # Use statsmodels proportions_ztest for two-proportion z-test
-            count = np.array([treatment_conversions, control_conversions])
-            nobs = np.array([n_treatment, n_control])
-
-            z_stat, p_value = proportions_ztest(count, nobs, alternative='two-sided')
+            # Use statsmodels test_proportions_2indep for two-proportion z-test
+            # Returns (z_stat, p_value) tuple
+            z_stat, p_value = test_proportions_2indep(
+                treatment_conversions, n_treatment,
+                control_conversions, n_control,
+                method='wald',
+                alternative='two-sided'
+            )
 
             # Calculate confidence interval for difference in proportions
             ci_lower, ci_upper = confint_proportions_2indep(
