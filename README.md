@@ -1,272 +1,108 @@
-# A/B Testing Analysis Agent
+# Statistical Test Agent
 
-An intelligent conversational agent for analyzing A/B test experiments, powered by LangChain and GPT-4. Upload your experiment data and get comprehensive statistical analysis through natural language interaction.
+An AI-powered A/B Testing Agent built with Python and Streamlit. This tool automates the process of analyzing A/B test results by intelligently selecting the appropriate statistical methods, checking for bias/imbalance, and providing both Frequentist and Bayesian interpretations.
 
-## Features
+## Table of Contents
+- [Installation & Setup](#installation--setup)
+- [Running the Agent](#running-the-agent)
+- [Project Structure](#project-structure)
+- [How it Works (Methodology)](#how-it-works-methodology)
 
-- **Conversational Interface**: Chat naturally about your A/B test data
-- **Automatic Column Detection**: Smart detection of experiment columns based on naming patterns
-- **Comprehensive Statistical Analysis**:
-  - T-tests for significance testing
-  - Effect size calculations (Cohen's d)
-  - 95% Confidence intervals
-  - Statistical power analysis
-  - Sample size adequacy assessment
-- **Segment-level Analysis**: Analyze results across customer segments
-- **Interactive Visualizations**: Plotly-powered charts and dashboards
-- **Actionable Recommendations**: Get clear guidance based on your results
+## Installation & Setup
+
+We recommend using `uv` (a fast Python package installer and resolver) to manage the environment.
+
+### 1. Install `uv`
+If you haven't installed `uv` yet, you can do so following the [official instructions](https://github.com/astral-sh/uv).
+On Windows (PowerShell):
+```powershell
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+### 2. Create a Virtual Environment
+Navigate to the project directory and create a new virtual environment:
+
+```powershell
+uv venv
+```
+
+Activate the environment:
+- **Windows**: `.\.venv\Scripts\activate`
+- **Mac/Linux**: `source .venv/bin/activate`
+
+### 3. Install Dependencies
+Install the required packages (Streamlit, Pandas, NumPy, Plotly, SciPy, Scikit-learn):
+
+```powershell
+uv pip install streamlit pandas numpy plotly scipy scikit-learn
+```
+
+---
+
+## Running the Agent
+
+To start the user interface, run the following command from the project root:
+
+```powershell
+.\.venv\Scripts\streamlit run src/app.py
+```
+
+This will open the application in your default web browser (usually at `http://localhost:8501`).
+
+### Quick Start
+1.  **Upload Data**: Drag and drop your CSV file into the sidebar.
+    -   You can use the sample data provided in `data/sample_ab_data.csv` to test it out.
+2.  **Configuration**: The agent will automatically guess your columns (ID, Group, Metric, Segment, etc.). You can verify and adjust these in the "Data Configuration" section.
+3.  **View Results**: Navigate through the tabs to see:
+    -   **Frequentist Results**: Standard T-Tests or Diff-in-Diff results.
+    -   **Bayesian Results**: Probability distributions and "Probability Treatment > Control".
+    -   **Segment Analysis**: Breakdown of effects by user segment.
+    -   **Overall Comparison**: A head-to-head view of Frequentist vs Bayesian conclusions.
+
+---
 
 ## Project Structure
 
-```
-ab_testing_agent/
-├── app.py                      # Chainlit UI entry point
-├── requirements.txt            # Python dependencies
-├── chainlit.md                 # Chainlit welcome screen
-├── .env                        # Environment variables (API keys)
-├── .gitignore                  # Git ignore rules
-│
-├── src/                        # Source code
-│   ├── __init__.py
-│   ├── agent.py                # LangChain conversational agent
-│   └── statistics/             # Statistical analysis module
-│       ├── __init__.py
-│       ├── models.py           # Data structures (ABTestResult)
-│       ├── analyzer.py         # Statistical analysis engine
-│       └── visualizer.py       # Plotly visualization charts
-│
-├── data/                       # Data files directory
-│   ├── sample_ab_data.csv      # Sample experiment data
-│   └── sample_ab_data_alt.csv  # Alternative format sample
-│
-├── scripts/                    # Utility scripts
-│   └── generate_sample_data.py # Generate sample test data
-│
-├── tests/                      # Test files
-│   ├── __init__.py
-│   ├── test_ab_module.py       # Statistical module tests
-│   ├── test_agent.py           # Agent tests
-│   └── test_visualizations.py  # Visualization tests
-│
-└── .chainlit/                  # Chainlit configuration
-    └── config.toml
+```text
+statistical_test_agent/
+├── data/               # Sample CSV files for testing
+├── src/
+│   ├── ab_agent.py     # Core logic (ABAgent class) handling stats & analysis
+│   ├── app.py          # Streamlit user interface implementation
+├── tests/              # Unit tests
+└── README.md           # This documentation
 ```
 
-## Architecture
+---
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Chainlit UI (app.py)                     │
-│                    Web-based chat interface                     │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   ABTestingAgent (src/agent.py)                 │
-│              LangChain Agent with LangGraph ReAct               │
-│                                                                 │
-│  Tools:                                                         │
-│  - load_csv           - run_ab_test        - query_data         │
-│  - set_column_mapping - run_full_analysis  - get_data_summary   │
-│  - set_group_labels   - get_column_values  - calculate_stats    │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                Statistics Module (src/statistics/)              │
-├─────────────────────────────────────────────────────────────────┤
-│  ABTestAnalyzer (analyzer.py)                                   │
-│  - Data loading & column detection                              │
-│  - T-tests & statistical calculations                           │
-│  - Cohen's d effect size                                        │
-│  - Power analysis                                               │
-│  - Segment-level analysis                                       │
-│  - Summary & recommendations                                    │
-├─────────────────────────────────────────────────────────────────┤
-│  ABTestVisualizer (visualizer.py)                               │
-│  - Treatment vs Control charts                                  │
-│  - Effect sizes with confidence intervals                       │
-│  - P-value visualization                                        │
-│  - Power analysis charts                                        │
-│  - Cohen's d interpretation bands                               │
-│  - Summary dashboards                                           │
-├─────────────────────────────────────────────────────────────────┤
-│  ABTestResult (models.py)                                       │
-│  - Dataclass for test results                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+## How it Works (Methodology)
 
-## Installation
+The Agent (`ABAgent` class in `src/ab_agent.py`) follows a rigorous statistical workflow:
 
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd ab_testing_agent
-   ```
+### 1. Smart Column Detection
+The agent uses heuristics to automatically identify identifying columns:
+-   **ID**: Looks for `user_id`, `id`, `cust_id`.
+-   **Group**: Looks for `group`, `variant`, or columns with 2-3 unique values (e.g., "control", "test).
+-   **Metric**: Looks for continuous outcome variables like `revenue`, `conversion`, `amount`.
+-   **Pre-Experiment Metric**: Checks for columns like `pre_revenue` to enable Difference-in-Differences (DiD).
 
-2. **Create a virtual environment**:
-   ```bash
-   uv venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
+### 2. Balance Checks & Bias Correction
+Before analyzing, the agent checks validity:
+-   **Covariate Imbalance**: Checks if user features (age, region, etc.) are balanced across groups using **Standardized Mean Differences (SMD)** and **Chi-Square** tests.
+    -   *Correction*: If imbalance is found, it automatically applies **Inverse Probability Weighting (IPW)** using Logistic Regression to re-weight the data.
+-   **Pre-Experiment Balance (A/A Test)**: If a pre-experiment metric is available (e.g., revenue *before* the test), it runs a T-Test on it.
+    -   *Correction*: If the A/A test fails ($p < 0.05$), the agent automatically switches from a standard T-Test to **Difference-in-Differences (DiD)** to control for pre-existing bias.
 
-3. **Install dependencies**:
-   ```bash
-   uv pip install -r requirements.txt
-   ```
+### 3. Frequentist Analysis
+-   **Method**: Two-sample T-Test (Welch's t-test) or DiD.
+-   **Stratification**: If a segment is selected, it calculates the effect size within each segment and aggregates them using a **Weighted Average** (weighted by sample size).
+    -   $Overall Effect = \frac{\sum (Effect_i \times Weight_i)}{\sum Weight_i}$
 
-4. **Set up environment variables**:
-   Create a `.env` file in the project root:
-   ```
-   OPENAI_API_KEY=your-api-key-here
-   ```
-
-## Usage
-
-### Start the Chainlit UI
-
-```bash
-python app.py
-```
-
-This will start the web interface at `http://localhost:8000`.
-
-### Generate Sample Data
-
-To generate sample A/B test data for testing:
-
-```bash
-python scripts/generate_sample_data.py
-```
-
-This creates two sample files in the `data/` directory:
-- `sample_ab_data.csv` - Main sample with 4 customer segments
-- `sample_ab_data_alt.csv` - Alternative format with different column names
-
-### Example Workflow
-
-1. **Upload your CSV file** using the attachment button in the chat
-2. **Confirm column mappings** - The agent will detect and suggest columns
-3. **Specify group labels** - Tell the agent which values represent treatment/control
-4. **Run analysis**:
-   - "Run a full A/B test analysis"
-   - "What's the effect size for the Premium segment?"
-   - "Show me the segment distribution"
-
-## Data Requirements
-
-Your CSV file should contain:
-
-| Column Type | Description | Required |
-|-------------|-------------|----------|
-| Group | Treatment/control indicator | Yes |
-| Effect Value | Numeric metric to analyze | Yes |
-| Customer ID | Unique identifier | No |
-| Segment | Customer segments | No |
-| Duration | Experiment duration | No |
-
-### Example CSV Structure
-
-```csv
-customer_id,experiment_group,customer_segment,effect_value,experiment_duration_days
-CUST_001,treatment,Premium,58.50,14
-CUST_002,control,Standard,28.30,21
-CUST_003,treatment,Basic,12.80,7
-```
-
-## Statistical Measures
-
-The agent provides the following statistical measures:
-
-| Measure | Description |
-|---------|-------------|
-| Sample Sizes | Treatment and control group counts |
-| Means | Group averages for the metric |
-| Effect Size | Absolute difference (Treatment - Control) |
-| Cohen's d | Standardized effect size |
-| T-statistic | Test statistic value |
-| P-value | Statistical significance |
-| 95% CI | Confidence interval for effect size |
-| Power | Probability of detecting true effect |
-| Required n | Minimum sample size for adequate power |
-
-### Effect Size Interpretation (Cohen's d)
-
-| Value | Interpretation |
-|-------|----------------|
-| 0.2 | Small effect |
-| 0.5 | Medium effect |
-| 0.8 | Large effect |
-
-## Modules
-
-### src/agent.py
-The main LangChain agent that provides a conversational interface. Uses LangGraph's ReAct pattern with custom tools for data analysis.
-
-### src/statistics/analyzer.py
-Core statistical analysis engine:
-- Column auto-detection based on naming patterns
-- T-tests for continuous metrics
-- Effect size calculations (absolute and Cohen's d)
-- Power analysis using statsmodels
-- Segment-level analysis
-- Summary generation with recommendations
-
-### src/statistics/visualizer.py
-Plotly-based visualization module:
-- Treatment vs Control bar charts
-- Effect sizes with confidence intervals
-- P-value charts with significance threshold
-- Power analysis visualization
-- Cohen's d interpretation bands
-- Comprehensive multi-chart dashboards
-- Waterfall charts for effect contribution
-
-### src/statistics/models.py
-Data structures for analysis results:
-- `ABTestResult`: Dataclass containing all test metrics for a segment
-
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file with:
-```
-OPENAI_API_KEY=your-api-key-here
-```
-
-### Chainlit Settings
-
-Edit `.chainlit/config.toml` to customize:
-- Project name and description
-- UI theme and colors
-- File upload settings (CSV, max size)
-- Feature toggles
-
-### Agent Settings
-
-Configure in `src/agent.py`:
-- `model_name`: LLM model (default: "gpt-4o")
-- `temperature`: Response randomness (default: 0)
-
-### Statistical Settings
-
-Configure in `src/statistics/analyzer.py`:
-- `significance_level`: Alpha for tests (default: 0.05)
-- `power_threshold`: Minimum power (default: 0.8)
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"No data loaded"**: Upload a CSV file first before running analysis
-2. **"Column not found"**: Check column names match exactly (case-sensitive)
-3. **"Insufficient data"**: Segment may have too few samples for analysis
-
-### API Key Issues
-
-Ensure your OpenAI API key is set correctly in the `.env` file.
-
-## License
-
-MIT License
+### 4. Bayesian Analysis
+-   **Priors**: Uses objective Conjugate Priors.
+    -   **Binary Metrics**: Beta-Bernoulli model.
+    -   **Continuous Metrics**: Normal-Inverse-Gamma assumption (approximated via T-distribution of the mean).
+-   **Outputs**:
+    -   **Posterior Distributions**: Visualizes the likely range of the true mean/rate.
+    -   **Probability Analysis**: Calculates $P(Treatment > Control)$ and Expected Uplift.
+    -   **Stratified Bayesian**: Simulates samples from each segment's posterior and aggregates them to form a "Total Weighted Posterior," giving a unified view of the experiment while respecting segment differences.
