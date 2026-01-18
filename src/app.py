@@ -17,6 +17,11 @@ if 'agent' not in st.session_state or not hasattr(st.session_state.agent, 'analy
 st.sidebar.title("A/B Pilot Interaction")
 uploaded_file = st.sidebar.file_uploader("Upload Experiment CSV", type=['csv'])
 
+st.sidebar.divider()
+st.sidebar.subheader("Statistical Thresholds")
+alpha_input = st.sidebar.number_input("Significance Level (α)", min_value=0.001, max_value=0.500, value=0.05, step=0.01, format="%.3f", help="Threshold for P-value (Frequentist). Lower is stricter.")
+bayes_threshold = st.sidebar.number_input("Bayesian Probability Threshold", min_value=0.500, max_value=0.999, value=0.95, step=0.01, format="%.3f", help="Probability required to declare a winner.")
+
 if uploaded_file:
     # Load Data (Only once)
     if st.session_state.get('last_file') != uploaded_file.name:
@@ -29,6 +34,8 @@ if uploaded_file:
             st.toast("Data loaded and analyzed!")
         else:
             st.error(f"Failed to load: {msg}")
+            
+
 
 # --- MAIN ---
 st.title("🧪 AntiGravity A/B Testing Agent")
@@ -118,9 +125,9 @@ if st.session_state.agent.data is not None:
     st.subheader("2. Statistical Results")
     
     # Run Analysis
-    freq_res = st.session_state.agent.analyze_frequentist()
+    freq_res = st.session_state.agent.analyze_frequentist(alpha=alpha_input)
     bayes_posteriors, bayes_comp = st.session_state.agent.analyze_bayesian()
-    strat_res = st.session_state.agent.analyze_stratified()
+    strat_res = st.session_state.agent.analyze_stratified(alpha=alpha_input)
     strat_bayes_res, strat_bayes_plots = st.session_state.agent.analyze_stratified_bayesian()
     
     t1, t2, t3, t4, t5 = st.tabs(["Frequentist (Classical)", "Bayesian (Probabilistic)", "Segment Analysis (Frequentist)", "Segment Analysis (Bayesian)", "Overall Comparison"])
@@ -174,8 +181,16 @@ if st.session_state.agent.data is not None:
         
         st.markdown("#### Decision Support")
         for g, res in bayes_comp.items():
-            st.metric(f"Probability {g} > Control", f"{res['prob_treatment_better']:.1%}", 
+            prob = res['prob_treatment_better']
+            is_sig = prob > bayes_threshold
+            
+            w_str = "✅ **WINNER**" if is_sig else "Uncertain"
+            st.metric(f"Probability {g} > Control", f"{prob:.1%}", 
                       delta=f"Exp. Uplift: {res['expected_uplift']:.4f}")
+            if is_sig:
+                st.success(f"With {prob:.1%} probability, {g} is better than Control (Threshold: {bayes_threshold:.0%})")
+            else:
+                st.caption(f"Requires > {bayes_threshold:.0%} probability to be significant.")
 
     with t3:
         st.markdown(f"#### Frequentist Analysis by {mapping.get('segment', 'Segment')}")
@@ -263,6 +278,7 @@ if st.session_state.agent.data is not None:
                 'Freq P-Value': f_data.get('p_value'),
                 'Bayes Uplift': b_data.get('expected_uplift'),
                 'Bayes Prob > Control': b_data.get('prob_treatment_better'),
+                'Bayes Significant': b_data.get('prob_treatment_better', 0) > bayes_threshold
             }
             comp_rows.append(row)
             

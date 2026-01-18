@@ -276,7 +276,7 @@ class ABAgent:
         self.log("Re-balancing complete. Weights assigned.")
         self.rebalancing_model = clf
 
-    def analyze_stratified(self):
+    def analyze_stratified(self, alpha=0.05):
         """
         Analyzes effect size per segment and aggregates them (Stratified Analysis).
         Dynamically chooses DiD or T-Test per segment based on Pre-Experiment Balance.
@@ -389,7 +389,7 @@ class ABAgent:
                     'weight': weight,
                     'p_value': p_val,
                     'aa_p_val': aa_p_val,
-                    'significant': p_val < 0.05
+                    'significant': p_val < alpha
                 })
             
             # Overall Stratified Effect
@@ -424,12 +424,12 @@ class ABAgent:
                     'weight': total_weight,
                     'p_value': overall_p, 
                     'aa_p_val': 1.0, 
-                    'significant': overall_p < 0.05 
+                    'significant': overall_p < alpha 
                 })
                 
         return pd.DataFrame(results)
 
-    def analyze_frequentist(self):
+    def analyze_frequentist(self, alpha=0.05):
         """
         Performs Frequentist analysis. 
         If 'segment' is defined, defaults to the Stratified/Mixed result. 
@@ -445,7 +445,7 @@ class ABAgent:
         # 1. Try Stratified Analysis First (Preferred)
         if seg_col:
             # We must be careful to avoid infinite recursion if we called check_balance here, but we are self contained
-            strat_df = self.analyze_stratified()
+            strat_df = self.analyze_stratified(alpha=alpha)
             
             if strat_df is not None and not strat_df.empty:
                 results = {}
@@ -538,7 +538,7 @@ class ABAgent:
                 'effect_size': effect_size,
                 'relative_effect': relative_effect,
                 'p_value': p_val,
-                'significant': p_val < 0.05
+                'significant': p_val < alpha
             }
             
         return results
