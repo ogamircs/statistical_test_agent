@@ -20,7 +20,19 @@ uploaded_file = st.sidebar.file_uploader("Upload Experiment CSV", type=['csv'])
 st.sidebar.divider()
 st.sidebar.subheader("Statistical Thresholds")
 alpha_input = st.sidebar.number_input("Significance Level (α)", min_value=0.001, max_value=0.500, value=0.05, step=0.01, format="%.3f", help="Threshold for P-value (Frequentist). Lower is stricter.")
+
+hypothesis_human = st.sidebar.selectbox("Alternative Hypothesis", ["Two-sided (≠)", "Larger (>)", "Smaller (<)"], index=0, help="Two-sided: Treatment != Control. Larger: Treatment > Control. Smaller: Treatment < Control.")
+hypothesis_map = {"Two-sided (≠)": "two-sided", "Larger (>)": "greater", "Smaller (<)": "less"}
+alternative_input = hypothesis_map[hypothesis_human]
+
 bayes_threshold = st.sidebar.number_input("Bayesian Probability Threshold", min_value=0.500, max_value=0.999, value=0.95, step=0.01, format="%.3f", help="Probability required to declare a winner.")
+
+if st.sidebar.button("Update Results", type="primary"):
+    st.session_state.run_analysis = True
+    st.toast("Recalculating...")
+
+if 'run_analysis' not in st.session_state:
+    st.session_state.run_analysis = False
 
 if uploaded_file:
     # Load Data (Only once)
@@ -31,6 +43,7 @@ if uploaded_file:
             st.session_state.agent.check_balance() # Initial check
             st.session_state.agent.check_pre_balance() # A/A check
             st.session_state.last_file = uploaded_file.name
+            st.session_state.run_analysis = True # Auto-run on load
             st.toast("Data loaded and analyzed!")
         else:
             st.error(f"Failed to load: {msg}")
@@ -124,157 +137,195 @@ if st.session_state.agent.data is not None:
     st.divider()
     st.subheader("2. Statistical Results")
     
-    # Run Analysis
-    freq_res = st.session_state.agent.analyze_frequentist(alpha=alpha_input)
-    bayes_posteriors, bayes_comp = st.session_state.agent.analyze_bayesian()
-    strat_res = st.session_state.agent.analyze_stratified(alpha=alpha_input)
-    strat_bayes_res, strat_bayes_plots = st.session_state.agent.analyze_stratified_bayesian()
-    
-    t1, t2, t3, t4, t5 = st.tabs(["Frequentist (Classical)", "Bayesian (Probabilistic)", "Segment Analysis (Frequentist)", "Segment Analysis (Bayesian)", "Overall Comparison"])
-    
-    with t1:
-        st.markdown("#### Frequentist Results")
-        res_df = pd.DataFrame(freq_res).T
-        if not res_df.empty:
-            st.dataframe(res_df.style.applymap(lambda x: "background-color: #d4edda" if x == True else "", subset=['significant']))
-            
-            if st.session_state.agent.use_did:
+    if st.session_state.run_analysis:
+        # Run Analysis
+        freq_res = st.session_state.agent.analyze_frequentist(alpha=alpha_input, alternative=alternative_input)
+        bayes_posteriors, bayes_comp = st.session_state.agent.analyze_bayesian(alternative=alternative_input)
+        strat_res = st.session_state.agent.analyze_stratified(alpha=alpha_input, alternative=alternative_input)
+        strat_bayes_res, strat_bayes_plots = st.session_state.agent.analyze_stratified_bayesian(alternative=alternative_input)
+        
+        t1, t2, t3, t4, t5 = st.tabs(["Frequentist (Classical)", "Bayesian (Probabilistic)", "Segment Analysis (Frequentist)", "Segment Analysis (Bayesian)", "Overall Comparison"])
+        
+        with t1:
+            st.markdown("#### Frequentist Results")
+            res_df = pd.DataFrame(freq_res).T
+            if not res_df.empty:
+             st.markdown("**Detailed Effects:**")
+             st.markdown("- **Avg Diff Effect**: Standard difference in means (T - C).")
+             st.markdown("- **Activation Effect**: Contribution from change in proportion of active users (>0). (Only calculated if proportion test is significant).")
+             st.markdown("- **Total Effect**: Sum of Avg Diff + Activation.")
+             
+             # Format metrics
+             st.dataframe(res_df.style.applymap(lambda x: "background-color: #d4edda" if x == True else "", subset=['significant'])
+                          .format({
+                              'avg_diff_effect': '{:.4f}', 
+                              'activation_effect': '{:.4f}', 
+                              'total_effect': '{:.4f}',
+                              'relative_effect': '{:.2%}',
+                              'p_value': '{:.4f}',
+                              'prop_p_value': '{:.4f}'
+                          }))
+             
+             if st.session_state.agent.use_did:
                 st.info("ℹ️ Using Difference-in-Differences (DiD) because pre-experiment imbalance was detected.")
                 
-        else:
-            st.write("No results capable. Check config.")
-            
-        if not res_df.empty:
-             fig = px.bar(res_df, y='relative_effect', x='treatment', title="Relative Effect Size vs Control", 
-                          color='significant', text_auto='.2%', hover_data=['method'])
-             st.plotly_chart(fig)
-
-    with t2:
-        st.markdown("#### Posterior Distributions")
-        
-        # Plot distributions
-        fig_bayes = go.Figure()
-        
-        # Dynamic X-range based on means (matching segment analysis logic)
-        all_means = [res.get('mean', 0.5) for res in bayes_posteriors.values()]
-        if all_means:
-            min_mean, max_mean = min(all_means), max(all_means)
-            # Handle negative means correctly for "zoom"
-            x_min = min_mean * 0.8 if min_mean >= 0 else min_mean * 1.2
-            x_max = max_mean * 1.2 if max_mean >= 0 else max_mean * 0.8
-            if x_min == x_max: x_min, x_max = x_min - 0.5, x_max + 0.5
-            x_range = np.linspace(x_min, x_max, 1000)
-        else:
-            x_range = np.linspace(df[new_metric].min(), df[new_metric].max(), 1000)
-        
-        for g, res in bayes_posteriors.items():
-            if res['type'] == 'normal_t':
-                y = stats.t.pdf(x_range, res['df'], res['mean'], res['std_err'])
-                fig_bayes.add_trace(go.Scatter(x=x_range, y=y, name=f"{g} (Mean={res['mean']:.2f})", fill='tozeroy', opacity=0.5))
-            elif res['type'] == 'beta':
-                # For beta, x range is 0-1
-                x_b = np.linspace(0, 1, 500)
-                y = stats.beta.pdf(x_b, res['alpha'], res['beta'])
-                fig_bayes.add_trace(go.Scatter(x=x_b, y=y, name=f"{g} (Rate={res['mean']:.2%})", fill='tozeroy', opacity=0.5))
-                
-        st.plotly_chart(fig_bayes, use_container_width=True)
-        
-        st.markdown("#### Decision Support")
-        for g, res in bayes_comp.items():
-            prob = res['prob_treatment_better']
-            is_sig = prob > bayes_threshold
-            
-            w_str = "✅ **WINNER**" if is_sig else "Uncertain"
-            st.metric(f"Probability {g} > Control", f"{prob:.1%}", 
-                      delta=f"Exp. Uplift: {res['expected_uplift']:.4f}")
-            if is_sig:
-                st.success(f"With {prob:.1%} probability, {g} is better than Control (Threshold: {bayes_threshold:.0%})")
             else:
-                st.caption(f"Requires > {bayes_threshold:.0%} probability to be significant.")
-
-    with t3:
-        st.markdown(f"#### Frequentist Analysis by {mapping.get('segment', 'Segment')}")
-        if strat_res is not None and not strat_res.empty:
-            # Highlight total row
-            def highlight_total(row):
-                if row['segment_value'] == 'TOTAL':
-                    return ['font-weight: bold; background-color: #f0f2f6'] * len(row)
-                return [''] * len(row)
-
-            # Drop unnecessary columns for display to match Bayesian view
-            display_df = strat_res.drop(columns=['treatment', 'segment_col'], errors='ignore')
+                st.write("No results capable. Check config.")
+                
+            if not res_df.empty:
+                 fig = px.bar(res_df, y='total_effect', x='treatment', title="Total Effect Size vs Control", 
+                              color='significant', text_auto='.4f', hover_data=['method', 'avg_diff_effect', 'activation_effect'])
+                 st.plotly_chart(fig)
+    
+        with t2:
+            st.markdown("#### Posterior Distributions")
             
-            st.dataframe(display_df.style.apply(highlight_total, axis=1)
-                         .format({'effect_size': '{:.4f}', 'p_value': '{:.4f}', 'aa_p_val': '{:.4f}', 'weight': '{:.0f}'}))
+            # Plot distributions
+            fig_bayes = go.Figure()
             
-            # Plot segments
-            seg_only = strat_res[strat_res['segment_value'] != 'TOTAL']
-            if not seg_only.empty:
-                fig_seg = px.bar(seg_only, x='segment_value', y='effect_size', color='treatment', 
-                                 title="Effect Size by Segment (Frequentist)", error_y=None, barmode='group')
-                st.plotly_chart(fig_seg)
-        else:
-            st.warning("Could not perform stratified analysis. Check segment column.")
-
-    with t4:
-        st.markdown(f"#### Bayesian Analysis by {mapping.get('segment', 'Segment')}")
-        if strat_bayes_res is not None and not strat_bayes_res.empty:
-             def highlight_total_bayes(row):
-                if row['segment_value'] == 'TOTAL (Weighted)':
-                    return ['font-weight: bold; background-color: #e6f3ff'] * len(row)
-                return [''] * len(row)
-
-             st.dataframe(strat_bayes_res.style.apply(highlight_total_bayes, axis=1)
-                          .format({'prob_treatment_better': '{:.2%}', 'expected_uplift': '{:.4f}', 
-                                   'control_mean': '{:.4f}', 'treatment_mean': '{:.4f}', 
-                                   'control_support': '{}', 'treatment_support': '{}', 'total_support': '{}'}))
-             
-             st.divider()
-             st.markdown("#### Segment Deep Dive: Posterior Distributions")
-             
-             # Segment Selector
-             unique_strats = list(strat_bayes_plots.keys())
-             # Default to TOTAL if exists
-             default_idx = unique_strats.index('TOTAL') if 'TOTAL' in unique_strats else 0
-             selected_seg = st.selectbox("Select Segment to Visualize", unique_strats, index=default_idx)
-             
-             if selected_seg:
-                 params_dict = strat_bayes_plots[selected_seg]
-                 fig_strat_bayes = go.Figure()
-                 
-                 # Dynamic X-range based on means in this segment
-                 all_means = [p.get('mean', 0.5) for p in params_dict.values()]
-                 min_x, max_x = min(all_means) * 0.8, max(all_means) * 1.2
-                 if min_x == max_x: min_x, max_x = 0, 1
-                 
-                 x_vals = np.linspace(min_x, max_x, 1000)
-                 
-                 for g, params in params_dict.items():
-                     if params['type'] == 'normal_t':
-                         y = stats.t.pdf(x_vals, params['df'], params['mean'], params['std_err'])
-                         fig_strat_bayes.add_trace(go.Scatter(x=x_vals, y=y, name=f"{g} (Mean={params['mean']:.2f})", fill='tozeroy', opacity=0.5))
-                     elif params['type'] == 'beta':
-                         x_b = np.linspace(0, 1, 1000)
-                         y = stats.beta.pdf(x_b, params['alpha'], params['beta'])
-                         fig_strat_bayes.add_trace(go.Scatter(x=x_b, y=y, name=f"{g} (Rate={params['mean']:.2%})", fill='tozeroy', opacity=0.5))
-                         
-                 fig_strat_bayes.update_layout(title=f"Posterior Distributions: {selected_seg}", xaxis_title=new_metric, yaxis_title="Density")
-                 st.plotly_chart(fig_strat_bayes, use_container_width=True)
-                 
-        else:
-            st.warning("Could not perform Bayesian segment analysis.")
-
-    with t5:
-        st.markdown("#### Head-to-Head Comparison")
-        st.markdown("Comparison of overall effect estimates between Frequentist and Bayesian methods.")
-        
-        comp_rows = []
-        for g, f_data in freq_res.items():
-            b_data = bayes_comp.get(g, {})
+            # Dynamic X-range based on means (matching segment analysis logic)
+            all_means = [res.get('mean', 0.5) for res in bayes_posteriors.values()]
+            if all_means:
+                min_mean, max_mean = min(all_means), max(all_means)
+                # Handle negative means correctly for "zoom"
+                x_min = min_mean * 0.8 if min_mean >= 0 else min_mean * 1.2
+                x_max = max_mean * 1.2 if max_mean >= 0 else max_mean * 0.8
+                if x_min == x_max: x_min, x_max = x_min - 0.5, x_max + 0.5
+                x_range = np.linspace(x_min, x_max, 1000)
+            else:
+                x_range = np.linspace(df[new_metric].min(), df[new_metric].max(), 1000)
             
-            row = {
+            for g, res in bayes_posteriors.items():
+                if res['type'] == 'normal_t':
+                    y = stats.t.pdf(x_range, res['df'], res['mean'], res['std_err'])
+                    fig_bayes.add_trace(go.Scatter(x=x_range, y=y, name=f"{g} (Mean={res['mean']:.2f})", fill='tozeroy', opacity=0.5))
+                elif res['type'] == 'beta':
+                    # For beta, x range is 0-1
+                    x_b = np.linspace(0, 1, 500)
+                    y = stats.beta.pdf(x_b, res['alpha'], res['beta'])
+                    fig_bayes.add_trace(go.Scatter(x=x_b, y=y, name=f"{g} (Rate={res['mean']:.2%})", fill='tozeroy', opacity=0.5))
+                    
+            st.plotly_chart(fig_bayes, use_container_width=True)
+            
+            st.markdown("#### Decision Support")
+            for g, res in bayes_comp.items():
+                prob = res['prob_treatment_better']
+                is_sig = prob > bayes_threshold
+                
+                w_str = "✅ **WINNER**" if is_sig else "Uncertain"
+                st.metric(f"Probability {g} > Control", f"{prob:.1%}", 
+                          delta=f"Exp. Uplift: {res['expected_uplift']:.4f}")
+                if is_sig:
+                    st.success(f"With {prob:.1%} probability, {g} is better than Control (Threshold: {bayes_threshold:.0%})")
+                else:
+                    st.caption(f"Requires > {bayes_threshold:.0%} probability to be significant.")
+    
+        with t3:
+            st.markdown(f"#### Frequentist Analysis by {mapping.get('segment', 'Segment')}")
+            if strat_res is not None and not strat_res.empty:
+                # Separate Total from Details for clean display
+                total_row = strat_res[strat_res['segment_value'] == 'TOTAL']
+                details_df = strat_res[strat_res['segment_value'] != 'TOTAL']
+                
+                # Display Total
+                st.markdown("**Overall Result:**")
+                st.dataframe(total_row.drop(columns=['treatment', 'segment_col'], errors='ignore')
+                             .style.format({
+                                 'total_effect': '{:.4f}',
+                                 'avg_diff_effect': '{:.4f}',
+                                 'activation_effect': '{:.4f}',
+                                 'effect_size': '{:.4f}', 
+                                 'p_value': '{:.4f}', 
+                                 'aa_p_val': '{:.4f}', 
+                                 'weight': '{:.0f}'
+                             }), hide_index=True)
+                
+                st.markdown("**Segment Details:**")
+                display_df = details_df.drop(columns=['treatment', 'segment_col'], errors='ignore')
+                st.dataframe(display_df.style.format({
+                                'total_effect': '{:.4f}',
+                                'avg_diff_effect': '{:.4f}',
+                                'activation_effect': '{:.4f}',
+                                'effect_size': '{:.4f}', 
+                                'p_value': '{:.4f}', 
+                                'prop_p_value': '{:.4f}',
+                                'aa_p_val': '{:.4f}', 
+                                'weight': '{:.0f}'
+                            }))
+                
+                # Plot segments
+                seg_only = strat_res[strat_res['segment_value'] != 'TOTAL']
+                if not seg_only.empty:
+                    fig_seg = px.bar(seg_only, x='segment_value', y='total_effect', color='treatment', 
+                                     title="Total Effect Size by Segment (Frequentist)", error_y=None, barmode='group',
+                                     hover_data=['avg_diff_effect', 'activation_effect'])
+                    st.plotly_chart(fig_seg)
+            else:
+                st.warning("Could not perform stratified analysis. Check segment column.")
+    
+        with t4:
+            st.markdown(f"#### Bayesian Analysis by {mapping.get('segment', 'Segment')}")
+            if strat_bayes_res is not None and not strat_bayes_res.empty:
+                 # Separate Total from Details
+                 total_row_b = strat_bayes_res[strat_bayes_res['segment_value'] == 'TOTAL (Weighted)']
+                 details_df_b = strat_bayes_res[strat_bayes_res['segment_value'] != 'TOTAL (Weighted)']
+                 
+                 st.markdown("**Overall Result:**")
+                 st.dataframe(total_row_b.style.format({'prob_treatment_better': '{:.2%}', 'expected_uplift': '{:.4f}', 
+                                       'control_mean': '{:.4f}', 'treatment_mean': '{:.4f}'}), hide_index=True)
+
+                 st.markdown("**Segment Details:**")
+                 st.dataframe(details_df_b.style.format({'prob_treatment_better': '{:.2%}', 'expected_uplift': '{:.4f}', 
+                                       'control_mean': '{:.4f}', 'treatment_mean': '{:.4f}', 
+                                       'control_support': '{}', 'treatment_support': '{}', 'total_support': '{}'}))
+                 
+                 st.divider()
+                 st.markdown("#### Segment Deep Dive: Posterior Distributions")
+                 
+                 # Segment Selector
+                 unique_strats = list(strat_bayes_plots.keys())
+                 # Default to TOTAL if exists
+                 default_idx = unique_strats.index('TOTAL') if 'TOTAL' in unique_strats else 0
+                 selected_seg = st.selectbox("Select Segment to Visualize", unique_strats, index=default_idx)
+                 
+                 if selected_seg:
+                     params_dict = strat_bayes_plots[selected_seg]
+                     fig_strat_bayes = go.Figure()
+                     
+                     # Dynamic X-range based on means in this segment
+                     all_means = [p.get('mean', 0.5) for p in params_dict.values()]
+                     min_x, max_x = min(all_means) * 0.8, max(all_means) * 1.2
+                     if min_x == max_x: min_x, max_x = 0, 1
+                     
+                     x_vals = np.linspace(min_x, max_x, 1000)
+                     
+                     for g, params in params_dict.items():
+                         if params['type'] == 'normal_t':
+                             y = stats.t.pdf(x_vals, params['df'], params['mean'], params['std_err'])
+                             fig_strat_bayes.add_trace(go.Scatter(x=x_vals, y=y, name=f"{g} (Mean={params['mean']:.2f})", fill='tozeroy', opacity=0.5))
+                         elif params['type'] == 'beta':
+                             x_b = np.linspace(0, 1, 1000)
+                             y = stats.beta.pdf(x_b, params['alpha'], params['beta'])
+                             fig_strat_bayes.add_trace(go.Scatter(x=x_b, y=y, name=f"{g} (Rate={params['mean']:.2%})", fill='tozeroy', opacity=0.5))
+                             
+                     fig_strat_bayes.update_layout(title=f"Posterior Distributions: {selected_seg}", xaxis_title=new_metric, yaxis_title="Density")
+                     st.plotly_chart(fig_strat_bayes, use_container_width=True)
+                     
+            else:
+                st.warning("Could not perform Bayesian segment analysis.")
+    
+        with t5:
+            st.markdown("#### Head-to-Head Comparison")
+            st.markdown("Comparison of overall effect estimates between Frequentist and Bayesian methods.")
+            
+            comp_rows = []
+            for g, f_data in freq_res.items():
+                b_data = bayes_comp.get(g, {})
+                
+                row = {
                 'Treatment Group': g,
-                'Freq Effect': f_data.get('effect_size'),
+                'Freq Total Effect': f_data.get('total_effect', f_data.get('effect_size')), # Fallback if strat/legacy
+                'Freq Avg Diff': f_data.get('avg_diff_effect', f_data.get('effect_size')),
                 'Freq P-Value': f_data.get('p_value'),
                 'Bayes Uplift': b_data.get('expected_uplift'),
                 'Bayes Prob > Control': b_data.get('prob_treatment_better'),
@@ -282,23 +333,26 @@ if st.session_state.agent.data is not None:
             }
             comp_rows.append(row)
             
-        if comp_rows:
-            comp_df = pd.DataFrame(comp_rows)
-            st.dataframe(comp_df.style.format({
-                'Freq Effect': '{:.4f}',
-                'Freq P-Value': '{:.4f}', 
-                'Bayes Uplift': '{:.4f}',
-                'Bayes Prob > Control': '{:.2%}'
-            }))
-            
-            # Visual comparison of effect sizes
-            fig_comp = go.Figure()
-            fig_comp.add_trace(go.Bar(name='Freq Effect', x=comp_df['Treatment Group'], y=comp_df['Freq Effect'], text=comp_df['Freq Effect'].apply(lambda x: f'{x:.4f}'), textposition='auto'))
-            fig_comp.add_trace(go.Bar(name='Bayes Uplift', x=comp_df['Treatment Group'], y=comp_df['Bayes Uplift'], text=comp_df['Bayes Uplift'].apply(lambda x: f'{x:.4f}'), textposition='auto'))
-            fig_comp.update_layout(title="Effect Size Comparison", barmode='group')
-            st.plotly_chart(fig_comp, use_container_width=True)
-        else:
-            st.write("No results to compare.")
+            if comp_rows:
+                comp_df = pd.DataFrame(comp_rows)
+                st.dataframe(comp_df.style.format({
+                    'Freq Total Effect': '{:.4f}',
+                    'Freq Avg Diff': '{:.4f}',
+                    'Freq P-Value': '{:.4f}', 
+                    'Bayes Uplift': '{:.4f}',
+                    'Bayes Prob > Control': '{:.2%}'
+                }))
+                
+                # Visual comparison of effect sizes
+                fig_comp = go.Figure()
+                fig_comp.add_trace(go.Bar(name='Freq Total Effect', x=comp_df['Treatment Group'], y=comp_df['Freq Total Effect'], text=comp_df['Freq Total Effect'].apply(lambda x: f'{x:.4f}'), textposition='auto'))
+                fig_comp.add_trace(go.Bar(name='Bayes Uplift', x=comp_df['Treatment Group'], y=comp_df['Bayes Uplift'], text=comp_df['Bayes Uplift'].apply(lambda x: f'{x:.4f}'), textposition='auto'))
+                fig_comp.update_layout(title="Effect Size Comparison (Frequentist Total vs Bayes Uplift)", barmode='group')
+                st.plotly_chart(fig_comp, use_container_width=True)
+            else:
+                st.write("No results to compare.")
+    else:
+        st.info("👆 Click 'Update Results' in the sidebar to run the analysis with current settings.")
 
 else:
     st.info("👈 Please upload a CSV file to begin.")

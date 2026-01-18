@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 from scipy import stats
+import statsmodels.stats.proportion as smprop
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 import warnings
@@ -276,7 +277,7 @@ class ABAgent:
         self.log("Re-balancing complete. Weights assigned.")
         self.rebalancing_model = clf
 
-    def analyze_stratified(self, alpha=0.05):
+    def analyze_stratified(self, alpha=0.05, alternative='two-sided'):
         """
         Analyzes effect size per segment and aggregates them (Stratified Analysis).
         Dynamically chooses DiD or T-Test per segment based on Pre-Experiment Balance.
@@ -315,6 +316,7 @@ class ABAgent:
             if g == control_label: continue
             
             stratified_effect_sum = 0
+            stratified_activation_sum = 0 # New aggregation
             total_weight = 0
             combined_var_sum = 0 # To calculate standard error of the weighted average
             
@@ -349,12 +351,12 @@ class ABAgent:
                     # DiD
                     c_vals = c_df[metric_col] - c_df[pre_metric_col]
                     t_vals = t_df[metric_col] - t_df[pre_metric_col]
-                    method_name = "DiD"
+                    method_name = f"DiD ({alternative})"
                 else:
                     # Standard T-Test
                     c_vals = c_df[metric_col]
                     t_vals = t_df[metric_col]
-                    method_name = "T-Test"
+                    method_name = f"T-Test ({alternative})"
                 
                 used_methods.add(method_name)
                 
@@ -376,7 +378,32 @@ class ABAgent:
                 total_weight += weight
                 
                 # Significance for this segment
-                t_stat, p_val = stats.ttest_ind(c_vals, t_vals, equal_var=False)
+                t_stat, p_val = stats.ttest_ind(t_vals, c_vals, equal_var=False, alternative=alternative)
+                
+                # --- Activation Effect (Per Segment) ---
+                # Check proportion > 0
+                count_c = (c_df[metric_col] > 0).sum()
+                n_c = len(c_df)
+                count_t = (t_df[metric_col] > 0).sum()
+                n_t = len(t_df)
+                
+                activation_effect = 0.0
+                prop_pval = 1.0
+                
+                if n_c > 0 and n_t > 0:
+                     # Map scipy 'alternative' to statsmodels 'alternative'
+                     prop_alternative = 'two-sided'
+                     if alternative == 'greater': prop_alternative = 'larger'
+                     elif alternative == 'less': prop_alternative = 'smaller'
+
+                     stat_prop, prop_pval = smprop.test_proportions_2indep(count_t, n_t, count_c, n_c, alternative=prop_alternative, compare='diff', return_results=False)
+                     
+                     if prop_pval < alpha:
+                         prop_diff = (count_t/n_t) - (count_c/n_c)
+                         # Use segment control mean
+                         activation_effect = mean_c * prop_diff
+                
+                total_effect = effect + activation_effect
                 
                 results.append({
                     'treatment': g,
@@ -385,16 +412,24 @@ class ABAgent:
                     'method': method_name,
                     'control_mean': mean_c,
                     'treatment_mean': mean_t,
-                    'effect_size': effect,
+                    'avg_diff_effect': effect,
+                    'activation_effect': activation_effect,
+                    'total_effect': total_effect,
+                    'effect_size': effect, # Keep for compat
                     'weight': weight,
                     'p_value': p_val,
+                    'prop_p_value': prop_pval,
                     'aa_p_val': aa_p_val,
                     'significant': p_val < alpha
                 })
+                
+                stratified_activation_sum += activation_effect * weight
             
             # Overall Stratified Effect
             if total_weight > 0:
                 overall_effect = stratified_effect_sum / total_weight
+                overall_activation = stratified_activation_sum / total_weight
+                overall_total = overall_effect + overall_activation
                 
                 # SE of weighted average = sqrt(sum(w_i^2 * var_i)) / sum(w_i)
                 overall_se = np.sqrt(combined_var_sum) / total_weight
@@ -402,7 +437,12 @@ class ABAgent:
                 # Z-Test for aggregated effect
                 if overall_se > 0:
                     z_score = overall_effect / overall_se
-                    overall_p = 2 * (1 - stats.norm.cdf(abs(z_score)))
+                    if alternative == 'two-sided':
+                        overall_p = 2 * (1 - stats.norm.cdf(abs(z_score)))
+                    elif alternative == 'greater':
+                        overall_p = 1 - stats.norm.cdf(z_score)
+                    else: # less
+                        overall_p = stats.norm.cdf(z_score)
                 else:
                     overall_p = 1.0
 
@@ -424,12 +464,16 @@ class ABAgent:
                     'weight': total_weight,
                     'p_value': overall_p, 
                     'aa_p_val': 1.0, 
-                    'significant': overall_p < alpha 
+                    'significant': overall_p < alpha,
+                    'avg_diff_effect': overall_effect,
+                    'activation_effect': overall_activation,
+                    'total_effect': overall_total,
+                    'prop_p_value': 1.0 # Not calculated for overall
                 })
                 
         return pd.DataFrame(results)
 
-    def analyze_frequentist(self, alpha=0.05):
+    def analyze_frequentist(self, alpha=0.05, alternative='two-sided'):
         """
         Performs Frequentist analysis. 
         If 'segment' is defined, defaults to the Stratified/Mixed result. 
@@ -445,7 +489,7 @@ class ABAgent:
         # 1. Try Stratified Analysis First (Preferred)
         if seg_col:
             # We must be careful to avoid infinite recursion if we called check_balance here, but we are self contained
-            strat_df = self.analyze_stratified(alpha=alpha)
+            strat_df = self.analyze_stratified(alpha=alpha, alternative=alternative)
             
             if strat_df is not None and not strat_df.empty:
                 results = {}
@@ -478,9 +522,13 @@ class ABAgent:
                             'control': control_label,
                             'treatment': g,
                             'method': row['method'],
-                            'effect_size': effect_size,
+                            'avg_diff_effect': row.get('avg_diff_effect', effect_size),
+                            'activation_effect': row.get('activation_effect', 0.0),
+                            'total_effect': row.get('total_effect', effect_size),
+                            'effect_size': effect_size, # Legacy support
                             'relative_effect': rel_eff, 
                             'p_value': row['p_value'],
+                            'prop_p_value': row.get('prop_p_value', 1.0), 
                             'significant': row['significant']
                         }
                     return results
@@ -501,10 +549,10 @@ class ABAgent:
 
         if use_did:
             c_vals = control_df[metric_col] - control_df[pre_metric_col]
-            strategy_name = "Diff-in-Diff (DiD)"
+            strategy_name = f"Diff-in-Diff ({alternative})"
         else:
             c_vals = control_df[metric_col]
-            strategy_name = "T-Test (Standard)"
+            strategy_name = f"T-Test ({alternative})"
         
         c_mean = np.average(c_vals, weights=c_weights)
             
@@ -529,15 +577,66 @@ class ABAgent:
                  relative_effect = 0
             
             # Significance Test
-            t_stat, p_val = stats.ttest_ind(c_vals, t_vals, equal_var=False)
+            # Note: ttest_ind(a, b) tests population mean of a - population mean of b
+            # We want Treatment (t_vals) - Control (c_vals). So we pass t_vals first to align with 'alternative' logic (e.g. greater means T > C)
+            t_stat, p_val = stats.ttest_ind(t_vals, c_vals, equal_var=False, alternative=alternative)
+            
+            # --- Activation Effect (Binomial Test) ---
+            # Proportion of users with metric > 0
+            # Note: We use the raw series for this, assuming 0 means inactive.
+            
+            # If DiD is used, t_vals/c_vals are differences, so "activation" is tricky.
+            # The prompt implies "number of users with higher than 0 value". This usually refers to the POST metric or the raw metric.
+            # Assuming we use the metric_col directly for activation check (ignoring DiD for activation definition for now, or using raw).
+            # Given "control avg times difference", it usually applies to the level.
+            
+            # Let's use the actual data slices (without DiD subtraction) to determine "active" status
+            c_raw = control_df[metric_col]
+            t_raw = treat_df[metric_col]
+            
+            count_c = (c_raw > 0).sum()
+            n_c = len(c_raw)
+            count_t = (t_raw > 0).sum()
+            n_t = len(t_raw)
+            
+            activation_effect = 0
+            prop_pval = 1.0
+            prop_diff = 0
+            
+            if n_c > 0 and n_t > 0:
+                # Map scipy 'alternative' to statsmodels 'alternative'
+                # scipy: greater, less, two-sided
+                # statsmodels: larger, smaller, two-sided
+                prop_alternative = 'two-sided'
+                if alternative == 'greater': prop_alternative = 'larger'
+                elif alternative == 'less': prop_alternative = 'smaller'
+
+                # statsmodels test_proportions_2indep: count1, nobs1, count2, nobs2
+                # We want Treatment vs Control
+                stat_prop, prop_pval = smprop.test_proportions_2indep(count_t, n_t, count_c, n_c, alternative=prop_alternative, compare='diff', return_results=False)
+                
+                prop_t = count_t / n_t
+                prop_c = count_c / n_c
+                prop_diff = prop_t - prop_c
+                
+                # Check significance for activation
+                if prop_pval < alpha:
+                    # Formula: control avg * (prop_t - prop_c)
+                    # "control avg" = c_mean (which is weighted if IPW, or raw if not). Using c_mean from above.
+                    activation_effect = c_mean * prop_diff
+            
+            total_effect = effect_size + activation_effect
                 
             results[g] = {
                 'control': control_label,
                 'treatment': g,
                 'method': strategy_name,
-                'effect_size': effect_size,
+                'avg_diff_effect': effect_size, # Renamed from effect_size
+                'activation_effect': activation_effect,
+                'total_effect': total_effect,
                 'relative_effect': relative_effect,
                 'p_value': p_val,
+                'prop_p_value': prop_pval,
                 'significant': p_val < alpha
             }
             
@@ -582,7 +681,7 @@ class ABAgent:
                 'samples': stats.t.rvs(n - 1 if n > 1 else 1, loc=mu, scale=std_err, size=n_samples, random_state=seed)
             }
 
-    def analyze_bayesian(self):
+    def analyze_bayesian(self, alternative='two-sided'):
         """
         Bayesian analysis using conjugate priors.
         Returns posteriors samples.
@@ -593,7 +692,7 @@ class ABAgent:
         
         # 1. Prefer Stratified Analysis if segment exists (Unified View)
         if seg_col:
-            strat_df, strat_plots = self.analyze_stratified_bayesian()
+            strat_df, strat_plots = self.analyze_stratified_bayesian(alternative=alternative)
             if strat_df is not None and not strat_df.empty:
                  # Extract TOTAL row for main display
                  total_row = strat_df[strat_df['segment_value'] == 'TOTAL (Weighted)']
@@ -656,7 +755,12 @@ class ABAgent:
             if g == control_label: continue
             
             t_samples = fitted_models[g]['samples']
-            prob_better = (t_samples > c_samples).mean()
+            
+            if alternative == 'less':
+                prob_better = (t_samples < c_samples).mean()
+            else:
+                prob_better = (t_samples > c_samples).mean()
+                
             uplift = (t_samples - c_samples).mean()
             
             comparison_results[g] = {
@@ -666,7 +770,7 @@ class ABAgent:
             
         return results, comparison_results
 
-    def analyze_stratified_bayesian(self):
+    def analyze_stratified_bayesian(self, alternative='two-sided'):
         """
         Analyzes Bayesian effect size per segment and aggregates them via simulation.
         Returns:
@@ -728,7 +832,11 @@ class ABAgent:
             t_fit = self._fit_bayesian(t_subset, seed=42)
             
             # Per Segment Stats
-            prob_better = (t_fit['samples'] > c_fit['samples']).mean()
+            if alternative == 'less':
+                prob_better = (t_fit['samples'] < c_fit['samples']).mean()
+            else:
+                prob_better = (t_fit['samples'] > c_fit['samples']).mean()
+                
             expected_uplift = (t_fit['samples'] - c_fit['samples']).mean()
             
             segment_results.append({
@@ -757,7 +865,14 @@ class ABAgent:
             agg_c_samples = total_c_samples / total_weight
             agg_t_samples = total_t_samples / total_weight
             
-            agg_prob_better = (agg_t_samples > agg_c_samples).mean()
+            agg_c_samples = total_c_samples / total_weight
+            agg_t_samples = total_t_samples / total_weight
+            
+            if alternative == 'less':
+                agg_prob_better = (agg_t_samples < agg_c_samples).mean()
+            else:
+                agg_prob_better = (agg_t_samples > agg_c_samples).mean()
+                
             agg_uplift = (agg_t_samples - agg_c_samples).mean()
             
             segment_results.append({
