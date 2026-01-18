@@ -112,6 +112,11 @@ if st.session_state.agent.data is not None:
         valid_default = [c for c in current_feats if c in available_covariates]
         
         new_feats = st.multiselect("Covariates (for balance)", available_covariates, default=valid_default)
+        
+        # Other Comparison Metrics
+        # Allow features to be used here too, so only exclude core structural columns
+        available_others = [c for c in df.columns if c not in used_cols]
+        new_other_metrics = st.multiselect("Other Comparison Metrics (Engagement, etc.)", available_others)
 
         if st.button("Update Configuration & Re-Run"):
             st.session_state.agent.col_mapping = {
@@ -132,6 +137,57 @@ if st.session_state.agent.data is not None:
         st.warning("⚠️ Imbalance detected in covariates! The agent has automatically applied Re-balancing weights (IPW) for the analysis below.")
     else:
         st.success("✅ Groups appear balanced on covariates.")
+
+    # --- OTHER METRICS ANALYSIS ---
+    if new_other_metrics:
+        st.divider()
+        st.subheader("1.1 Other Metrics Comparison")
+        
+        # Check types
+        non_numeric = [col for col in new_other_metrics if not pd.api.types.is_numeric_dtype(df[col])]
+        
+        if non_numeric:
+            st.error(f"❌ The following comparison metrics are not numeric: {', '.join(non_numeric)}. Please remove them.")
+        else:
+            # Calculate comparisons
+            # Identify Control and Treatment
+            groups = df[new_group].unique()
+            lower_groups = [str(g).lower() for g in groups]
+            if 'control' in lower_groups: control_label = groups[lower_groups.index('control')]
+            elif 'ctrl' in lower_groups: control_label = groups[lower_groups.index('ctrl')]
+            else: control_label = groups[0]
+            
+            # Simple aggregation (Raw means for now, could be weighted but prompt asks for simple comparison)
+            # Assuming raw comparison is what is requested for "other metrics"
+            
+            other_res = []
+            for metric in new_other_metrics:
+                c_data = df[df[new_group] == control_label][metric]
+                c_mean = c_data.mean()
+                
+                for g in groups:
+                    if g == control_label: continue
+                    t_data = df[df[new_group] == g][metric]
+                    t_mean = t_data.mean()
+                    diff = t_mean - c_mean
+                    rel_diff = (diff / c_mean) if c_mean != 0 else 0
+                    
+                    other_res.append({
+                        'Metric': metric,
+                        'Treatment Group': g,
+                        'Control Mean': c_mean,
+                        'Treatment Mean': t_mean,
+                        'Difference': diff,
+                        'Relative Diff': rel_diff
+                    })
+            
+            if other_res:
+                st.dataframe(pd.DataFrame(other_res).style.format({
+                    'Control Mean': '{:.4f}',
+                    'Treatment Mean': '{:.4f}',
+                    'Difference': '{:.4f}',
+                    'Relative Diff': '{:.2%}'
+                }))
 
     # --- RESULTS DASHBOARD ---
     st.divider()
@@ -260,6 +316,60 @@ if st.session_state.agent.data is not None:
                                      title="Total Effect Size by Segment (Frequentist)", error_y=None, barmode='group',
                                      hover_data=['avg_diff_effect', 'activation_effect'])
                     st.plotly_chart(fig_seg)
+                # Secondary Metrics by Segment
+                if new_other_metrics:
+                    st.markdown("---")
+                    st.markdown("#### Secondary Metrics by Segment")
+                    
+                    for other_m in new_other_metrics:
+                        st.markdown(f"**{other_m}**")
+                        
+                        # Calculate per segment
+                        # We need raw data here
+                        # df is available from outer scope
+                        
+                        # Group by segment and group
+                        # Filter to just control and treatments involved
+                        relevant_df = df[df[new_group].isin([control_label] + list(strat_res['treatment'].unique()))]
+                        
+                        # Aggregate
+                        agg = relevant_df.groupby([str(new_segment[0]), new_group])[other_m].mean().reset_index()
+                        
+                        # Pivot to get Control vs Treatment cols
+                        # This assumes 1 treatment group for simplicity or handles multiple by rows
+                        
+                        seg_rows = []
+                        segments = relevant_df[str(new_segment[0])].unique()
+                        
+                        for seg_val in segments:
+                            c_val = agg[(agg[str(new_segment[0])] == seg_val) & (agg[new_group] == control_label)][other_m]
+                            mean_c = c_val.values[0] if not c_val.empty else 0
+                            
+                            # For each treatment
+                            treatments = [g for g in relevant_df[new_group].unique() if g != control_label]
+                            for t_group in treatments:
+                                t_val = agg[(agg[str(new_segment[0])] == seg_val) & (agg[new_group] == t_group)][other_m]
+                                mean_t = t_val.values[0] if not t_val.empty else 0
+                                
+                                diff = mean_t - mean_c
+                                rel = (diff / mean_c) if mean_c != 0 else 0
+                                
+                                seg_rows.append({
+                                    'Segment': seg_val,
+                                    'Treatment': t_group,
+                                    'Control Mean': mean_c,
+                                    'Treatment Mean': mean_t,
+                                    'Difference': diff,
+                                    'Relative Diff': rel
+                                })
+                        
+                        if seg_rows:
+                            st.dataframe(pd.DataFrame(seg_rows).style.format({
+                                'Control Mean': '{:.4f}',
+                                'Treatment Mean': '{:.4f}',
+                                'Difference': '{:.4f}',
+                                'Relative Diff': '{:.2%}'
+                            }))
             else:
                 st.warning("Could not perform stratified analysis. Check segment column.")
     
