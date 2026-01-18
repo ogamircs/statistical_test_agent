@@ -14,7 +14,7 @@ if 'agent' not in st.session_state or not hasattr(st.session_state.agent, 'analy
     st.session_state.agent = ABAgent()
 
 # --- SIDEBAR ---
-st.sidebar.title("A/B Pilot Interaction")
+st.sidebar.title("AB Testing Platform")
 uploaded_file = st.sidebar.file_uploader("Upload Experiment CSV", type=['csv'])
 
 st.sidebar.divider()
@@ -38,7 +38,7 @@ if uploaded_file:
 
 
 # --- MAIN ---
-st.title("🧪 AntiGravity A/B Testing Agent")
+st.title("🧪 AB Testing Platform")
 
 if st.session_state.agent.data is not None:
     df = st.session_state.agent.data
