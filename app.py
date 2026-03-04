@@ -11,7 +11,6 @@ Provides a web-based chat interface for:
 
 import os
 import chainlit as cl
-from chainlit.input_widget import TextInput, Select
 from dotenv import load_dotenv
 
 from src import ABTestingAgent
@@ -19,57 +18,18 @@ from src import ABTestingAgent
 load_dotenv()
 
 
-@cl.on_chat_start
-async def start():
-    """Initialize the chat session"""
+def get_or_create_agent() -> ABTestingAgent:
+    """
+    Return the session agent, creating it lazily when missing.
 
-    # Create the agent for this session
-    agent = ABTestingAgent()
-    cl.user_session.set("agent", agent)
-    cl.user_session.set("uploaded_file", None)
-
-    # Welcome message
-    welcome_message = """# Welcome to the A/B Testing Analysis Agent
-
-I'm your AI assistant for analyzing A/B test experiments. I can help you:
-
-- **Load and explore CSV data** containing experiment results
-- **Run statistical A/B tests** for individual segments or overall
-- **Generate comprehensive reports** with significance tests and effect sizes
-- **Create interactive visualizations** to explore your results
-- **Answer questions** about your data
-
-## Getting Started
-
-1. **Upload your CSV file** using the attachment button (📎)
-2. I'll analyze the columns and help you set up the correct mappings
-3. Specify which column contains treatment/control groups
-4. Run the analysis!
-5. Ask me to **show charts** or **visualize** the results
-
-## What Your CSV Should Contain
-
-Your data should include:
-- **Customer/User ID** - Unique identifier for each customer
-- **Group indicator** - Which group (treatment or control) each customer belongs to
-- **Effect/Metric value** - The outcome measure for each customer
-- **Segment** (optional) - Customer segments for segmented analysis
-- **Duration** (optional) - Experiment duration
-
-## Available Visualizations
-
-Ask me to show you:
-- **Dashboard** - Comprehensive overview
-- **Treatment vs Control** - Compare group means
-- **Effect sizes** - With confidence intervals
-- **P-values** - Significance results
-- **Power analysis** - Statistical power
-- **Cohen's d** - Standardized effect sizes
-
-**Upload a CSV file or describe your data to get started!**
-"""
-
-    await cl.Message(content=welcome_message).send()
+    This avoids hard dependency on on_chat_start callback initialization.
+    """
+    agent = cl.user_session.get("agent")
+    if agent is None:
+        agent = ABTestingAgent()
+        cl.user_session.set("agent", agent)
+        cl.user_session.set("uploaded_file", None)
+    return agent
 
 
 async def display_charts(agent):
@@ -99,7 +59,7 @@ async def display_charts(agent):
 async def main(message: cl.Message):
     """Handle incoming messages"""
 
-    agent = cl.user_session.get("agent")
+    agent = get_or_create_agent()
 
     # Check for file attachments
     if message.elements:
@@ -162,7 +122,7 @@ async def setup_agent(settings):
 @cl.action_callback("run_full_analysis")
 async def on_action_full_analysis(action):
     """Callback for full analysis action button"""
-    agent = cl.user_session.get("agent")
+    agent = get_or_create_agent()
 
     await cl.Message(content="Running full segmented analysis...").send()
 
@@ -179,7 +139,7 @@ async def on_action_full_analysis(action):
 @cl.action_callback("show_data_summary")
 async def on_action_data_summary(action):
     """Callback for data summary action button"""
-    agent = cl.user_session.get("agent")
+    agent = get_or_create_agent()
 
     response = await cl.make_async(agent.run)(
         "Show me a summary of the loaded data"
@@ -191,7 +151,7 @@ async def on_action_data_summary(action):
 @cl.action_callback("show_charts")
 async def on_action_show_charts(action):
     """Callback for showing charts"""
-    agent = cl.user_session.get("agent")
+    agent = get_or_create_agent()
 
     response = await cl.make_async(agent.run)(
         "Generate all charts for the analysis"
@@ -207,8 +167,9 @@ async def on_action_show_charts(action):
 async def on_action_clear(action):
     """Callback for clearing conversation"""
     agent = cl.user_session.get("agent")
-    agent.clear_memory()
-    agent.clear_charts()
+    if agent is not None:
+        agent.clear_memory()
+        agent.clear_charts()
 
     await cl.Message(content="Conversation history cleared. You can start fresh!").send()
 
