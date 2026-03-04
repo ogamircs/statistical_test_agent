@@ -47,7 +47,7 @@ class ABTestingAgent:
     - Generating interactive visualizations
     """
 
-    def __init__(self, model_name: str = "gpt-4o", temperature: float = 0):
+    def __init__(self, model_name: str = "gpt-5.2", temperature: float = 0):
         self.llm = ChatOpenAI(model=model_name, temperature=temperature)
         self.analyzer = ABTestAnalyzer()
         self.spark_analyzer = None  # Will be initialized if needed for large files
