@@ -1,85 +1,46 @@
-"""Test the visualization module"""
+"""Visualization smoke tests for A/B charts."""
 
-from ab_testing import ABTestAnalyzer, ABTestVisualizer
+from pathlib import Path
 
-def test_visualizations():
-    print("Testing A/B Test Visualizations...")
-    print("=" * 60)
+from src.statistics import ABTestAnalyzer, ABTestVisualizer
 
-    # Initialize
+
+DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "sample_ab_data.csv"
+
+
+def _build_results():
     analyzer = ABTestAnalyzer()
-    visualizer = ABTestVisualizer()
+    analyzer.load_data(str(DATA_PATH))
+    config = analyzer.auto_configure()
+    assert config["success"] is True
 
-    # Load sample data
-    print("\n1. Loading data...")
-    analyzer.load_data("sample_ab_data.csv")
-
-    # Configure
-    print("2. Configuring columns...")
-    analyzer.set_column_mapping({
-        "customer_id": "customer_id",
-        "group": "experiment_group",
-        "effect_value": "effect_value",
-        "segment": "customer_segment"
-    })
-    analyzer.set_group_labels("treatment", "control")
-
-    # Run analysis
-    print("3. Running analysis...")
     results = analyzer.run_segmented_analysis()
     summary = analyzer.generate_summary(results)
+    return analyzer, results, summary
 
-    print(f"   Found {len(results)} segments")
-    print(f"   Significant: {summary['significant_segments']}")
 
-    # Generate charts
-    print("\n4. Generating charts...")
+def test_create_all_charts() -> None:
+    analyzer, results, summary = _build_results()
+    visualizer = ABTestVisualizer()
+
     charts = visualizer.create_all_charts(
-        results, summary,
+        results,
+        summary,
         df=analyzer.df,
-        group_col="experiment_group",
-        segment_col="customer_segment"
+        group_col=analyzer.column_mapping["group"],
+        segment_col=analyzer.column_mapping.get("segment"),
     )
 
-    print(f"   Generated {len(charts)} charts:")
-    for name, fig in charts.items():
-        print(f"   - {name}: {type(fig).__name__}")
+    assert len(charts) >= 10
+    assert "statistical_summary" in charts
+    assert "dashboard" in charts
 
-    # Test individual charts
-    print("\n5. Testing individual chart functions...")
 
-    fig1 = visualizer.plot_treatment_vs_control(results)
-    print(f"   - Treatment vs Control: OK ({len(fig1.data)} traces)")
+def test_statistical_summary_chart_has_traces() -> None:
+    _, results, _ = _build_results()
+    visualizer = ABTestVisualizer()
 
-    fig2 = visualizer.plot_effect_sizes(results)
-    print(f"   - Effect Sizes: OK ({len(fig2.data)} traces)")
+    fig = visualizer.plot_statistical_summary(results)
 
-    fig3 = visualizer.plot_p_values(results)
-    print(f"   - P-Values: OK ({len(fig3.data)} traces)")
-
-    fig4 = visualizer.plot_sample_sizes(results)
-    print(f"   - Sample Sizes: OK ({len(fig4.data)} traces)")
-
-    fig5 = visualizer.plot_power_analysis(results)
-    print(f"   - Power Analysis: OK ({len(fig5.data)} traces)")
-
-    fig6 = visualizer.plot_cohens_d(results)
-    print(f"   - Cohen's d: OK ({len(fig6.data)} traces)")
-
-    fig7 = visualizer.plot_summary_dashboard(results, summary)
-    print(f"   - Dashboard: OK ({len(fig7.data)} traces)")
-
-    fig8 = visualizer.plot_effect_waterfall(results)
-    print(f"   - Waterfall: OK ({len(fig8.data)} traces)")
-
-    # Save a sample chart to HTML for verification
-    print("\n6. Saving sample chart to HTML...")
-    fig7.write_html("test_dashboard.html")
-    print("   Saved dashboard to test_dashboard.html")
-
-    print("\n" + "=" * 60)
-    print("Visualization Tests: ALL PASSED!")
-    return True
-
-if __name__ == "__main__":
-    test_visualizations()
+    assert fig is not None
+    assert len(fig.data) >= 3

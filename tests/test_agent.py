@@ -1,60 +1,56 @@
-"""Test the LangChain A/B Testing Agent"""
+"""Unit tests for ABTestingAgent orchestration without live OpenAI calls."""
 
-import os
-from dotenv import load_dotenv
+import types
 
-load_dotenv()
+import pytest
+from langchain_core.messages import AIMessage
 
-from agent import ABTestingAgent
+import src.agent as agent_module
+from src.agent import ABTestingAgent
 
-def test_agent():
-    print("Testing LangChain A/B Testing Agent...")
-    print("=" * 60)
 
-    # Check API key
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("ERROR: OPENAI_API_KEY not set")
-        return False
+class _DummyGraphAgent:
+    def invoke(self, _payload):
+        return {"messages": [AIMessage(content="dummy response")]}
 
-    print(f"API Key found: {api_key[:10]}...{api_key[-4:]}")
+    async def ainvoke(self, _payload):
+        return {"messages": [AIMessage(content="dummy async response")]}
 
-    # Initialize agent
-    print("\n1. Initializing agent...")
-    agent = ABTestingAgent()
-    print("   Agent initialized successfully!")
 
-    # Test loading CSV
-    print("\n2. Testing CSV loading...")
-    response = agent.run("Load the CSV file at path: sample_ab_data.csv")
-    print(f"   Response preview: {response[:200]}...")
-
-    # Test setting column mapping
-    print("\n3. Testing column mapping...")
-    response = agent.run(
-        "Set the column mapping: group column is 'experiment_group', "
-        "effect value is 'effect_value', segment is 'customer_segment'"
+@pytest.fixture
+def stubbed_agent(monkeypatch):
+    monkeypatch.setattr(agent_module, "ChatOpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        agent_module,
+        "create_react_agent",
+        lambda _llm, _tools, prompt=None: _DummyGraphAgent(),
     )
-    print(f"   Response preview: {response[:200]}...")
+    return ABTestingAgent()
 
-    # Test setting group labels
-    print("\n4. Testing group labels...")
-    response = agent.run("The treatment label is 'treatment' and control label is 'control'")
-    print(f"   Response preview: {response[:200]}...")
 
-    # Test running analysis
-    print("\n5. Testing full analysis...")
-    response = agent.run("Run a full A/B test analysis for all segments")
-    print(f"   Response preview: {response[:500]}...")
+def test_agent_run_tracks_history(stubbed_agent):
+    response = stubbed_agent.run("hello")
 
-    # Test data query
-    print("\n6. Testing data query...")
-    response = agent.run("What is the average effect value for Premium customers?")
-    print(f"   Response preview: {response[:200]}...")
+    assert response == "dummy response"
+    assert len(stubbed_agent.chat_history) == 2
 
-    print("\n" + "=" * 60)
-    print("LangChain Agent: ALL TESTS PASSED!")
-    return True
 
-if __name__ == "__main__":
-    test_agent()
+def test_agent_has_expected_tools(stubbed_agent):
+    tools = stubbed_agent._create_tools()
+    names = {tool.name for tool in tools}
+
+    expected = {
+        "load_csv",
+        "load_and_auto_analyze",
+        "configure_and_analyze",
+        "auto_configure_and_analyze",
+        "generate_charts",
+    }
+    assert expected.issubset(names)
+
+
+def test_clear_memory(stubbed_agent):
+    stubbed_agent.run("hello")
+    stubbed_agent.clear_memory()
+
+    assert stubbed_agent.chat_history == []

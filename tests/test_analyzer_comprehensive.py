@@ -106,6 +106,23 @@ class TestColumnDetection:
         assert config['labels']['treatment'] == 'treatment'
         assert config['labels']['control'] == 'control'
 
+    def test_auto_configure_does_not_pick_pre_metric_as_post(self, analyzer):
+        """Auto-config should prefer post-period metric over pre-period similarly named columns."""
+        df = pd.DataFrame({
+            'customer_id': [f'C{i}' for i in range(10)],
+            'experiment_group': ['treatment'] * 5 + ['control'] * 5,
+            'pre_revenue': [100.0] * 10,
+            'post_revenue': [110.0] * 5 + [100.0] * 5,
+            'segment': ['A'] * 10,
+        })
+
+        analyzer.set_dataframe(df)
+        config = analyzer.auto_configure()
+
+        assert config['success'] is True
+        assert config['mapping']['pre_effect'] == 'pre_revenue'
+        assert config['mapping']['post_effect'] == 'post_revenue'
+
 
 class TestStatisticalCalculations:
     """Test core statistical calculation methods"""
@@ -452,6 +469,23 @@ class TestEdgeCases:
         assert result.effect_size == 0
         # P-value might be NaN when variance is zero
         assert np.isnan(result.p_value) or result.p_value == 1.0
+
+    def test_zero_variance_with_constant_difference_is_significant(self, analyzer):
+        """Deterministic group separation should remain significant even with zero variance."""
+        data = pd.DataFrame({
+            'group': ['treatment'] * 50 + ['control'] * 50,
+            'effect': [1.0] * 50 + [0.0] * 50,
+        })
+
+        analyzer.set_dataframe(data)
+        analyzer.set_column_mapping({'group': 'group', 'effect_value': 'effect'})
+        analyzer.set_group_labels('treatment', 'control')
+
+        result = analyzer.run_ab_test()
+
+        assert result.effect_size == 1.0
+        assert result.p_value == 0.0
+        assert result.is_significant is True
 
 
 class TestCompleteWorkflow:

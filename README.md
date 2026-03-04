@@ -32,7 +32,10 @@ ab_testing_agent/
 │   └── statistics/             # Statistical analysis module
 │       ├── __init__.py
 │       ├── models.py           # Data structures (ABTestResult)
-│       ├── analyzer.py         # Statistical analysis engine
+│       ├── analyzer.py         # Analysis facade/orchestrator
+│       ├── data_manager.py     # Data loading and auto-mapping
+│       ├── statsmodels_engine.py # Statsmodels-based inference engine
+│       ├── summary_builder.py  # Summary and recommendations
 │       └── visualizer.py       # Plotly visualization charts
 │
 ├── data/                       # Data files directory
@@ -76,12 +79,17 @@ ab_testing_agent/
 │                Statistics Module (src/statistics/)              │
 ├─────────────────────────────────────────────────────────────────┤
 │  ABTestAnalyzer (analyzer.py)                                   │
-│  - Data loading & column detection                              │
-│  - T-tests & statistical calculations                           │
-│  - Cohen's d effect size                                        │
-│  - Power analysis                                               │
-│  - Segment-level analysis                                       │
-│  - Summary & recommendations                                    │
+│  - Thin facade that orchestrates modular components             │
+│                                                                 │
+│  ABTestDataManager (data_manager.py)                            │
+│  - Data loading, column detection, auto-configuration           │
+│                                                                 │
+│  StatsmodelsABTestEngine (statsmodels_engine.py)                │
+│  - OLS-based treatment effect estimation (HC3 robust SE)        │
+│  - Proportion tests, AA tests, power analysis, Bayesian MC      │
+│                                                                 │
+│  ABTestSummaryBuilder (summary_builder.py)                      │
+│  - Aggregation and recommendation generation                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  ABTestVisualizer (visualizer.py)                               │
 │  - Treatment vs Control charts                                  │
@@ -204,13 +212,27 @@ The agent provides the following statistical measures:
 The main LangChain agent that provides a conversational interface. Uses LangGraph's ReAct pattern with custom tools for data analysis.
 
 ### src/statistics/analyzer.py
-Core statistical analysis engine:
-- Column auto-detection based on naming patterns
-- T-tests for continuous metrics
-- Effect size calculations (absolute and Cohen's d)
-- Power analysis using statsmodels
-- Segment-level analysis
-- Summary generation with recommendations
+Facade/orchestration layer that coordinates data, inference, and reporting components.
+
+### src/statistics/data_manager.py
+Data lifecycle and schema-inference layer:
+- CSV loading and dataframe access
+- Column auto-detection
+- Best-guess auto-configuration
+- Data summary and distribution helpers
+
+### src/statistics/statsmodels_engine.py
+Statsmodels-first inferential layer:
+- OLS treatment-effect estimation with robust covariance
+- AA test, two-proportion z-test, power/sample-size calculations
+- Difference-in-differences estimation
+- Bayesian Monte Carlo effect estimation
+
+### src/statistics/summary_builder.py
+Transforms segment-level results into:
+- Executive summary metrics
+- Detailed tabular payloads for UI/reporting
+- Actionable recommendations
 
 ### src/statistics/visualizer.py
 Plotly-based visualization module:
