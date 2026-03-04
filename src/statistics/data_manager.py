@@ -135,6 +135,12 @@ class ABTestDataManager:
         for i, col_lower in enumerate(columns):
             col = original_columns[i]
             if any(pattern in col_lower for pattern in post_effect_patterns) and numeric_mask[col]:
+                # Do not let pre-period metrics (e.g., pre_revenue) leak into
+                # post-effect suggestions.
+                if col in suggestions["pre_effect"] or any(
+                    pattern in col_lower for pattern in pre_effect_patterns
+                ):
+                    continue
                 if col not in suggestions["post_effect"]:
                     suggestions["post_effect"].append(col)
 

@@ -222,12 +222,20 @@ class StatsmodelsABTestEngine:
         var_control = float(np.var(control_data, ddof=1))
         if var_treatment == 0.0 and var_control == 0.0:
             effect = self._zero_if_tiny(float(np.mean(treatment_data) - np.mean(control_data)))
+            # Deterministic case: when both groups are constant, significance depends
+            # entirely on whether their means differ.
+            if effect == 0.0:
+                t_statistic = 0.0
+                p_value = 1.0
+            else:
+                t_statistic = float(np.sign(effect) * np.inf)
+                p_value = 0.0
             return {
                 "treatment_mean": float(np.mean(treatment_data)),
                 "control_mean": float(np.mean(control_data)),
                 "effect_size": effect,
-                "t_statistic": 0.0,
-                "p_value": 1.0,
+                "t_statistic": t_statistic,
+                "p_value": p_value,
                 "confidence_interval": (effect, effect),
             }
 
