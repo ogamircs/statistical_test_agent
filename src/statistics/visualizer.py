@@ -444,182 +444,155 @@ class ABTestVisualizer:
 
     def plot_statistical_summary(self, results: List[ABTestResult]) -> go.Figure:
         """
-        Create a comprehensive 2x3 dashboard showing all key metrics from the results table:
-        - T-test p-values
-        - T-test effect sizes
-        - Proportion test p-values
-        - Proportion test effect sizes
-        - Total effect sizes
+        Create a compact, readable statistical summary for chat UI.
+
+        This layout intentionally uses only 2 panels to avoid crowded small multiples
+        in narrow chat containers.
         """
+        segments = [r.segment for r in results]
+        t_pvals = [r.p_value for r in results]
+        prop_pvals = [r.proportion_p_value for r in results]
+
+        t_effects = [r.effect_size for r in results]
+        prop_effects = [r.proportion_effect_per_customer for r in results]
+        total_effects = [r.total_effect_per_customer for r in results]
+
+        # Fixed metric colors are easier to scan than significance-colored bars
+        # in narrow chat containers.
+        t_pval_color = 'rgba(59, 130, 246, 0.78)'
+        prop_pval_color = 'rgba(139, 92, 246, 0.78)'
+        t_effect_color = 'rgba(16, 185, 129, 0.95)'
+        prop_effect_color = 'rgba(139, 92, 246, 0.92)'
+
         fig = make_subplots(
-            rows=2, cols=3,
+            rows=2, cols=1,
             subplot_titles=(
-                '<b>T-test P-Values</b>',
-                '<b>T-test Effect Size</b>',
-                '<b>Total Effect Size</b>',
-                '<b>Proportion P-Values</b>',
-                '<b>Proportion Effect Size</b>',
-                '<b>Effect Comparison</b>'
+                '<b>P-Values (T-test vs Proportion)</b>',
+                '<b>Effects per Customer (T-test, Proportion, Total)</b>'
             ),
-            vertical_spacing=0.30,
-            horizontal_spacing=0.15
+            vertical_spacing=0.22
         )
 
-        segments = [r.segment for r in results]
+        # Panel 1: p-values for both tests
+        fig.add_trace(
+            go.Bar(
+                name='T-test p-value',
+                x=segments,
+                y=t_pvals,
+                marker_color=t_pval_color,
+                hovertemplate='Segment: %{x}<br>T-test p: %{y:.4f}<extra></extra>',
+            ),
+            row=1,
+            col=1
+        )
+        fig.add_trace(
+            go.Bar(
+                name='Proportion p-value',
+                x=segments,
+                y=prop_pvals,
+                marker_color=prop_pval_color,
+                hovertemplate='Segment: %{x}<br>Proportion p: %{y:.4f}<extra></extra>',
+            ),
+            row=1,
+            col=1
+        )
+        fig.add_hline(
+            y=0.05,
+            line_dash='dash',
+            line_color=self.colors['significant_neg'],
+            line_width=2,
+            row=1,
+            col=1
+        )
 
-        # Row 1, Col 1: T-test P-Values
-        t_pvals = [r.p_value for r in results]
-        t_pval_colors = [self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant'] for p in t_pvals]
-        fig.add_trace(go.Bar(
-            x=segments, y=t_pvals,
-            marker_color=t_pval_colors,
-            text=[f'{p:.3f}' for p in t_pvals],
-            textposition='outside',
-            textfont=dict(size=13),
-            showlegend=False
-        ), row=1, col=1)
-        fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=2, row=1, col=1)
+        # Panel 2: effect comparison
+        fig.add_trace(
+            go.Bar(
+                name='T-test effect',
+                x=segments,
+                y=t_effects,
+                marker_color=t_effect_color,
+                hovertemplate='Segment: %{x}<br>T-test effect: %{y:.4f}<extra></extra>',
+            ),
+            row=2,
+            col=1
+        )
+        fig.add_trace(
+            go.Bar(
+                name='Proportion effect',
+                x=segments,
+                y=prop_effects,
+                marker_color=prop_effect_color,
+                hovertemplate='Segment: %{x}<br>Proportion effect: %{y:.4f}<extra></extra>',
+            ),
+            row=2,
+            col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                name='Total effect',
+                x=segments,
+                y=total_effects,
+                mode='lines+markers',
+                marker=dict(size=8, color=self.colors['combined']),
+                line=dict(width=2, color=self.colors['combined']),
+                hovertemplate='Segment: %{x}<br>Total effect: %{y:.4f}<extra></extra>',
+            ),
+            row=2,
+            col=1
+        )
+        fig.add_hline(y=0, line_dash='solid', line_color=self.colors['grid'], row=2, col=1)
 
-        # Row 1, Col 2: T-test Effect Size
-        t_effects = [r.effect_size for r in results]
-        t_effect_colors = [
-            self.colors['significant_pos'] if r.is_significant and r.effect_size > 0
-            else self.colors['significant_neg'] if r.is_significant and r.effect_size < 0
-            else self.colors['not_significant']
-            for r in results
-        ]
-        fig.add_trace(go.Bar(
-            x=segments, y=t_effects,
-            marker_color=t_effect_colors,
-            text=[f'{e:.3f}' for e in t_effects],
-            textposition='outside',
-            textfont=dict(size=13),
-            showlegend=False
-        ), row=1, col=2)
-        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=2)
-
-        # Row 1, Col 3: Total Effect Size
-        total_effects = [r.total_effect_per_customer for r in results]
-        total_colors = [
-            self.colors['combined'] if t > 0 else self.colors['significant_neg'] if t < 0 else self.colors['not_significant']
-            for t in total_effects
-        ]
-        fig.add_trace(go.Bar(
-            x=segments, y=total_effects,
-            marker_color=total_colors,
-            text=[f'{t:.3f}' for t in total_effects],
-            textposition='outside',
-            textfont=dict(size=13),
-            showlegend=False
-        ), row=1, col=3)
-        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=3)
-
-        # Row 2, Col 1: Proportion P-Values
-        prop_pvals = [r.proportion_p_value for r in results]
-        prop_pval_colors = [self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant'] for p in prop_pvals]
-        fig.add_trace(go.Bar(
-            x=segments, y=prop_pvals,
-            marker_color=prop_pval_colors,
-            text=[f'{p:.3f}' for p in prop_pvals],
-            textposition='outside',
-            textfont=dict(size=13),
-            showlegend=False
-        ), row=2, col=1)
-        fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=2, row=2, col=1)
-
-        # Row 2, Col 2: Proportion Effect Size
-        prop_effects = [r.proportion_effect_per_customer for r in results]
-        prop_effect_colors = [
-            self.colors['proportion'] if r.proportion_is_significant and e > 0
-            else self.colors['significant_neg'] if r.proportion_is_significant and e < 0
-            else self.colors['not_significant']
-            for r, e in zip(results, prop_effects)
-        ]
-        fig.add_trace(go.Bar(
-            x=segments, y=prop_effects,
-            marker_color=prop_effect_colors,
-            text=[f'{e:.3f}' for e in prop_effects],
-            textposition='outside',
-            textfont=dict(size=13),
-            showlegend=False
-        ), row=2, col=2)
-        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=2, col=2)
-
-        # Row 2, Col 3: Effect Comparison (simplified stacked bar)
-        # Stack proportion on top of t-test effect
-        fig.add_trace(go.Bar(
-            name='T-test',
-            x=segments, y=t_effects,
-            marker_color=self.colors['t_test'],
-            text=[f'{e:.3f}' for e in t_effects],
-            textposition='inside',
-            textfont=dict(size=12, color='white'),
-            showlegend=True
-        ), row=2, col=3)
-        fig.add_trace(go.Bar(
-            name='Proportion',
-            x=segments, y=prop_effects,
-            marker_color=self.colors['proportion'],
-            text=[f'{e:.3f}' for e in prop_effects],
-            textposition='inside',
-            textfont=dict(size=12, color='white'),
-            showlegend=True
-        ), row=2, col=3)
-        fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=2, col=3)
-
-        # Apply layout (without layout_defaults to avoid duplicate margin)
+        # Layout tuned for readability inside chat UI
         fig.update_layout(
             template='plotly_white',
-            font=dict(family='Inter, system-ui, sans-serif', size=13, color=self.colors['text']),
+            font=dict(family='Inter, system-ui, sans-serif', size=12, color=self.colors['text']),
             paper_bgcolor=self.colors['background'],
             plot_bgcolor=self.colors['background'],
-            hoverlabel=dict(bgcolor='white', font_size=13),
+            hoverlabel=dict(bgcolor='white', font_size=12),
             title=dict(
-                text='<b>Statistical Results Summary</b><br><span style="font-size:13px;color:#6B7280">T-test & Proportion Test: P-Values, Effect Sizes, and Comparison</span>',
+                text='<b>Statistical Results Summary</b>',
                 x=0.5,
                 xanchor='center',
-                font=dict(size=20)
+                font=dict(size=20, color=self.colors['text'])
             ),
-            height=950,
+            height=700,
             barmode='group',
-            bargap=0.35,
-            legend=dict(
-                orientation='h',
-                yanchor='bottom',
-                y=-0.08,
-                xanchor='center',
-                x=0.83,
-                bgcolor='rgba(255,255,255,0.9)',
-                font=dict(size=12)
-            ),
-            margin=dict(l=80, r=60, t=140, b=80)
+            bargap=0.24,
+            hovermode='x',
+            showlegend=False,
+            margin=dict(l=70, r=35, t=90, b=75)
         )
 
-        # Update axes labels with larger fonts
-        fig.update_yaxes(title_text='P-Value', row=1, col=1, title_font=dict(size=13))
-        fig.update_yaxes(title_text='Effect', row=1, col=2, title_font=dict(size=13))
-        fig.update_yaxes(title_text='Total Effect', row=1, col=3, title_font=dict(size=13))
-        fig.update_yaxes(title_text='P-Value', row=2, col=1, title_font=dict(size=13))
-        fig.update_yaxes(title_text='Effect', row=2, col=2, title_font=dict(size=13))
-        fig.update_yaxes(title_text='Effect', row=2, col=3, title_font=dict(size=13))
+        # Axis titles
+        fig.update_yaxes(title_text='P-value', row=1, col=1, title_font=dict(size=13))
+        fig.update_yaxes(title_text='Effect', row=2, col=1, title_font=dict(size=13))
 
-        # Style all subplots with larger fonts
+        # Keep p-value charts in a readable range with alpha threshold visible
+        max_p = max(max(t_pvals), max(prop_pvals))
+        fig.update_yaxes(range=[0, max(max_p * 1.15, 0.1)], row=1, col=1)
+
+        # Style subplots for compact chat rendering
         for i in range(1, 3):
-            for j in range(1, 4):
-                fig.update_xaxes(showgrid=False, row=i, col=j, tickfont=dict(size=12))
-                fig.update_yaxes(gridcolor=self.colors['grid'], row=i, col=j, tickfont=dict(size=12))
+            fig.update_xaxes(
+                showgrid=False,
+                row=i,
+                col=1,
+                tickfont=dict(size=11),
+                tickangle=-20,
+                automargin=True
+            )
+            fig.update_yaxes(
+                gridcolor=self.colors['grid'],
+                row=i,
+                col=1,
+                tickfont=dict(size=11)
+            )
 
-        # Update subplot title styling with larger fonts
+        # Subplot title styling
         for annotation in fig['layout']['annotations']:
             if annotation['text'].startswith('<b>'):
-                annotation['font'] = dict(size=15, color=self.colors['text'])
-
-        # Make the comparison chart stacked instead of grouped
-        fig.update_layout(barmode='stack')
-        # Force only the last two traces (in row 2, col 3) to stack
-        for trace_idx in [6, 7]:  # The two bar traces in row 2, col 3
-            if trace_idx < len(fig.data):
-                fig.data[trace_idx].offsetgroup = 0
+                annotation['font'] = dict(size=14, color=self.colors['text'])
 
         return fig
 
