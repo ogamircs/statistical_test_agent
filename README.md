@@ -1,20 +1,36 @@
 # A/B Testing Analysis Agent
 
-An intelligent conversational agent for analyzing A/B test experiments, powered by LangChain and GPT-4. Upload your experiment data and get comprehensive statistical analysis through natural language interaction.
+An intelligent conversational agent for analyzing A/B test experiments, powered by LangChain and OpenAI models (default backend model: `gpt-5.2`). Upload experiment data and get comprehensive statistical analysis through natural language interaction.
 
 ## Features
 
 - **Conversational Interface**: Chat naturally about your A/B test data
+- **Automatic Backend Switching**: Uses pandas by default and automatically switches to PySpark for larger files with safe pandas fallback
 - **Automatic Column Detection**: Smart detection of experiment columns based on naming patterns
-- **Comprehensive Statistical Analysis**:
-  - T-tests for significance testing
+- **Canonical Result Schema**: Consistent segment result payload across pandas and Spark analysis paths
+- **Comprehensive Statistical Analysis (statsmodels-first)**:
+  - OLS/GLM/robust model-based treatment effect estimation
   - Effect size calculations (Cohen's d)
-  - 95% Confidence intervals
-  - Statistical power analysis
-  - Sample size adequacy assessment
+  - 95% confidence intervals and Bayesian credible intervals
+  - Statistical power analysis and sample size adequacy assessment
+  - Multiple-testing correction (Benjamini-Hochberg / FDR)
+  - Guardrails for unstable inference and proportion-test edge cases
+- **Experiment Diagnostics**:
+  - SRM (sample ratio mismatch) checks
+  - Assumption diagnostics (normality/variance checks)
+  - Outlier sensitivity diagnostics
+- **Sequential Decision Support**: Optional interim-look recommendations (continue/stop efficacy/stop futility)
+- **Metric/Model Support**:
+  - Continuous metrics (OLS HC3)
+  - Binary metrics (Binomial GLM)
+  - Count metrics (Poisson/Negative Binomial)
+  - Heavy-tail robust strategy
+  - Optional covariate-adjusted effects
 - **Segment-level Analysis**: Analyze results across customer segments
 - **Interactive Visualizations**: Plotly-powered charts and dashboards
 - **Actionable Recommendations**: Get clear guidance based on your results
+- **Reliability & Observability**: Structured user-facing error codes, logging, and safer query behavior
+- **CI-Ready Test Suite**: GitHub Actions workflow runs compile checks, smoke analysis, and pytest
 
 ## Project Structure
 
@@ -28,7 +44,9 @@ ab_testing_agent/
 │
 ├── src/                        # Source code
 │   ├── __init__.py
-│   ├── agent.py                # LangChain conversational agent
+│   ├── agent.py                # ABTestingAgent orchestration
+│   ├── agent_tools.py          # Agent tool handlers
+│   ├── agent_reporting.py      # Tool/report rendering and structured errors
 │   └── statistics/             # Statistical analysis module
 │       ├── __init__.py
 │       ├── models.py           # Data structures (ABTestResult)
@@ -49,7 +67,11 @@ ab_testing_agent/
 │   ├── __init__.py
 │   ├── test_ab_module.py       # Statistical module tests
 │   ├── test_agent.py           # Agent tests
+│   ├── test_parity_pandas_spark.py # Golden parity tests (pandas vs Spark)
 │   └── test_visualizations.py  # Visualization tests
+│
+├── .github/workflows/          # CI workflows
+│   └── ci.yml                  # Compile/smoke/pytest checks
 │
 └── .chainlit/                  # Chainlit configuration
     └── config.toml
@@ -67,11 +89,9 @@ ab_testing_agent/
 ┌─────────────────────────────────────────────────────────────────┐
 │                   ABTestingAgent (src/agent.py)                 │
 │              LangChain Agent with LangGraph ReAct               │
-│                                                                 │
-│  Tools:                                                         │
-│  - load_csv           - run_ab_test        - query_data         │
-│  - set_column_mapping - run_full_analysis  - get_data_summary   │
-│  - set_group_labels   - get_column_values  - calculate_stats    │
+│  - backend selection + Spark fallback                           │
+│  - modular tool layer (agent_tools.py)                          │
+│  - modular report/error layer (agent_reporting.py)              │
 └─────────────────────────────┬───────────────────────────────────┘
                               │
                               ▼
@@ -86,7 +106,11 @@ ab_testing_agent/
 │                                                                 │
 │  StatsmodelsABTestEngine (statsmodels_engine.py)                │
 │  - OLS-based treatment effect estimation (HC3 robust SE)        │
+│  - GLM support (binary/count), heavy-tail robust strategy        │
 │  - Proportion tests, AA tests, power analysis, Bayesian MC      │
+│  - FDR/BH multiple-testing correction + inference guardrails     │
+│  - SRM/assumption/outlier diagnostics                            │
+│  - Sequential decision support (interim looks)                  │
 │                                                                 │
 │  ABTestSummaryBuilder (summary_builder.py)                      │
 │  - Aggregation and recommendation generation                    │
@@ -209,7 +233,21 @@ The agent provides the following statistical measures:
 ## Modules
 
 ### src/agent.py
-The main LangChain agent that provides a conversational interface. Uses LangGraph's ReAct pattern with custom tools for data analysis.
+Main LangChain agent orchestration layer:
+- backend switching (pandas vs Spark)
+- conversational `run`/`arun` lifecycle
+- tool registration via modular tool handlers
+
+### src/agent_tools.py
+Tool implementation layer for the conversational agent:
+- data loading/configuration/analysis tools
+- chart generation and query/data helper tools
+- centralized tool-level error handling
+
+### src/agent_reporting.py
+Rendering and reliability layer:
+- markdown/text formatting for tool outputs
+- structured user-facing errors and stable error codes
 
 ### src/statistics/analyzer.py
 Facade/orchestration layer that coordinates data, inference, and reporting components.
@@ -224,9 +262,13 @@ Data lifecycle and schema-inference layer:
 ### src/statistics/statsmodels_engine.py
 Statsmodels-first inferential layer:
 - OLS treatment-effect estimation with robust covariance
+- GLM binomial/count model support
+- Heavy-tail robust inference path
 - AA test, two-proportion z-test, power/sample-size calculations
 - Difference-in-differences estimation
 - Bayesian Monte Carlo effect estimation
+- Sequential decision support for interim looks
+- SRM/assumption/outlier diagnostics and guardrails
 
 ### src/statistics/summary_builder.py
 Transforms segment-level results into:
@@ -246,7 +288,8 @@ Plotly-based visualization module:
 
 ### src/statistics/models.py
 Data structures for analysis results:
-- `ABTestResult`: Dataclass containing all test metrics for a segment
+- `ABTestResult`: Canonical dataclass used across pandas and Spark paths
+- Includes adjusted p-values, diagnostics, model metadata, and sequential fields
 
 ## Configuration
 
@@ -268,7 +311,7 @@ Edit `.chainlit/config.toml` to customize:
 ### Agent Settings
 
 Configure in `src/agent.py`:
-- `model_name`: LLM model (default: "gpt-4o")
+- `model_name`: LLM model (default: `"gpt-5.2"`)
 - `temperature`: Response randomness (default: 0)
 
 ### Statistical Settings
@@ -276,6 +319,19 @@ Configure in `src/agent.py`:
 Configure in `src/statistics/analyzer.py`:
 - `significance_level`: Alpha for tests (default: 0.05)
 - `power_threshold`: Minimum power (default: 0.8)
+
+## Testing and CI
+
+Run locally:
+
+```bash
+uv run python -m compileall -q src tests app.py
+uv run pytest -q -ra
+```
+
+CI:
+- `.github/workflows/ci.yml` runs syntax checks, a smoke analyzer flow, and the pytest suite.
+- Spark-dependent tests skip cleanly when PySpark/runtime is unavailable.
 
 ## Troubleshooting
 

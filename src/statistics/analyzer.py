@@ -9,10 +9,11 @@ Facade orchestrating A/B analysis with a modular architecture:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+from statsmodels.stats.multitest import multipletests
 
 from .data_manager import ABTestDataManager
 from .models import AATestResult, ABTestResult
@@ -143,7 +144,7 @@ class ABTestAnalyzer:
             target_p_value=target_p_value,
         )
 
-    def run_proportion_test(self, treatment_data: np.ndarray, control_data: np.ndarray) -> Dict[str, float]:
+    def run_proportion_test(self, treatment_data: np.ndarray, control_data: np.ndarray) -> Dict[str, Any]:
         return self.stats_engine.run_proportion_test(treatment_data, control_data)
 
     def run_bayesian_test(
@@ -162,10 +163,167 @@ class ABTestAnalyzer:
             n_samples=n_samples,
         )
 
+    @staticmethod
+    def _parse_covariate_columns(raw_covariates: Any) -> List[str]:
+        """Normalize optional covariate mapping to a deduplicated list of column names."""
+        if raw_covariates is None:
+            return []
+        if isinstance(raw_covariates, str):
+            candidates = [part.strip() for part in raw_covariates.split(",") if part.strip()]
+        elif isinstance(raw_covariates, Sequence):
+            candidates = [str(value).strip() for value in raw_covariates if str(value).strip()]
+        else:
+            return []
+
+        deduped: List[str] = []
+        for candidate in candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
+
+    def _resolve_covariate_columns(
+        self,
+        *,
+        df: pd.DataFrame,
+        group_col: str,
+        post_effect_col: str,
+        pre_effect_col: Optional[str],
+    ) -> List[str]:
+        """Collect numeric covariates from mapping and pre-period metrics when available."""
+        covariates = self._parse_covariate_columns(self.column_mapping.get("covariates"))
+        if pre_effect_col is not None and pre_effect_col in df.columns and pre_effect_col not in covariates:
+            covariates.append(pre_effect_col)
+
+        excluded = {group_col, post_effect_col}
+        segment_col = self.column_mapping.get("segment")
+        if segment_col:
+            excluded.add(segment_col)
+
+        resolved: List[str] = []
+        for column in covariates:
+            if column in excluded:
+                continue
+            if column not in df.columns:
+                continue
+            if not pd.api.types.is_numeric_dtype(df[column]):
+                continue
+            if column not in resolved:
+                resolved.append(column)
+        return resolved
+
+    @staticmethod
+    def _coerce_int(value: Any, *, default: int, minimum: int = 1) -> int:
+        """Best-effort integer coercion with lower-bound clamping."""
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            numeric = default
+        return max(numeric, minimum)
+
+    @staticmethod
+    def _coerce_float(
+        value: Any,
+        *,
+        default: float,
+        minimum: float = 0.0,
+        maximum: float = 1.0,
+    ) -> float:
+        """Best-effort float coercion with bounded range."""
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = default
+        return float(min(max(numeric, minimum), maximum))
+
+    def _resolve_sequential_config(
+        self,
+        sequential_config: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Resolve optional sequential testing configuration.
+
+        Sequential mode is opt-in through either:
+        - run_ab_test(..., sequential_config={...})
+        - self.column_mapping["sequential"] = {...}
+        """
+        raw_config: Any = (
+            sequential_config
+            if sequential_config is not None
+            else self.column_mapping.get("sequential")
+        )
+
+        if raw_config in (None, False):
+            return {"enabled": False}
+
+        if raw_config is True:
+            raw_dict: Dict[str, Any] = {}
+        elif isinstance(raw_config, Mapping):
+            raw_dict = dict(raw_config)
+        else:
+            return {"enabled": False}
+
+        enabled = bool(raw_dict.get("enabled", True))
+        if not enabled:
+            return {"enabled": False}
+
+        look_index = self._coerce_int(
+            raw_dict.get(
+                "look_index",
+                raw_dict.get("current_look", raw_dict.get("interim_look", 1)),
+            ),
+            default=1,
+            minimum=1,
+        )
+        max_looks = self._coerce_int(
+            raw_dict.get(
+                "max_looks",
+                raw_dict.get("total_looks", raw_dict.get("planned_looks", look_index)),
+            ),
+            default=look_index,
+            minimum=1,
+        )
+        look_index = min(look_index, max_looks)
+
+        method = str(
+            raw_dict.get(
+                "spending_method",
+                raw_dict.get("method", self.stats_engine.DEFAULT_SEQUENTIAL_METHOD),
+            )
+        ).strip().lower()
+
+        return {
+            "enabled": True,
+            "look_index": look_index,
+            "max_looks": max_looks,
+            "spending_method": method,
+            "futility_min_information_fraction": self._coerce_float(
+                raw_dict.get(
+                    "futility_min_information_fraction",
+                    self.stats_engine.DEFAULT_FUTILITY_MIN_INFORMATION_FRACTION,
+                ),
+                default=self.stats_engine.DEFAULT_FUTILITY_MIN_INFORMATION_FRACTION,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            "futility_p_value_threshold": self._coerce_float(
+                raw_dict.get(
+                    "futility_p_value_threshold",
+                    self.stats_engine.DEFAULT_FUTILITY_P_VALUE_THRESHOLD,
+                ),
+                default=self.stats_engine.DEFAULT_FUTILITY_P_VALUE_THRESHOLD,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+        }
+
     # ---------------------------------------------------------------------
     # Core analysis orchestration
     # ---------------------------------------------------------------------
-    def run_ab_test(self, segment_filter: Optional[str] = None) -> ABTestResult:
+    def run_ab_test(
+        self,
+        segment_filter: Optional[str] = None,
+        sequential_config: Optional[Mapping[str, Any]] = None,
+    ) -> ABTestResult:
         """
         Run A/B test for overall data or a specific segment.
         """
@@ -216,6 +374,8 @@ class ABTestAnalyzer:
         control_pre_aligned = None
         treatment_post_aligned = treatment_post_series.to_numpy()
         control_post_aligned = control_post_series.to_numpy()
+        treatment_analysis_df = treatment_df.dropna(subset=[post_effect_col]).copy()
+        control_analysis_df = control_df.dropna(subset=[post_effect_col]).copy()
 
         has_pre_effect = pre_effect_col is not None and pre_effect_col in df_filtered.columns
 
@@ -250,6 +410,8 @@ class ABTestAnalyzer:
                 treatment_post_aligned = treatment_aligned_df[post_effect_col].to_numpy()
                 control_pre_aligned = control_df_for_analysis[pre_effect_col].to_numpy()
                 control_post_aligned = control_df_for_analysis[post_effect_col].to_numpy()
+                treatment_analysis_df = treatment_aligned_df.copy()
+                control_analysis_df = control_df_for_analysis.copy()
 
                 if len(treatment_pre_aligned) > 0:
                     treatment_pre_mean = float(np.mean(treatment_pre_aligned))
@@ -263,10 +425,49 @@ class ABTestAnalyzer:
             treatment_pre_aligned = None
             control_pre_aligned = None
             has_pre_effect = False
+            treatment_analysis_df = treatment_df.dropna(subset=[post_effect_col]).copy()
+            control_analysis_df = control_df.dropna(subset=[post_effect_col]).copy()
+
+        metric_type_option = str(self.column_mapping.get("metric_type", "auto"))
+        count_model_option = str(self.column_mapping.get("count_model", "auto"))
+        heavy_tail_strategy_option = str(
+            self.column_mapping.get("heavy_tail_strategy", "robust")
+        )
+
+        covariate_columns = self._resolve_covariate_columns(
+            df=df_filtered,
+            group_col=group_col,
+            post_effect_col=post_effect_col,
+            pre_effect_col=pre_effect_col,
+        )
+        treatment_model_df = treatment_analysis_df.copy()
+        control_model_df = control_analysis_df.copy()
+        if covariate_columns:
+            required_model_columns = [post_effect_col, *covariate_columns]
+            treatment_model_df = treatment_model_df.dropna(subset=required_model_columns)
+            control_model_df = control_model_df.dropna(subset=required_model_columns)
+
+            if len(treatment_model_df) >= 2 and len(control_model_df) >= 2:
+                treatment_post_aligned = treatment_model_df[post_effect_col].to_numpy()
+                control_post_aligned = control_model_df[post_effect_col].to_numpy()
+
+                if (
+                    has_pre_effect
+                    and pre_effect_col is not None
+                    and pre_effect_col in treatment_model_df.columns
+                    and pre_effect_col in control_model_df.columns
+                ):
+                    treatment_pre_aligned = treatment_model_df[pre_effect_col].to_numpy()
+                    control_pre_aligned = control_model_df[pre_effect_col].to_numpy()
+                    treatment_pre_mean = float(np.mean(treatment_pre_aligned))
+                    control_pre_mean = float(np.mean(control_pre_aligned))
 
         effect_metrics = self.stats_engine.estimate_treatment_effect(
             treatment_data=treatment_post_aligned,
             control_data=control_post_aligned,
+            metric_type=metric_type_option,
+            count_model=count_model_option,
+            heavy_tail_strategy=heavy_tail_strategy_option,
         )
 
         treatment_mean = effect_metrics["treatment_mean"]
@@ -275,6 +476,64 @@ class ABTestAnalyzer:
         t_stat = effect_metrics["t_statistic"]
         p_value = effect_metrics["p_value"]
         confidence_interval = effect_metrics["confidence_interval"]
+        metric_type_selected = effect_metrics.get("metric_type", "continuous")
+        model_type = effect_metrics.get("model_type", "ols_hc3")
+        model_effect = effect_metrics.get("model_effect", effect_size)
+        model_confidence_interval = effect_metrics.get(
+            "model_confidence_interval",
+            confidence_interval,
+        )
+        model_effect_scale = effect_metrics.get("model_effect_scale", "mean_difference")
+        model_effect_exponentiated = effect_metrics.get("model_effect_exponentiated", 1.0)
+        t_test_diagnostics = effect_metrics.get("diagnostics", {})
+        inference_guardrail_triggered = bool(t_test_diagnostics.get("guardrail_triggered", False))
+        inference_blocks_significance = bool(t_test_diagnostics.get("blocks_significance", False))
+
+        covariate_adjustment_applied = False
+        covariates_used: List[str] = []
+        covariate_adjusted_effect = effect_size
+        covariate_adjusted_p_value = p_value
+        covariate_adjusted_confidence_interval = confidence_interval
+        covariate_adjusted_model_type = "none"
+        covariate_adjusted_effect_scale = model_effect_scale
+        covariate_adjusted_effect_exponentiated = model_effect_exponentiated
+        covariate_adjusted_diagnostics: Dict[str, Any] = {}
+
+        if covariate_columns and len(treatment_model_df) >= 2 and len(control_model_df) >= 2:
+            adjusted_effect_metrics = self.stats_engine.estimate_treatment_effect(
+                treatment_data=treatment_model_df[post_effect_col].to_numpy(),
+                control_data=control_model_df[post_effect_col].to_numpy(),
+                metric_type=metric_type_option,
+                treatment_covariates=treatment_model_df[covariate_columns],
+                control_covariates=control_model_df[covariate_columns],
+                covariate_names=covariate_columns,
+                count_model=count_model_option,
+                heavy_tail_strategy=heavy_tail_strategy_option,
+            )
+
+            covariate_adjustment_applied = bool(
+                adjusted_effect_metrics.get("covariate_adjusted", False)
+            )
+            covariates_used = list(adjusted_effect_metrics.get("covariates_used", covariate_columns))
+            covariate_adjusted_effect = adjusted_effect_metrics.get(
+                "model_effect",
+                adjusted_effect_metrics.get("effect_size", effect_size),
+            )
+            covariate_adjusted_p_value = adjusted_effect_metrics.get("p_value", p_value)
+            covariate_adjusted_confidence_interval = adjusted_effect_metrics.get(
+                "model_confidence_interval",
+                adjusted_effect_metrics.get("confidence_interval", confidence_interval),
+            )
+            covariate_adjusted_model_type = adjusted_effect_metrics.get("model_type", "none")
+            covariate_adjusted_effect_scale = adjusted_effect_metrics.get(
+                "model_effect_scale",
+                model_effect_scale,
+            )
+            covariate_adjusted_effect_exponentiated = adjusted_effect_metrics.get(
+                "model_effect_exponentiated",
+                1.0,
+            )
+            covariate_adjusted_diagnostics = adjusted_effect_metrics.get("diagnostics", {})
 
         treatment_post_mean = treatment_mean
         control_post_mean = control_mean
@@ -288,7 +547,7 @@ class ABTestAnalyzer:
             else 1.0,
         )
 
-        is_significant = p_value < self.significance_level
+        is_significant = p_value < self.significance_level and not inference_blocks_significance
 
         if has_pre_effect and treatment_pre_aligned is not None and control_pre_aligned is not None:
             did_metrics = self.stats_engine.estimate_did_effect(
@@ -307,7 +566,54 @@ class ABTestAnalyzer:
 
         prop_results = self.run_proportion_test(treatment_post_aligned, control_post_aligned)
         proportion_diff = prop_results["proportion_diff"]
-        proportion_is_significant = prop_results["p_value"] < self.significance_level
+        proportion_diagnostics = prop_results.get("diagnostics", {})
+        proportion_guardrail_triggered = bool(
+            proportion_diagnostics.get("guardrail_triggered", False)
+        )
+        proportion_blocks_significance = bool(
+            proportion_diagnostics.get("blocks_significance", False)
+        )
+        proportion_is_significant = (
+            prop_results["p_value"] < self.significance_level and not proportion_blocks_significance
+        )
+
+        srm_diagnostics = self.stats_engine.run_srm_diagnostics(
+            treatment_size=len(treatment_post_aligned),
+            control_size=len(control_post_aligned),
+        )
+        assumption_diagnostics = self.stats_engine.run_assumption_diagnostics(
+            treatment_data=treatment_post_aligned,
+            control_data=control_post_aligned,
+        )
+        outlier_sensitivity = self.stats_engine.run_outlier_sensitivity(
+            treatment_data=treatment_post_aligned,
+            control_data=control_post_aligned,
+            baseline_effect=effect_size,
+        )
+
+        diagnostics = {
+            "frequentist": {
+                "t_test": t_test_diagnostics,
+                "proportion_test": proportion_diagnostics,
+                "model_inference": {
+                    "metric_type": metric_type_selected,
+                    "model_type": model_type,
+                    "effect_scale": model_effect_scale,
+                    "model_effect": model_effect,
+                    "model_effect_exponentiated": model_effect_exponentiated,
+                    "covariate_adjustment_applied": covariate_adjustment_applied,
+                    "covariates_used": covariates_used,
+                    "covariate_adjusted_model_type": covariate_adjusted_model_type,
+                    "covariate_adjusted_effect_scale": covariate_adjusted_effect_scale,
+                },
+                "covariate_adjusted": covariate_adjusted_diagnostics,
+            },
+            "experiment_quality": {
+                "srm": srm_diagnostics,
+                "assumptions": assumption_diagnostics,
+                "outlier_sensitivity": outlier_sensitivity,
+            },
+        }
 
         if proportion_is_significant and proportion_diff > 0:
             proportion_effect_per_customer = proportion_diff * control_mean
@@ -333,6 +639,34 @@ class ABTestAnalyzer:
             or bayesian_results["prob_treatment_better"] < 0.05
         )
 
+        sequential_settings = self._resolve_sequential_config(sequential_config)
+        if sequential_settings.get("enabled", False):
+            sequential_results = self.stats_engine.evaluate_sequential_decision(
+                p_value=p_value,
+                effect_size=effect_size,
+                confidence_interval=confidence_interval,
+                look_index=sequential_settings["look_index"],
+                max_looks=sequential_settings["max_looks"],
+                method=sequential_settings["spending_method"],
+                futility_min_information_fraction=sequential_settings[
+                    "futility_min_information_fraction"
+                ],
+                futility_p_value_threshold=sequential_settings["futility_p_value_threshold"],
+            )
+        else:
+            sequential_results = {
+                "enabled": False,
+                "method": "none",
+                "look_index": 0,
+                "max_looks": 0,
+                "information_fraction": 0.0,
+                "alpha_spent": 0.0,
+                "stop_recommended": False,
+                "decision": "not_requested",
+                "rationale": "",
+                "thresholds": {},
+            }
+
         return ABTestResult(
             segment=segment_name,
             treatment_size=len(treatment_post_aligned),
@@ -348,7 +682,23 @@ class ABTestAnalyzer:
             t_statistic=t_stat,
             p_value=p_value,
             is_significant=is_significant,
+            p_value_adjusted=p_value,
+            is_significant_adjusted=is_significant,
             confidence_interval=confidence_interval,
+            metric_type=metric_type_selected,
+            model_type=model_type,
+            model_effect=model_effect,
+            model_confidence_interval=model_confidence_interval,
+            model_effect_scale=model_effect_scale,
+            model_effect_exponentiated=model_effect_exponentiated,
+            covariate_adjustment_applied=covariate_adjustment_applied,
+            covariates_used=covariates_used,
+            covariate_adjusted_effect=covariate_adjusted_effect,
+            covariate_adjusted_p_value=covariate_adjusted_p_value,
+            covariate_adjusted_confidence_interval=covariate_adjusted_confidence_interval,
+            covariate_adjusted_model_type=covariate_adjusted_model_type,
+            covariate_adjusted_effect_scale=covariate_adjusted_effect_scale,
+            covariate_adjusted_effect_exponentiated=covariate_adjusted_effect_exponentiated,
             power=power,
             required_sample_size=required_n,
             is_sample_adequate=power >= self.power_threshold,
@@ -365,6 +715,25 @@ class ABTestAnalyzer:
             proportion_z_stat=prop_results["z_stat"],
             proportion_p_value=prop_results["p_value"],
             proportion_is_significant=proportion_is_significant,
+            proportion_p_value_adjusted=prop_results["p_value"],
+            proportion_is_significant_adjusted=proportion_is_significant,
+            multiple_testing_method="none",
+            multiple_testing_applied=False,
+            inference_guardrail_triggered=inference_guardrail_triggered,
+            proportion_guardrail_triggered=proportion_guardrail_triggered,
+            diagnostics=diagnostics,
+            sequential_mode_enabled=bool(sequential_results["enabled"]),
+            sequential_method=str(sequential_results["method"]),
+            sequential_look_index=int(sequential_results["look_index"]),
+            sequential_max_looks=int(sequential_results["max_looks"]),
+            sequential_information_fraction=float(
+                sequential_results["information_fraction"]
+            ),
+            sequential_alpha_spent=float(sequential_results["alpha_spent"]),
+            sequential_stop_recommended=bool(sequential_results["stop_recommended"]),
+            sequential_decision=str(sequential_results["decision"]),
+            sequential_rationale=str(sequential_results["rationale"]),
+            sequential_thresholds=dict(sequential_results["thresholds"]),
             proportion_effect=proportion_effect,
             proportion_effect_per_customer=proportion_effect_per_customer,
             total_effect=total_effect,
@@ -383,10 +752,13 @@ class ABTestAnalyzer:
             ),
         )
 
-    def run_segmented_analysis(self) -> List[ABTestResult]:
+    def run_segmented_analysis(
+        self,
+        sequential_config: Optional[Mapping[str, Any]] = None,
+    ) -> List[ABTestResult]:
         """Run A/B tests for all segments or overall if no segment column."""
         if "segment" not in self.column_mapping:
-            return [self.run_ab_test()]
+            return [self.run_ab_test(sequential_config=sequential_config)]
 
         segment_col = self.column_mapping["segment"]
         segments = self.df[segment_col].dropna().unique()
@@ -394,11 +766,80 @@ class ABTestAnalyzer:
         results: List[ABTestResult] = []
         for segment in segments:
             try:
-                results.append(self.run_ab_test(segment_filter=segment))
+                results.append(
+                    self.run_ab_test(
+                        segment_filter=segment,
+                        sequential_config=sequential_config,
+                    )
+                )
             except ValueError as error:
                 print(f"Skipping segment '{segment}': {error}")
 
+        if len(results) > 1:
+            self._apply_multiple_testing_correction(results)
+
         return results
+
+    @staticmethod
+    def _sanitize_p_value(p_value: Any) -> float:
+        """Clamp invalid p-values to 1.0 so correction is robust to upstream edge cases."""
+        try:
+            numeric = float(p_value)
+        except (TypeError, ValueError):
+            return 1.0
+        if not np.isfinite(numeric):
+            return 1.0
+        if numeric < 0.0 or numeric > 1.0:
+            return 1.0
+        return numeric
+
+    def _apply_multiple_testing_correction(self, results: List[ABTestResult]) -> None:
+        """Apply BH/FDR correction across segment-level frequentist p-values."""
+        p_values = np.array([self._sanitize_p_value(r.p_value) for r in results], dtype=float)
+        prop_p_values = np.array(
+            [self._sanitize_p_value(r.proportion_p_value) for r in results],
+            dtype=float,
+        )
+
+        try:
+            reject_main, adjusted_main, _, _ = multipletests(
+                p_values,
+                alpha=self.significance_level,
+                method="fdr_bh",
+            )
+            reject_prop, adjusted_prop, _, _ = multipletests(
+                prop_p_values,
+                alpha=self.significance_level,
+                method="fdr_bh",
+            )
+        except Exception:
+            for result in results:
+                result.p_value_adjusted = self._sanitize_p_value(result.p_value)
+                result.is_significant_adjusted = result.is_significant
+                result.proportion_p_value_adjusted = self._sanitize_p_value(result.proportion_p_value)
+                result.proportion_is_significant_adjusted = result.proportion_is_significant
+                result.multiple_testing_method = "none"
+                result.multiple_testing_applied = False
+            return
+
+        for idx, result in enumerate(results):
+            result.p_value_adjusted = float(adjusted_main[idx])
+            result.proportion_p_value_adjusted = float(adjusted_prop[idx])
+            result.multiple_testing_method = "fdr_bh"
+            result.multiple_testing_applied = True
+
+            t_test_blocks = bool(
+                result.diagnostics.get("frequentist", {})
+                .get("t_test", {})
+                .get("blocks_significance", False)
+            )
+            prop_blocks = bool(
+                result.diagnostics.get("frequentist", {})
+                .get("proportion_test", {})
+                .get("blocks_significance", False)
+            )
+            result.is_significant_adjusted = bool(reject_main[idx]) and not t_test_blocks
+            result.proportion_is_significant_adjusted = bool(reject_prop[idx]) and not prop_blocks
 
     def generate_summary(self, results: List[ABTestResult]) -> Dict[str, Any]:
         """Generate aggregate summary and recommendations."""

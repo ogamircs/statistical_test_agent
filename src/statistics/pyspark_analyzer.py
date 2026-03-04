@@ -29,72 +29,77 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 import json
 
+from .models import ABTestResult
+from .summary_builder import ABTestSummaryBuilder
+
 
 @dataclass
-class SparkABTestResult:
-    """Results for a single segment's A/B test"""
-    segment: str
-    treatment_size: int
-    control_size: int
+class SparkABTestResult(ABTestResult):
+    """
+    Spark result type compatible with canonical ABTestResult schema.
 
-    # Pre/Post metrics
-    treatment_pre_mean: float = 0.0
-    treatment_post_mean: float = 0.0
-    control_pre_mean: float = 0.0
-    control_post_mean: float = 0.0
+    Backward-compatibility aliases (`*_lower` / `*_upper`) are exposed as
+    properties while canonical storage uses tuple intervals.
+    """
 
-    # T-test results
-    treatment_mean: float = 0.0
-    control_mean: float = 0.0
-    effect_size: float = 0.0
-    cohens_d: float = 0.0
-    t_statistic: float = 0.0
-    p_value: float = 1.0
-    is_significant: bool = False
-    confidence_interval_lower: float = 0.0
-    confidence_interval_upper: float = 0.0
     pooled_std: float = 0.0
 
-    # Power analysis
-    power: float = 0.0
-    required_sample_size: int = 0
-    is_sample_adequate: bool = False
+    @property
+    def confidence_interval_lower(self) -> float:
+        return float(self.confidence_interval[0])
 
-    # DiD analysis
-    did_treatment_change: float = 0.0
-    did_control_change: float = 0.0
-    did_effect: float = 0.0
+    @confidence_interval_lower.setter
+    def confidence_interval_lower(self, value: float) -> None:
+        self.confidence_interval = (float(value), float(self.confidence_interval[1]))
 
-    # AA test
-    aa_test_passed: bool = True
-    aa_p_value: float = 1.0
-    bootstrapping_applied: bool = False
-    original_control_size: int = 0
+    @property
+    def confidence_interval_upper(self) -> float:
+        return float(self.confidence_interval[1])
 
-    # Proportion test
-    treatment_proportion: float = 0.0
-    control_proportion: float = 0.0
-    proportion_diff: float = 0.0
-    proportion_z_stat: float = 0.0
-    proportion_p_value: float = 1.0
-    proportion_is_significant: bool = False
-    proportion_effect: float = 0.0
-    proportion_effect_per_customer: float = 0.0
+    @confidence_interval_upper.setter
+    def confidence_interval_upper(self, value: float) -> None:
+        self.confidence_interval = (float(self.confidence_interval[0]), float(value))
 
-    # Combined effects
-    total_effect: float = 0.0
-    total_effect_per_customer: float = 0.0
+    @property
+    def bayesian_credible_interval_lower(self) -> float:
+        return float(self.bayesian_credible_interval[0])
 
-    # Bayesian results
-    bayesian_prob_treatment_better: float = 0.5
-    bayesian_expected_loss_treatment: float = 0.0
-    bayesian_expected_loss_control: float = 0.0
-    bayesian_credible_interval_lower: float = 0.0
-    bayesian_credible_interval_upper: float = 0.0
-    bayesian_relative_uplift: float = 0.0
-    bayesian_is_significant: bool = False
-    bayesian_total_effect: float = 0.0
-    bayesian_total_effect_per_customer: float = 0.0
+    @bayesian_credible_interval_lower.setter
+    def bayesian_credible_interval_lower(self, value: float) -> None:
+        self.bayesian_credible_interval = (
+            float(value),
+            float(self.bayesian_credible_interval[1]),
+        )
+
+    @property
+    def bayesian_credible_interval_upper(self) -> float:
+        return float(self.bayesian_credible_interval[1])
+
+    @bayesian_credible_interval_upper.setter
+    def bayesian_credible_interval_upper(self, value: float) -> None:
+        self.bayesian_credible_interval = (
+            float(self.bayesian_credible_interval[0]),
+            float(value),
+        )
+
+    def to_serializable_dict(self, include_legacy_aliases: bool = True) -> Dict[str, Any]:
+        """Serialize result for persistence layers."""
+        payload = asdict(self)
+        payload.pop("confidence_interval", None)
+        payload.pop("bayesian_credible_interval", None)
+
+        # Preserve flattened interval columns for downstream compatibility.
+        payload["confidence_interval_lower"] = self.confidence_interval_lower
+        payload["confidence_interval_upper"] = self.confidence_interval_upper
+        payload["bayesian_credible_interval_lower"] = self.bayesian_credible_interval_lower
+        payload["bayesian_credible_interval_upper"] = self.bayesian_credible_interval_upper
+
+        if include_legacy_aliases:
+            payload["ci_lower"] = self.confidence_interval_lower
+            payload["ci_upper"] = self.confidence_interval_upper
+            payload["bayesian_credible_lower"] = self.bayesian_credible_interval_lower
+            payload["bayesian_credible_upper"] = self.bayesian_credible_interval_upper
+        return payload
 
 
 class PySparkABTestAnalyzer:
@@ -129,6 +134,7 @@ class PySparkABTestAnalyzer:
         self.column_mapping: Dict[str, str] = {}
         self.treatment_label: Optional[str] = None
         self.control_label: Optional[str] = None
+        self.summary_builder = ABTestSummaryBuilder()
 
     def load_data(self, path: str, format: str = "csv", **options) -> Dict[str, Any]:
         """
@@ -153,9 +159,13 @@ class PySparkABTestAnalyzer:
         # Collect summary stats
         row_count = self.df.count()
         columns = self.df.columns
+        shape = (row_count, len(columns))
+        dtypes = dict(self.df.dtypes)
 
         return {
             "columns": columns,
+            "shape": shape,
+            "dtypes": dtypes,
             "row_count": row_count,
             "partitions": self.df.rdd.getNumPartitions(),
             "schema": self.df.schema.json()
@@ -729,8 +739,7 @@ class PySparkABTestAnalyzer:
             t_statistic=t_stat,
             p_value=p_value,
             is_significant=is_significant,
-            confidence_interval_lower=ci_lower,
-            confidence_interval_upper=ci_upper,
+            confidence_interval=(ci_lower, ci_upper),
             pooled_std=pooled_std,
             power=power,
             required_sample_size=required_n,
@@ -755,8 +764,10 @@ class PySparkABTestAnalyzer:
             bayesian_prob_treatment_better=bayesian_results["prob_treatment_better"],
             bayesian_expected_loss_treatment=bayesian_results["expected_loss_treatment"],
             bayesian_expected_loss_control=bayesian_results["expected_loss_control"],
-            bayesian_credible_interval_lower=bayesian_results["credible_interval"][0],
-            bayesian_credible_interval_upper=bayesian_results["credible_interval"][1],
+            bayesian_credible_interval=(
+                bayesian_results["credible_interval"][0],
+                bayesian_results["credible_interval"][1],
+            ),
             bayesian_relative_uplift=bayesian_results["relative_uplift"],
             bayesian_is_significant=bayesian_is_significant,
             bayesian_total_effect=bayesian_results["total_effect"],
@@ -796,7 +807,7 @@ class PySparkABTestAnalyzer:
 
     def generate_summary(self, results: List[SparkABTestResult]) -> Dict[str, Any]:
         """
-        Generate summary statistics from all segment results
+        Generate summary statistics using canonical summary builder.
 
         Args:
             results: List of SparkABTestResult objects
@@ -804,135 +815,11 @@ class PySparkABTestAnalyzer:
         Returns:
             Dictionary with aggregated metrics and recommendations
         """
-        if not results:
-            return {"error": "No results to summarize"}
-
-        # Calculate aggregates
-        total_segments = len(results)
-
-        # AA test
-        aa_failed = [r for r in results if not r.aa_test_passed]
-
-        # Significance
-        t_significant = [r for r in results if r.is_significant]
-        prop_significant = [r for r in results if r.proportion_is_significant]
-        bayesian_significant = [r for r in results if r.bayesian_is_significant]
-
-        # Effects
-        t_test_total = sum(r.effect_size * r.treatment_size for r in t_significant)
-        prop_test_total = sum(r.proportion_effect for r in prop_significant)
-        combined_total = sum(r.total_effect for r in results)
-        did_total = sum(r.did_effect * r.treatment_size for r in results)
-        bayesian_total = sum(r.bayesian_total_effect for r in results)
-
-        # Averages
-        avg_t_effect = np.mean([r.effect_size for r in t_significant]) if t_significant else 0.0
-        avg_prop_effect = np.mean([r.proportion_effect_per_customer for r in prop_significant]) if prop_significant else 0.0
-        avg_did_effect = np.mean([r.did_effect for r in results])
-        avg_bayesian_prob = np.mean([r.bayesian_prob_treatment_better for r in results])
-        avg_expected_loss = np.mean([
-            min(r.bayesian_expected_loss_treatment, r.bayesian_expected_loss_control)
-            for r in results
-        ])
-
-        # Sample adequacy
-        adequate = [r for r in results if r.is_sample_adequate]
-
-        # Total customers
-        total_treatment = sum(r.treatment_size for r in results)
-        total_control = sum(r.control_size for r in results)
-
-        return {
-            "total_segments_analyzed": total_segments,
-
-            # AA test
-            "aa_test_passed_segments": total_segments - len(aa_failed),
-            "aa_test_failed_segments": len(aa_failed),
-            "aa_failed_segment_names": [r.segment for r in aa_failed],
-
-            # DiD
-            "did_avg_effect": avg_did_effect,
-            "did_total_effect": did_total,
-
-            # T-test
-            "t_test_significant_segments": len(t_significant),
-            "t_test_significance_rate": len(t_significant) / total_segments,
-            "t_test_avg_effect": avg_t_effect,
-            "t_test_total_effect": t_test_total,
-
-            # Proportion test
-            "prop_test_significant_segments": len(prop_significant),
-            "prop_test_significance_rate": len(prop_significant) / total_segments,
-            "prop_test_avg_effect": avg_prop_effect,
-            "prop_test_total_effect": prop_test_total,
-
-            # Combined
-            "combined_total_effect": combined_total,
-
-            # Bayesian
-            "bayesian_significant_segments": len(bayesian_significant),
-            "bayesian_significance_rate": len(bayesian_significant) / total_segments,
-            "bayesian_avg_prob_treatment_better": avg_bayesian_prob,
-            "bayesian_avg_expected_loss": avg_expected_loss,
-            "bayesian_total_effect": bayesian_total,
-
-            # Customers
-            "total_treatment_customers": total_treatment,
-            "total_control_customers": total_control,
-
-            # Power
-            "segments_with_adequate_power": len(adequate),
-            "segments_with_inadequate_power": total_segments - len(adequate),
-
-            # Detailed results
-            "detailed_results": [asdict(r) for r in results],
-
-            # Recommendations
-            "recommendations": self._generate_recommendations(results)
-        }
+        return self.summary_builder.generate_summary(results)
 
     def _generate_recommendations(self, results: List[SparkABTestResult]) -> List[str]:
-        """Generate actionable recommendations"""
-        recommendations = []
-
-        # AA test warnings
-        aa_failed = [r for r in results if not r.aa_test_passed]
-        if aa_failed:
-            segments = [r.segment for r in aa_failed]
-            recommendations.append(
-                f"AA TEST WARNING: {len(aa_failed)} segment(s) failed balance check: {', '.join(segments)}"
-            )
-
-        # Significance
-        significant = [r for r in results if r.is_significant]
-        if significant:
-            positive = [r for r in significant if r.effect_size > 0]
-            negative = [r for r in significant if r.effect_size < 0]
-
-            if positive:
-                recommendations.append(
-                    f"POSITIVE IMPACT: Treatment shows significant positive effect in {len(positive)} segment(s): "
-                    f"{', '.join([r.segment for r in positive])}"
-                )
-
-            if negative:
-                recommendations.append(
-                    f"NEGATIVE IMPACT: Treatment shows significant negative effect in {len(negative)} segment(s): "
-                    f"{', '.join([r.segment for r in negative])}"
-                )
-        else:
-            recommendations.append(
-                "NO SIGNIFICANT EFFECTS: No segments showed statistically significant differences."
-            )
-
-        # Sample size
-        inadequate = [r for r in results if not r.is_sample_adequate]
-        if inadequate:
-            recommendations.append(
-                f"SAMPLE SIZE: {len(inadequate)} segment(s) have insufficient statistical power"
-            )
-
-        return recommendations
+        """Backward-compatible recommendation helper."""
+        return self.summary_builder._generate_recommendations(results)
 
     def save_results_to_parquet(self, results: List[SparkABTestResult], path: str):
         """
@@ -942,7 +829,7 @@ class PySparkABTestAnalyzer:
             results: List of analysis results
             path: Output path (supports S3, HDFS, etc.)
         """
-        results_dicts = [asdict(r) for r in results]
+        results_dicts = [r.to_serializable_dict() for r in results]
         results_df = self.spark.createDataFrame(results_dicts)
         results_df.write.mode("overwrite").parquet(path)
         print(f"Results saved to {path}")
@@ -956,7 +843,7 @@ class PySparkABTestAnalyzer:
             path: Output path
             partition_by: Optional columns to partition by (e.g., ["segment"])
         """
-        results_dicts = [asdict(r) for r in results]
+        results_dicts = [r.to_serializable_dict() for r in results]
         results_df = self.spark.createDataFrame(results_dicts)
 
         writer = results_df.write.format("delta").mode("overwrite")

@@ -14,31 +14,29 @@ import pytest
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import sys
-import tempfile
-import shutil
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+pytest.importorskip("pyspark", reason="PySpark not installed; skipping PySpark analyzer tests.")
 
-# PySpark imports
-try:
-    from pyspark.sql import SparkSession
-    from src.statistics.pyspark_analyzer import (
-        PySparkABTestAnalyzer,
-        SparkABTestResult,
-        create_spark_session
-    )
-    PYSPARK_AVAILABLE = True
-except ImportError:
-    PYSPARK_AVAILABLE = False
-    pytest.skip("PySpark not available", allow_module_level=True)
+from src.statistics.analyzer import ABTestAnalyzer
+from src.statistics.models import canonical_result_as_dict
+from src.statistics.pyspark_analyzer import (
+    PySparkABTestAnalyzer,
+    SparkABTestResult,
+    create_spark_session,
+)
+
+
+def _create_spark_or_skip(**kwargs):
+    try:
+        return create_spark_session(**kwargs)
+    except Exception as exc:
+        pytest.skip(f"Spark runtime unavailable; skipping PySpark tests. Details: {exc}")
 
 
 @pytest.fixture(scope="module")
 def spark():
     """Create a Spark session for testing"""
-    spark = create_spark_session(
+    spark = _create_spark_or_skip(
         app_name="ABTestAnalyzerTests",
         master="local[2]",
         config={
@@ -47,7 +45,10 @@ def spark():
         }
     )
     yield spark
-    spark.stop()
+    try:
+        spark.stop()
+    except Exception:
+        pass
 
 
 @pytest.fixture
@@ -87,10 +88,10 @@ def temp_csv_path(tmp_path, sample_pandas_df):
 
 
 @pytest.fixture
-def temp_parquet_path(tmp_path, sample_pandas_df):
-    """Create temporary Parquet file"""
+def temp_parquet_path(tmp_path, sample_pandas_df, spark):
+    """Create temporary Parquet file using Spark to avoid pandas parquet engine deps."""
     parquet_path = tmp_path / "test_data.parquet"
-    sample_pandas_df.to_parquet(parquet_path, index=False)
+    spark.createDataFrame(sample_pandas_df).write.mode("overwrite").parquet(str(parquet_path))
     return str(parquet_path)
 
 
@@ -105,14 +106,14 @@ class TestSparkSessionCreation:
 
     def test_create_spark_session_default(self):
         """Test creating Spark session with defaults"""
-        spark = create_spark_session()
+        spark = _create_spark_or_skip()
         assert spark is not None
         assert spark.sparkContext.appName == "ABTestingAnalyzer"
         spark.stop()
 
     def test_create_spark_session_custom_config(self):
         """Test creating Spark session with custom config"""
-        spark = create_spark_session(
+        spark = _create_spark_or_skip(
             app_name="CustomTest",
             config={"spark.sql.shuffle.partitions": "8"}
         )
@@ -397,6 +398,57 @@ class TestABTestExecution:
         assert abs(result.did_effect - expected_did) < 0.001
 
 
+class TestSchemaParity:
+    """Validate canonical schema parity across pandas and Spark analyzers."""
+
+    def test_segment_outputs_share_canonical_schema(self, analyzer, sample_spark_df, sample_pandas_df):
+        """Equivalent data should normalize to the same canonical result shape."""
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+        spark_results = analyzer.run_segmented_analysis()
+
+        pandas_analyzer = ABTestAnalyzer(significance_level=0.05, power_threshold=0.8)
+        pandas_analyzer.set_dataframe(sample_pandas_df)
+        pandas_analyzer.auto_configure()
+        pandas_results = pandas_analyzer.run_segmented_analysis()
+
+        spark_by_segment = {
+            result.segment: canonical_result_as_dict(result)
+            for result in spark_results
+        }
+        pandas_by_segment = {
+            result.segment: canonical_result_as_dict(result)
+            for result in pandas_results
+        }
+
+        assert set(spark_by_segment) == set(pandas_by_segment)
+
+        for segment in pandas_by_segment:
+            spark_payload = spark_by_segment[segment]
+            pandas_payload = pandas_by_segment[segment]
+
+            assert set(spark_payload.keys()) == set(pandas_payload.keys())
+            assert spark_payload["segment"] == pandas_payload["segment"]
+            assert spark_payload["treatment_size"] == pandas_payload["treatment_size"]
+            assert spark_payload["control_size"] == pandas_payload["control_size"]
+
+    def test_summary_detailed_results_keys_match_between_backends(self, analyzer, sample_spark_df, sample_pandas_df):
+        """Summary detailed rows should expose the same keys for visualization compatibility."""
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+        spark_summary = analyzer.generate_summary(analyzer.run_segmented_analysis())
+
+        pandas_analyzer = ABTestAnalyzer(significance_level=0.05, power_threshold=0.8)
+        pandas_analyzer.set_dataframe(sample_pandas_df)
+        pandas_analyzer.auto_configure()
+        pandas_summary = pandas_analyzer.generate_summary(pandas_analyzer.run_segmented_analysis())
+
+        spark_detail_keys = set(spark_summary["detailed_results"][0].keys())
+        pandas_detail_keys = set(pandas_summary["detailed_results"][0].keys())
+
+        assert spark_detail_keys == pandas_detail_keys
+
+
 class TestSegmentedAnalysis:
     """Test distributed segmented analysis"""
 
@@ -642,7 +694,3 @@ class TestCompleteWorkflow:
         # Generate summary
         summary = analyzer.generate_summary(results)
         assert summary['total_segments_analyzed'] == 3
-
-
-if __name__ == '__main__':
-    pytest.main([__file__, '-v', '--tb=short'])

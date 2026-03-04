@@ -7,9 +7,23 @@ and basic data queries from statistical computation.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+
+logger = logging.getLogger(__name__)
+
+
+class DataQueryError(ValueError):
+    """User-facing query validation error with stable metadata."""
+
+    def __init__(self, code: str, message: str, *, query: Optional[str] = None) -> None:
+        self.code = code
+        self.user_message = message
+        self.query = query
+        super().__init__(message)
 
 
 class ABTestDataManager:
@@ -258,12 +272,44 @@ class ABTestDataManager:
     def query_data(self, query: str) -> pd.DataFrame:
         """Execute pandas query expression against active dataframe."""
         if self.df is None:
-            raise ValueError("No data loaded")
+            raise DataQueryError("DATA_NOT_LOADED", "No data loaded")
+
+        normalized_query = (query or "").strip()
+        if not normalized_query:
+            raise DataQueryError(
+                "QUERY_EMPTY",
+                "Query cannot be empty. Please provide a filter expression.",
+            )
+
+        broad_patterns = {
+            "*",
+            "all",
+            "true",
+            "1 == 1",
+            "1==1",
+            "index == index",
+            "index==index",
+        }
+        if normalized_query.lower() in broad_patterns:
+            raise DataQueryError(
+                "QUERY_TOO_BROAD",
+                "Query is too broad. Please provide a specific filter condition.",
+                query=normalized_query,
+            )
 
         try:
-            return self.df.query(query)
-        except Exception:
-            return self.df
+            return self.df.query(normalized_query)
+        except Exception as error:
+            logger.warning(
+                "Invalid dataframe query rejected: %s",
+                normalized_query,
+                exc_info=error,
+            )
+            raise DataQueryError(
+                "INVALID_QUERY",
+                "Invalid query syntax. Use pandas query syntax, e.g. segment == 'Premium'.",
+                query=normalized_query,
+            ) from error
 
     def get_data_summary(self) -> Dict[str, Any]:
         """Return high-level data profiling summary."""
