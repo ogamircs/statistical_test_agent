@@ -110,7 +110,7 @@ class PySparkABTestAnalyzer:
 
     def __init__(
         self,
-        spark: SparkSession,
+        spark: Optional[SparkSession] = None,
         significance_level: float = 0.05,
         power_threshold: float = 0.8
     ):
@@ -118,11 +118,11 @@ class PySparkABTestAnalyzer:
         Initialize the PySpark analyzer
 
         Args:
-            spark: Active SparkSession
+            spark: Active SparkSession (optional, auto-created when omitted)
             significance_level: Alpha for hypothesis tests (default: 0.05)
             power_threshold: Minimum statistical power (default: 0.8)
         """
-        self.spark = spark
+        self.spark = spark or SparkSession.builder.appName("ABTestingAnalyzer").getOrCreate()
         self.significance_level = significance_level
         self.power_threshold = power_threshold
         self.df: Optional[DataFrame] = None
