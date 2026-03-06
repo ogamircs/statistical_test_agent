@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from .label_inference import infer_group_labels
 
 logger = logging.getLogger(__name__)
 
@@ -217,48 +218,10 @@ class ABTestDataManager:
         group_col = config["mapping"]["group"]
         unique_values = self.df[group_col].dropna().unique().tolist()
 
-        treatment_patterns = [
-            "treatment",
-            "treat",
-            "test",
-            "experiment",
-            "variant",
-            "exposed",
-            "1",
-            "true",
-            "yes",
-            "a",
-        ]
-        control_patterns = [
-            "control",
-            "ctrl",
-            "baseline",
-            "placebo",
-            "unexposed",
-            "0",
-            "false",
-            "no",
-            "b",
-        ]
-
-        treatment_label = None
-        control_label = None
-
-        for value in unique_values:
-            value_lower = str(value).lower().strip()
-            if any(pattern in value_lower for pattern in treatment_patterns):
-                treatment_label = value
-            elif any(pattern in value_lower for pattern in control_patterns):
-                control_label = value
-
-        if treatment_label is None or control_label is None:
-            if len(unique_values) >= 2:
-                sorted_vals = sorted(unique_values, key=lambda x: str(x).lower())
-                control_label = sorted_vals[0]
-                treatment_label = sorted_vals[1]
-                config["warnings"].append(
-                    f"Guessed treatment='{treatment_label}', control='{control_label}' based on order"
-                )
+        label_guess = infer_group_labels(unique_values)
+        treatment_label = label_guess["treatment"]
+        control_label = label_guess["control"]
+        config["warnings"].extend(label_guess["warnings"])
 
         if treatment_label is None or control_label is None:
             return {"success": False, "error": "Could not detect treatment/control labels"}

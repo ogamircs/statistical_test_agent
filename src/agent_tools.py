@@ -8,10 +8,12 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 from langchain_core.tools import StructuredTool, Tool
 
 from .agent_reporting import (
+    AgentUserFacingError,
     render_auto_configure_and_analyze_report,
     render_calculate_stats_output,
     render_column_values_output,
     render_configure_and_analyze_report,
+    render_data_question_output,
     render_data_summary_output,
     render_full_analysis_output,
     render_generate_charts_output,
@@ -23,12 +25,14 @@ from .agent_reporting import (
     render_set_column_mapping_success,
     render_tool_error,
 )
+from .statistics.models import to_ab_test_summary
 
 logger = logging.getLogger(__name__)
 
 
 class _AgentProtocol(Protocol):
     analyzer: Any
+    data_question_service: Any
     visualizer: Any
     _last_results: Any
     _last_summary: Any
@@ -44,9 +48,36 @@ class _AgentProtocol(Protocol):
     def _get_active_analyzer(self) -> Any:
         ...
 
+    def persist_loaded_data(self, analyzer: Any) -> bool:
+        ...
+
+    def persist_analysis_outputs(self, results: Any, summary: Any) -> None:
+        ...
+
 
 def create_agent_tools(agent: _AgentProtocol) -> List[Tool]:
     """Create tools for the agent using modular handlers + reporting renderers."""
+
+    def _active_analyzer() -> Any:
+        return agent._get_active_analyzer()
+
+    def _backend_label(analyzer: Any) -> str:
+        analyzer_name = type(analyzer).__name__.lower()
+        return "spark" if "spark" in analyzer_name else "pandas"
+
+    def _unsupported(operation: str, analyzer: Any) -> AgentUserFacingError:
+        return AgentUserFacingError(
+            "BACKEND_OPERATION_UNSUPPORTED",
+            f"{operation} is not supported for the active backend ({_backend_label(analyzer)}).",
+        )
+
+    def _require_pandas_dataframe(analyzer: Any, operation: str) -> Any:
+        df = getattr(analyzer, "df", None)
+        if df is None:
+            raise ValueError("No data loaded")
+        if hasattr(df, "groupBy") and hasattr(df, "select"):
+            raise _unsupported(operation, analyzer)
+        return df
 
     def _handle_tool_error(
         *,
@@ -72,6 +103,7 @@ def create_agent_tools(agent: _AgentProtocol) -> List[Tool]:
             shape = agent._normalize_shape(info)
             columns = info["columns"]
             suggestions = analyzer.detect_columns()
+            agent.persist_loaded_data(analyzer)
             logger.info(
                 "Tool load_csv completed (backend=%s, rows=%s, cols=%s)",
                 backend,
@@ -120,6 +152,8 @@ def create_agent_tools(agent: _AgentProtocol) -> List[Tool]:
 
             results = analyzer.run_segmented_analysis()
             summary = analyzer.generate_summary(results)
+            agent.persist_loaded_data(analyzer)
+            agent.persist_analysis_outputs(results, summary)
             logger.info(
                 "Tool load_and_auto_analyze completed (backend=%s, segments=%s)",
                 backend,
@@ -227,10 +261,15 @@ Input: file path. This is the FASTEST way to get results.""",
         """Run A/B test for a specific segment or overall"""
         logger.info("Tool run_ab_test started (segment=%s)", segment or "overall")
         try:
+            analyzer = _active_analyzer()
             if segment and segment.lower() not in ["none", "overall", "all", ""]:
-                result = agent.analyzer.run_ab_test(segment_filter=segment)
+                result = analyzer.run_ab_test(segment_filter=segment)
             else:
-                result = agent.analyzer.run_ab_test()
+                result = analyzer.run_ab_test()
+            summary = analyzer.generate_summary([result])
+            agent._last_results = [result]
+            agent._last_summary = summary
+            agent.persist_analysis_outputs([result], summary)
             logger.info("Tool run_ab_test completed (segment=%s)", result.segment)
 
             return render_run_ab_test_output(result)
@@ -254,8 +293,10 @@ Input: file path. This is the FASTEST way to get results.""",
         """Run A/B tests for all segments and generate summary"""
         logger.info("Tool run_full_analysis started")
         try:
-            results = agent.analyzer.run_segmented_analysis()
-            summary = agent.analyzer.generate_summary(results)
+            analyzer = _active_analyzer()
+            results = analyzer.run_segmented_analysis()
+            summary = analyzer.generate_summary(results)
+            agent.persist_analysis_outputs(results, summary)
             logger.info(
                 "Tool run_full_analysis completed (segments=%s)",
                 summary.get("total_segments_analyzed"),
@@ -281,14 +322,47 @@ Input: file path. This is the FASTEST way to get results.""",
         description="Run A/B tests for ALL segments and generate a comprehensive summary with recommendations. Use this for complete analysis.",
     )
 
+    def answer_data_question(question: str) -> str:
+        """Answer a natural-language question about raw data or analysis results."""
+        logger.info("Tool answer_data_question started")
+        try:
+            analyzer = _active_analyzer()
+            if getattr(analyzer, "df", None) is None:
+                return "No data loaded. Please load a CSV file first."
+
+            answer = agent.data_question_service.answer_question(question)
+            logger.info("Tool answer_data_question completed")
+            return render_data_question_output(answer)
+        except Exception as e:
+            return _handle_tool_error(
+                operation="answer_data_question",
+                prefix="Error answering data question",
+                error=e,
+                default_code="DATA_QUESTION_FAILED",
+                default_message="Unable to answer that question from the current data.",
+            )
+
+    answer_data_question_tool = Tool(
+        name="answer_data_question",
+        func=answer_data_question,
+        description=(
+            "Answer a natural-language question about the loaded raw data or computed analysis results. "
+            "Use this for questions like counts by segment, total effect size for a segment, or highest/lowest metrics."
+        ),
+    )
+
     def query_data(query: str) -> str:
         """Query the data using pandas query syntax"""
         logger.info("Tool query_data started")
         try:
-            if agent.analyzer.df is None:
+            analyzer = _active_analyzer()
+            if getattr(analyzer, "df", None) is None:
                 return "No data loaded. Please load a CSV file first."
 
-            result = agent.analyzer.query_data(query)
+            if not hasattr(analyzer, "query_data"):
+                raise _unsupported("Querying data", analyzer)
+
+            result = analyzer.query_data(query)
             logger.info("Tool query_data completed (rows=%s)", len(result))
             return render_query_data_output(result)
         except Exception as e:
@@ -310,7 +384,11 @@ Input: file path. This is the FASTEST way to get results.""",
         """Get summary statistics of the data"""
         logger.info("Tool get_data_summary started")
         try:
-            summary = agent.analyzer.get_data_summary()
+            analyzer = _active_analyzer()
+            if not hasattr(analyzer, "get_data_summary"):
+                raise _unsupported("Getting a data summary", analyzer)
+
+            summary = analyzer.get_data_summary()
             logger.info("Tool get_data_summary completed")
             return render_data_summary_output(summary)
 
@@ -333,7 +411,11 @@ Input: file path. This is the FASTEST way to get results.""",
         """Get distribution of customers across segments and groups"""
         logger.info("Tool get_segment_distribution started")
         try:
-            dist = agent.analyzer.get_segment_distribution()
+            analyzer = _active_analyzer()
+            if not hasattr(analyzer, "get_segment_distribution"):
+                raise _unsupported("Getting the segment distribution", analyzer)
+
+            dist = analyzer.get_segment_distribution()
             logger.info("Tool get_segment_distribution completed")
             return render_segment_distribution_output(dist)
 
@@ -356,14 +438,14 @@ Input: file path. This is the FASTEST way to get results.""",
         """Get unique values in a specific column"""
         logger.info("Tool get_column_values started (column=%s)", column_name)
         try:
-            if agent.analyzer.df is None:
-                return "No data loaded."
+            analyzer = _active_analyzer()
+            df = _require_pandas_dataframe(analyzer, "Listing column values")
 
-            if column_name not in agent.analyzer.df.columns:
-                return f"Column '{column_name}' not found. Available columns: {list(agent.analyzer.df.columns)}"
+            if column_name not in df.columns:
+                return f"Column '{column_name}' not found. Available columns: {list(df.columns)}"
 
-            values = agent.analyzer.df[column_name].unique()
-            value_counts = agent.analyzer.df[column_name].value_counts()
+            values = df[column_name].unique()
+            value_counts = df[column_name].value_counts()
             logger.info("Tool get_column_values completed (column=%s, unique=%s)", column_name, len(values))
 
             return render_column_values_output(column_name, values, value_counts)
@@ -387,13 +469,13 @@ Input: file path. This is the FASTEST way to get results.""",
         """Calculate detailed statistics for a numeric column"""
         logger.info("Tool calculate_statistics started (column=%s)", column_name)
         try:
-            if agent.analyzer.df is None:
-                return "No data loaded."
+            analyzer = _active_analyzer()
+            df = _require_pandas_dataframe(analyzer, "Calculating column statistics")
 
-            if column_name not in agent.analyzer.df.columns:
+            if column_name not in df.columns:
                 return f"Column '{column_name}' not found."
 
-            col = agent.analyzer.df[column_name]
+            col = df[column_name]
 
             if col.dtype not in ["float64", "int64", "float32", "int32"]:
                 return f"Column '{column_name}' is not numeric (type: {col.dtype})"
@@ -441,6 +523,7 @@ Input: file path. This is the FASTEST way to get results.""",
 
             results = analyzer.run_segmented_analysis()
             summary = analyzer.generate_summary(results)
+            agent.persist_analysis_outputs(results, summary)
             logger.info(
                 "Tool configure_and_analyze completed (segments=%s)",
                 summary.get("total_segments_analyzed"),
@@ -492,6 +575,7 @@ Optional: segment_column, customer_id_column""",
 
             results = analyzer.run_segmented_analysis()
             summary = analyzer.generate_summary(results)
+            agent.persist_analysis_outputs(results, summary)
             logger.info(
                 "Tool auto_configure_and_analyze completed (segments=%s)",
                 summary.get("total_segments_analyzed"),
@@ -523,27 +607,32 @@ This is the fastest way to analyze data without manual configuration.""",
         """Generate visualization charts for the A/B test results"""
         logger.info("Tool generate_charts started (chart_type=%s)", chart_type)
         try:
-            if agent.analyzer.df is None:
+            analyzer = _active_analyzer()
+
+            if getattr(analyzer, "df", None) is None:
                 return "No data loaded. Please load a CSV file first before generating charts."
 
-            if "group" not in agent.analyzer.column_mapping:
+            if "group" not in analyzer.column_mapping:
                 return "Column mapping not set. Please configure the group and effect_value columns first."
 
-            if agent.analyzer.treatment_label is None:
+            if analyzer.treatment_label is None:
                 return "Group labels not set. Please specify which values represent treatment and control."
 
             if agent._last_results is None:
-                results = agent.analyzer.run_segmented_analysis()
+                results = analyzer.run_segmented_analysis()
                 if not results:
                     return "No results from analysis. Please check your data configuration."
-                summary = agent.analyzer.generate_summary(results)
+                summary = analyzer.generate_summary(results)
                 agent._last_results = results
                 agent._last_summary = summary
             else:
                 results = agent._last_results
                 summary = agent._last_summary
 
-            if summary is None or "error" in summary:
+            normalized_summary = to_ab_test_summary(summary)
+            agent._last_summary = normalized_summary
+
+            if normalized_summary.error:
                 return "Could not generate summary. Please run the full analysis first."
 
             chart_type = chart_type.lower().strip()
@@ -554,7 +643,9 @@ This is the fastest way to analyze data without manual configuration.""",
                 agent._last_charts["statistical_summary"] = agent.visualizer.plot_statistical_summary(results)
 
             if chart_type in ["all", "dashboard"]:
-                agent._last_charts["dashboard"] = agent.visualizer.plot_summary_dashboard(results, summary)
+                agent._last_charts["dashboard"] = agent.visualizer.plot_summary_dashboard(
+                    results, normalized_summary
+                )
 
             if chart_type in ["all", "treatment_control", "comparison", "means"]:
                 agent._last_charts["treatment_vs_control"] = agent.visualizer.plot_treatment_vs_control(results)
@@ -628,17 +719,23 @@ Use this tool when the user asks to see charts, visualizations, or graphs.""",
         """Generate distribution chart showing treatment/control split"""
         logger.info("Tool show_distribution_chart started")
         try:
-            if agent.analyzer.df is None:
+            analyzer = _active_analyzer()
+
+            if getattr(analyzer, "df", None) is None:
                 return "No data loaded. Please load a CSV file first."
 
-            if "group" not in agent.analyzer.column_mapping:
+            if "group" not in analyzer.column_mapping:
                 return "Group column not set. Please configure column mappings first."
 
-            group_col = agent.analyzer.column_mapping["group"]
-            segment_col = agent.analyzer.column_mapping.get("segment")
+            group_col = analyzer.column_mapping["group"]
+            segment_col = analyzer.column_mapping.get("segment")
+            df = analyzer.df
+            if hasattr(df, "groupBy") and hasattr(df, "select"):
+                selected_columns = [group_col, *( [segment_col] if segment_col else [] )]
+                df = df.select(*selected_columns).toPandas()
 
             agent._last_charts["distribution"] = agent.visualizer.plot_segment_distribution(
-                agent.analyzer.df, group_col, segment_col
+                df, group_col, segment_col
             )
             logger.info("Tool show_distribution_chart completed")
 
@@ -666,6 +763,7 @@ Use this tool when the user asks to see charts, visualizations, or graphs.""",
         set_labels_tool,
         run_test_tool,
         full_analysis_tool,
+        answer_data_question_tool,
         configure_analyze_tool,
         auto_analyze_tool,
         query_tool,

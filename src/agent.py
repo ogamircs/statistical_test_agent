@@ -11,9 +11,12 @@ An intelligent agent that can:
 
 import os
 import logging
+from pathlib import Path
 from typing import Optional, List, Any, Dict, Tuple
+from uuid import uuid4
 from dotenv import load_dotenv
 
+import pandas as pd
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.prebuilt import create_react_agent
@@ -21,7 +24,10 @@ import plotly.graph_objects as go
 
 from .agent_reporting import render_tool_error
 from .agent_tools import create_agent_tools
+from .query_store import SQLiteQueryStore
+from .sql_query_service import OpenAISQLPlanner, SQLQueryService
 from .statistics import ABTestAnalyzer, ABTestVisualizer
+from .statistics.models import to_ab_test_summary
 
 # Try to import PySpark analyzer (optional dependency)
 try:
@@ -54,6 +60,12 @@ class ABTestingAgent:
         self.analyzer = ABTestAnalyzer()
         self.spark_analyzer = None  # Will be initialized if needed for large files
         self.visualizer = ABTestVisualizer()
+        query_store_path = Path("output") / "query_store" / f"session-{uuid4().hex}.sqlite"
+        self.query_store = SQLiteQueryStore(query_store_path)
+        self.data_question_service = SQLQueryService(
+            query_store=self.query_store,
+            sql_planner=OpenAISQLPlanner(self.llm),
+        )
         self.chat_history: List[Any] = []
         self.agent = self._create_agent()
         self._pending_confirmation = None
@@ -68,6 +80,36 @@ class ABTestingAgent:
             temperature,
             PYSPARK_AVAILABLE,
         )
+
+    def persist_loaded_data(self, analyzer: Any) -> bool:
+        """Persist the currently loaded raw dataframe to the session query store."""
+        df = getattr(analyzer, "df", None)
+        if not isinstance(df, pd.DataFrame):
+            logger.info("Skipping raw-data persistence for non-pandas backend")
+            return False
+
+        try:
+            self.query_store.save_raw_dataframe(df)
+        except Exception:
+            logger.exception("Failed to persist raw dataframe to SQLite query store")
+            return False
+
+        logger.info("Persisted raw dataframe to SQLite query store")
+        return True
+
+    def persist_analysis_outputs(self, results: Any, summary: Any) -> None:
+        """Persist analysis outputs to the session query store."""
+        try:
+            normalized_summary = to_ab_test_summary(summary)
+            self.query_store.save_segment_results(results)
+            self.query_store.save_summary(normalized_summary)
+            if normalized_summary.segment_failures:
+                self.query_store.save_segment_failures(normalized_summary.segment_failures)
+        except Exception:
+            logger.exception("Failed to persist analysis outputs to SQLite query store")
+            return
+
+        logger.info("Persisted analysis outputs to SQLite query store")
 
     def get_charts(self) -> Dict[str, go.Figure]:
         """Get the last generated charts"""
@@ -203,11 +245,13 @@ If the user uploads a file WITHOUT mentioning auto/best guess:
 1. **Best Guess Analysis** - `load_and_auto_analyze`: Load file + auto-detect + run analysis in ONE step
 2. **Manual Configuration** - `load_csv` then `configure_and_analyze`: For users who want control
 3. **Generate visualizations** - Interactive charts after analysis
+4. **Answer questions about loaded data and computed results** - Use `answer_data_question` for questions like counts, segment totals, effect sizes, or other lookups after data has been loaded
 
 ## Workflow Decision Tree:
 1. User uploads file with "best guess"/"auto" keywords => `load_and_auto_analyze`
 2. User uploads file without keywords => `load_csv`, then ask to confirm, then `configure_and_analyze`
 3. Data already loaded + user wants best guess => `auto_configure_and_analyze`
+4. User asks a factual question about the loaded dataset or computed results => use `answer_data_question`
 
 ## Important Guidelines:
 - DEFAULT to full segmented analysis (all segments) unless user specifies otherwise
@@ -272,8 +316,9 @@ Be efficient - minimize steps to get users their results."""
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     agent = ABTestingAgent()
-    print("A/B Testing Agent initialized. Type 'quit' to exit.")
+    logger.info("A/B Testing Agent CLI initialized. Type 'quit' to exit.")
 
     while True:
         user_input = input("\nYou: ").strip()

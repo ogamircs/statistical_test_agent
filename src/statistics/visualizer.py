@@ -15,7 +15,18 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-from .models import ABTestResult
+from .chart_builders import (
+    add_grouped_pair_bars,
+    add_significance_legend,
+    apply_grouped_bar_layout,
+    apply_multi_panel_theme,
+    interval_error_arrays,
+    make_bar_trace,
+    significance_colors,
+    style_subplot_axes,
+    style_subplot_titles,
+)
+from .models import ABTestResult, to_ab_test_summary
 
 
 class ABTestVisualizer:
@@ -84,45 +95,21 @@ class ABTestVisualizer:
         control_means = [r.control_mean for r in results]
 
         fig = go.Figure()
-
-        fig.add_trace(go.Bar(
-            name='Treatment',
-            x=segments,
-            y=treatment_means,
-            marker_color=self.colors['treatment'],
-            marker_line_width=0,
-            text=[f'{v:.1f}' for v in treatment_means],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
-
-        fig.add_trace(go.Bar(
-            name='Control',
-            x=segments,
-            y=control_means,
-            marker_color=self.colors['control'],
-            marker_line_width=0,
-            text=[f'{v:.1f}' for v in control_means],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        add_grouped_pair_bars(
+            fig,
+            segments=segments,
+            left_name='Treatment',
+            left_values=treatment_means,
+            left_color=self.colors['treatment'],
+            right_name='Control',
+            right_values=control_means,
+            right_color=self.colors['control'],
+            left_text=[f'{v:.1f}' for v in treatment_means],
+            right_text=[f'{v:.1f}' for v in control_means],
+        )
 
         self._apply_layout(fig, 'Treatment vs Control Mean by Segment', 400)
-        fig.update_layout(
-            barmode='group',
-            bargap=0.2,
-            bargroupgap=0.1,
-            xaxis_title='Segment',
-            yaxis_title='Mean Value',
-            legend=dict(
-                orientation='h',
-                yanchor='bottom',
-                y=1.02,
-                xanchor='center',
-                x=0.5,
-                bgcolor='rgba(255,255,255,0.8)'
-            )
-        )
+        apply_grouped_bar_layout(fig, xaxis_title='Segment', yaxis_title='Mean Value')
 
         return fig
 
@@ -133,35 +120,29 @@ class ABTestVisualizer:
         ci_lower = [r.confidence_interval[0] for r in results]
         ci_upper = [r.confidence_interval[1] for r in results]
 
-        colors = []
-        for r in results:
-            if r.is_significant:
-                colors.append(self.colors['significant_pos'] if r.effect_size > 0
-                            else self.colors['significant_neg'])
-            else:
-                colors.append(self.colors['not_significant'])
+        colors = significance_colors(
+            values=effects,
+            is_significant=[r.is_significant for r in results],
+            positive_color=self.colors['significant_pos'],
+            negative_color=self.colors['significant_neg'],
+            neutral_color=self.colors['not_significant'],
+        )
 
         fig = go.Figure()
-
-        fig.add_trace(go.Bar(
-            x=segments,
-            y=effects,
-            marker_color=colors,
-            marker_line_width=0,
-            text=[f'{e:+.2f}' for e in effects],
-            textposition='outside',
-            textfont=dict(size=10),
-            error_y=dict(
-                type='data',
-                symmetric=False,
-                array=[ci_upper[i] - effects[i] for i in range(len(effects))],
-                arrayminus=[effects[i] - ci_lower[i] for i in range(len(effects))],
-                color='rgba(0,0,0,0.2)',
-                thickness=1.5,
-                width=4
-            ),
-            showlegend=False
-        ))
+        fig.add_trace(
+            make_bar_trace(
+                x=segments,
+                y=effects,
+                marker_color=colors,
+                text=[f'{e:+.2f}' for e in effects],
+                error_y=interval_error_arrays(
+                    values=effects,
+                    lower_bounds=ci_lower,
+                    upper_bounds=ci_upper,
+                ),
+                showlegend=False,
+            )
+        )
 
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], line_width=1)
 
@@ -172,16 +153,12 @@ class ABTestVisualizer:
             bargap=0.3
         )
 
-        # Add legend for colors
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                marker=dict(size=10, color=self.colors['significant_pos'], symbol='square'),
-                                name='Significant (+)'))
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                marker=dict(size=10, color=self.colors['significant_neg'], symbol='square'),
-                                name='Significant (-)'))
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                marker=dict(size=10, color=self.colors['not_significant'], symbol='square'),
-                                name='Not Significant'))
+        add_significance_legend(
+            fig,
+            positive_color=self.colors['significant_pos'],
+            negative_color=self.colors['significant_neg'],
+            neutral_color=self.colors['not_significant'],
+        )
         fig.update_layout(
             legend=dict(
                 orientation='h',
@@ -200,20 +177,20 @@ class ABTestVisualizer:
         segments = [r.segment for r in results]
         p_values = [r.p_value for r in results]
 
-        colors = [self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant']
-                 for p in p_values]
+        colors = [
+            self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant']
+            for p in p_values
+        ]
 
         fig = go.Figure()
-
-        fig.add_trace(go.Bar(
-            x=segments,
-            y=p_values,
-            marker_color=colors,
-            marker_line_width=0,
-            text=[f'{p:.4f}' for p in p_values],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        fig.add_trace(
+            make_bar_trace(
+                x=segments,
+                y=p_values,
+                marker_color=colors,
+                text=[f'{p:.4f}' for p in p_values],
+            )
+        )
 
         fig.add_hline(
             y=0.05,
@@ -242,45 +219,21 @@ class ABTestVisualizer:
         control_n = [r.control_size for r in results]
 
         fig = go.Figure()
-
-        fig.add_trace(go.Bar(
-            name='Treatment',
-            x=segments,
-            y=treatment_n,
-            marker_color=self.colors['treatment'],
-            marker_line_width=0,
-            text=treatment_n,
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
-
-        fig.add_trace(go.Bar(
-            name='Control',
-            x=segments,
-            y=control_n,
-            marker_color=self.colors['control'],
-            marker_line_width=0,
-            text=control_n,
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        add_grouped_pair_bars(
+            fig,
+            segments=segments,
+            left_name='Treatment',
+            left_values=treatment_n,
+            left_color=self.colors['treatment'],
+            right_name='Control',
+            right_values=control_n,
+            right_color=self.colors['control'],
+            left_text=treatment_n,
+            right_text=control_n,
+        )
 
         self._apply_layout(fig, 'Sample Sizes by Segment', 400)
-        fig.update_layout(
-            barmode='group',
-            bargap=0.2,
-            bargroupgap=0.1,
-            xaxis_title='Segment',
-            yaxis_title='Sample Size',
-            legend=dict(
-                orientation='h',
-                yanchor='bottom',
-                y=1.02,
-                xanchor='center',
-                x=0.5,
-                bgcolor='rgba(255,255,255,0.8)'
-            )
-        )
+        apply_grouped_bar_layout(fig, xaxis_title='Segment', yaxis_title='Sample Size')
 
         return fig
 
@@ -294,15 +247,14 @@ class ABTestVisualizer:
 
         fig = go.Figure()
 
-        fig.add_trace(go.Bar(
-            x=segments,
-            y=powers,
-            marker_color=colors,
-            marker_line_width=0,
-            text=[f'{p:.0f}%' for p in powers],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        fig.add_trace(
+            make_bar_trace(
+                x=segments,
+                y=powers,
+                marker_color=colors,
+                text=[f'{p:.0f}%' for p in powers],
+            )
+        )
 
         fig.add_hline(
             y=80,
@@ -343,15 +295,14 @@ class ABTestVisualizer:
 
         fig = go.Figure()
 
-        fig.add_trace(go.Bar(
-            x=segments,
-            y=cohens_d,
-            marker_color=colors,
-            marker_line_width=0,
-            text=[f'{d:.2f}' for d in cohens_d],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        fig.add_trace(
+            make_bar_trace(
+                x=segments,
+                y=cohens_d,
+                marker_color=colors,
+                text=[f'{d:.2f}' for d in cohens_d],
+            )
+        )
 
         # Add reference bands
         for y_val, label in [(0.8, 'Large'), (0.5, 'Medium'), (0.2, 'Small')]:
@@ -475,7 +426,7 @@ class ABTestVisualizer:
 
         # Panel 1: p-values for both tests
         fig.add_trace(
-            go.Bar(
+            make_bar_trace(
                 name='T-test p-value',
                 x=segments,
                 y=t_pvals,
@@ -486,7 +437,7 @@ class ABTestVisualizer:
             col=1
         )
         fig.add_trace(
-            go.Bar(
+            make_bar_trace(
                 name='Proportion p-value',
                 x=segments,
                 y=prop_pvals,
@@ -507,7 +458,7 @@ class ABTestVisualizer:
 
         # Panel 2: effect comparison
         fig.add_trace(
-            go.Bar(
+            make_bar_trace(
                 name='T-test effect',
                 x=segments,
                 y=t_effects,
@@ -518,7 +469,7 @@ class ABTestVisualizer:
             col=1
         )
         fig.add_trace(
-            go.Bar(
+            make_bar_trace(
                 name='Proportion effect',
                 x=segments,
                 y=prop_effects,
@@ -544,25 +495,18 @@ class ABTestVisualizer:
         fig.add_hline(y=0, line_dash='solid', line_color=self.colors['grid'], row=2, col=1)
 
         # Layout tuned for readability inside chat UI
-        fig.update_layout(
-            template='plotly_white',
-            font=dict(family='Inter, system-ui, sans-serif', size=12, color=self.colors['text']),
-            paper_bgcolor=self.colors['background'],
-            plot_bgcolor=self.colors['background'],
-            hoverlabel=dict(bgcolor='white', font_size=12),
-            title=dict(
-                text='<b>Statistical Results Summary</b>',
-                x=0.5,
-                xanchor='center',
-                font=dict(size=20, color=self.colors['text'])
-            ),
+        apply_multi_panel_theme(
+            fig,
+            colors=self.colors,
+            title_text='<b>Statistical Results Summary</b>',
             height=700,
+            legend_y=1.02,
             barmode='group',
             bargap=0.24,
-            hovermode='x',
-            showlegend=False,
-            margin=dict(l=70, r=35, t=90, b=75)
+            bargroupgap=0.1,
+            margin=dict(l=70, r=35, t=90, b=75),
         )
+        fig.update_layout(hovermode='x', showlegend=False)
 
         # Axis titles
         fig.update_yaxes(title_text='P-value', row=1, col=1, title_font=dict(size=13))
@@ -573,26 +517,15 @@ class ABTestVisualizer:
         fig.update_yaxes(range=[0, max(max_p * 1.15, 0.1)], row=1, col=1)
 
         # Style subplots for compact chat rendering
-        for i in range(1, 3):
-            fig.update_xaxes(
-                showgrid=False,
-                row=i,
-                col=1,
-                tickfont=dict(size=11),
-                tickangle=-20,
-                automargin=True
-            )
-            fig.update_yaxes(
-                gridcolor=self.colors['grid'],
-                row=i,
-                col=1,
-                tickfont=dict(size=11)
-            )
-
-        # Subplot title styling
-        for annotation in fig['layout']['annotations']:
-            if annotation['text'].startswith('<b>'):
-                annotation['font'] = dict(size=14, color=self.colors['text'])
+        style_subplot_axes(
+            fig,
+            rows=2,
+            cols=1,
+            grid_color=self.colors['grid'],
+            tickfont_size=11,
+            x_tickangle=-20,
+        )
+        style_subplot_titles(fig, text_color=self.colors['text'], size=14)
 
         return fig
 
@@ -612,15 +545,14 @@ class ABTestVisualizer:
 
         fig = go.Figure()
 
-        fig.add_trace(go.Bar(
-            x=segments,
-            y=probs,
-            marker_color=colors,
-            marker_line_width=0,
-            text=[f'{p:.1f}%' for p in probs],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        fig.add_trace(
+            make_bar_trace(
+                x=segments,
+                y=probs,
+                marker_color=colors,
+                text=[f'{p:.1f}%' for p in probs],
+            )
+        )
 
         # Add threshold lines
         fig.add_hline(
@@ -669,13 +601,13 @@ class ABTestVisualizer:
         ci_lower = [r.bayesian_credible_interval[0] for r in results]
         ci_upper = [r.bayesian_credible_interval[1] for r in results]
 
-        colors = []
-        for r in results:
-            if r.bayesian_is_significant:
-                colors.append(self.colors['significant_pos'] if r.effect_size > 0
-                            else self.colors['significant_neg'])
-            else:
-                colors.append(self.colors['not_significant'])
+        colors = significance_colors(
+            values=effects,
+            is_significant=[r.bayesian_is_significant for r in results],
+            positive_color=self.colors['significant_pos'],
+            negative_color=self.colors['significant_neg'],
+            neutral_color=self.colors['not_significant'],
+        )
 
         fig = go.Figure()
 
@@ -685,14 +617,10 @@ class ABTestVisualizer:
             y=segments,
             mode='markers',
             marker=dict(size=12, color=colors, symbol='diamond'),
-            error_x=dict(
-                type='data',
-                symmetric=False,
-                array=[ci_upper[i] - effects[i] for i in range(len(effects))],
-                arrayminus=[effects[i] - ci_lower[i] for i in range(len(effects))],
-                color='rgba(0,0,0,0.3)',
-                thickness=2,
-                width=6
+            error_x=interval_error_arrays(
+                values=effects,
+                lower_bounds=ci_lower,
+                upper_bounds=ci_upper,
             ),
             text=[f'{e:.4f} [{ci_lower[i]:.4f}, {ci_upper[i]:.4f}]' for i, e in enumerate(effects)],
             hoverinfo='text+y',
@@ -709,16 +637,13 @@ class ABTestVisualizer:
             yaxis=dict(autorange='reversed')  # Keep segments in order from top to bottom
         )
 
-        # Add legend
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                marker=dict(size=10, color=self.colors['significant_pos'], symbol='diamond'),
-                                name='Significant (+)'))
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                marker=dict(size=10, color=self.colors['significant_neg'], symbol='diamond'),
-                                name='Significant (-)'))
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                marker=dict(size=10, color=self.colors['not_significant'], symbol='diamond'),
-                                name='Not Significant'))
+        add_significance_legend(
+            fig,
+            positive_color=self.colors['significant_pos'],
+            negative_color=self.colors['significant_neg'],
+            neutral_color=self.colors['not_significant'],
+            symbol='diamond',
+        )
         fig.update_layout(
             legend=dict(
                 orientation='h',
@@ -748,15 +673,14 @@ class ABTestVisualizer:
 
         fig = go.Figure()
 
-        fig.add_trace(go.Bar(
-            x=segments,
-            y=min_losses,
-            marker_color=colors,
-            marker_line_width=0,
-            text=[f'{loss:.4f}' for loss in min_losses],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        fig.add_trace(
+            make_bar_trace(
+                x=segments,
+                y=min_losses,
+                marker_color=colors,
+                text=[f'{loss:.4f}' for loss in min_losses],
+            )
+        )
 
         self._apply_layout(fig, 'Bayesian Expected Loss (Lower is Better)', 400)
         fig.update_layout(
@@ -792,50 +716,31 @@ class ABTestVisualizer:
         control_props = [r.control_proportion * 100 for r in results]
 
         fig = go.Figure()
-
-        fig.add_trace(go.Bar(
-            name='Treatment %',
-            x=segments,
-            y=treatment_props,
-            marker_color=self.colors['treatment'],
-            marker_line_width=0,
-            text=[f'{v:.1f}%' for v in treatment_props],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
-
-        fig.add_trace(go.Bar(
-            name='Control %',
-            x=segments,
-            y=control_props,
-            marker_color=self.colors['control'],
-            marker_line_width=0,
-            text=[f'{v:.1f}%' for v in control_props],
-            textposition='outside',
-            textfont=dict(size=10)
-        ))
+        add_grouped_pair_bars(
+            fig,
+            segments=segments,
+            left_name='Treatment %',
+            left_values=treatment_props,
+            left_color=self.colors['treatment'],
+            right_name='Control %',
+            right_values=control_props,
+            right_color=self.colors['control'],
+            left_text=[f'{v:.1f}%' for v in treatment_props],
+            right_text=[f'{v:.1f}%' for v in control_props],
+        )
 
         self._apply_layout(fig, 'Conversion Rate: Treatment vs Control', 400)
-        fig.update_layout(
-            barmode='group',
-            bargap=0.2,
-            bargroupgap=0.1,
+        apply_grouped_bar_layout(
+            fig,
             xaxis_title='Segment',
             yaxis_title='Conversion Rate (%)',
-            legend=dict(
-                orientation='h',
-                yanchor='bottom',
-                y=1.02,
-                xanchor='center',
-                x=0.5,
-                bgcolor='rgba(255,255,255,0.8)'
-            )
         )
 
         return fig
 
     def plot_summary_dashboard(self, results: List[ABTestResult], summary: Dict[str, Any]) -> go.Figure:
         """Create a comprehensive dashboard with multiple visualizations"""
+        normalized_summary = to_ab_test_summary(summary)
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=(
@@ -851,62 +756,62 @@ class ABTestVisualizer:
         segments = [r.segment for r in results]
 
         # Plot 1: Treatment vs Control Means
-        fig.add_trace(go.Bar(
-            name='Treatment',
-            x=segments,
-            y=[r.treatment_mean for r in results],
-            marker_color=self.colors['treatment'],
-            marker_line_width=0,
-            showlegend=True
-        ), row=1, col=1)
-        fig.add_trace(go.Bar(
-            name='Control',
-            x=segments,
-            y=[r.control_mean for r in results],
-            marker_color=self.colors['control'],
-            marker_line_width=0,
-            showlegend=True
-        ), row=1, col=1)
+        add_grouped_pair_bars(
+            fig,
+            segments=segments,
+            left_name='Treatment',
+            left_values=[r.treatment_mean for r in results],
+            left_color=self.colors['treatment'],
+            right_name='Control',
+            right_values=[r.control_mean for r in results],
+            right_color=self.colors['control'],
+            row=1,
+            col=1,
+            showlegend=True,
+        )
 
         # Plot 2: Combined Effects (stacked T-test + Proportion)
         t_test_effects = [r.effect_size * r.treatment_size if r.is_significant else 0 for r in results]
         prop_effects = [r.proportion_effect for r in results]
 
-        fig.add_trace(go.Bar(
-            name='T-test Effect',
-            x=segments,
-            y=t_test_effects,
-            marker_color=self.colors['t_test'],
-            marker_line_width=0,
-            showlegend=True
-        ), row=1, col=2)
-        fig.add_trace(go.Bar(
-            name='Proportion Effect',
-            x=segments,
-            y=prop_effects,
-            marker_color=self.colors['proportion'],
-            marker_line_width=0,
-            showlegend=True
-        ), row=1, col=2)
+        fig.add_trace(
+            make_bar_trace(
+                name='T-test Effect',
+                x=segments,
+                y=t_test_effects,
+                marker_color=self.colors['t_test'],
+                showlegend=True,
+            ),
+            row=1,
+            col=2,
+        )
+        fig.add_trace(
+            make_bar_trace(
+                name='Proportion Effect',
+                x=segments,
+                y=prop_effects,
+                marker_color=self.colors['proportion'],
+                showlegend=True,
+            ),
+            row=1,
+            col=2,
+        )
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], row=1, col=2)
 
         # Plot 3: Conversion Rates (Proportion comparison)
-        fig.add_trace(go.Bar(
-            name='Treatment Conv',
-            x=segments,
-            y=[r.treatment_proportion * 100 for r in results],
-            marker_color=self.colors['treatment'],
-            marker_line_width=0,
-            showlegend=False
-        ), row=2, col=1)
-        fig.add_trace(go.Bar(
-            name='Control Conv',
-            x=segments,
-            y=[r.control_proportion * 100 for r in results],
-            marker_color=self.colors['control'],
-            marker_line_width=0,
-            showlegend=False
-        ), row=2, col=1)
+        add_grouped_pair_bars(
+            fig,
+            segments=segments,
+            left_name='Treatment Conv',
+            left_values=[r.treatment_proportion * 100 for r in results],
+            left_color=self.colors['treatment'],
+            right_name='Control Conv',
+            right_values=[r.control_proportion * 100 for r in results],
+            right_color=self.colors['control'],
+            row=2,
+            col=1,
+            showlegend=False,
+        )
 
         # Plot 4: P-Values (T-test)
         p_values = [r.p_value for r in results]
@@ -914,46 +819,36 @@ class ABTestVisualizer:
             self.colors['significant_pos'] if p < 0.05 else self.colors['not_significant']
             for p in p_values
         ]
-        fig.add_trace(go.Bar(
-            x=segments,
-            y=p_values,
-            marker_color=p_colors,
-            marker_line_width=0,
-            showlegend=False
-        ), row=2, col=2)
+        fig.add_trace(
+            make_bar_trace(
+                x=segments,
+                y=p_values,
+                marker_color=p_colors,
+                showlegend=False,
+            ),
+            row=2,
+            col=2,
+        )
         fig.add_hline(y=0.05, line_dash="dash", line_color=self.colors['significant_neg'], line_width=1.5, row=2, col=2)
 
         # Apply layout
-        t_test_sig = summary.get('t_test_significant_segments', summary.get('significant_segments', 0))
-        prop_sig = summary.get('prop_test_significant_segments', 0)
-        total_count = summary['total_segments_analyzed']
-        combined_effect = summary.get('combined_total_effect', summary.get('total_effect_size', 0))
-
-        fig.update_layout(
-            template='plotly_white',
-            font=dict(family='Inter, system-ui, sans-serif', size=12, color=self.colors['text']),
-            paper_bgcolor=self.colors['background'],
-            plot_bgcolor=self.colors['background'],
-            hoverlabel=dict(bgcolor='white', font_size=12),
-            title=dict(
-                text=f"<b>A/B Test Analysis Dashboard</b><br><span style='font-size:12px;color:#6B7280'>T-test sig: {t_test_sig}/{total_count} · Prop sig: {prop_sig}/{total_count} · Combined effect: {combined_effect:,.0f}</span>",
-                x=0.5,
-                xanchor='center',
-                font=dict(size=18)
-            ),
+        title_text = (
+            "<b>A/B Test Analysis Dashboard</b><br>"
+            f"<span style='font-size:12px;color:#6B7280'>"
+            f"T-test sig: {normalized_summary.t_test_significant_segments}/{normalized_summary.total_segments_analyzed} · "
+            f"Prop sig: {normalized_summary.prop_test_significant_segments}/{normalized_summary.total_segments_analyzed} · "
+            f"Combined effect: {normalized_summary.combined_total_effect:,.0f}</span>"
+        )
+        apply_multi_panel_theme(
+            fig,
+            colors=self.colors,
+            title_text=title_text,
             height=650,
+            legend_y=1.08,
             barmode='group',
             bargap=0.15,
             bargroupgap=0.1,
-            legend=dict(
-                orientation='h',
-                yanchor='bottom',
-                y=1.08,
-                xanchor='center',
-                x=0.5,
-                bgcolor='rgba(255,255,255,0.9)'
-            ),
-            margin=dict(l=60, r=40, t=120, b=60)
+            margin=dict(l=60, r=40, t=120, b=60),
         )
 
         # Update axes
@@ -967,15 +862,8 @@ class ABTestVisualizer:
         fig.data[2].offsetgroup = 0  # T-test effect
         fig.data[3].offsetgroup = 0  # Proportion effect (stack on top)
 
-        for i in range(1, 3):
-            for j in range(1, 3):
-                fig.update_xaxes(showgrid=False, row=i, col=j, tickfont=dict(size=10))
-                fig.update_yaxes(gridcolor=self.colors['grid'], row=i, col=j, tickfont=dict(size=10))
-
-        # Update subplot title styling
-        for annotation in fig['layout']['annotations']:
-            if annotation['text'].startswith('<b>'):
-                annotation['font'] = dict(size=12, color=self.colors['text'])
+        style_subplot_axes(fig, rows=2, cols=2, grid_color=self.colors['grid'], tickfont_size=10)
+        style_subplot_titles(fig, text_color=self.colors['text'], size=12)
 
         return fig
 

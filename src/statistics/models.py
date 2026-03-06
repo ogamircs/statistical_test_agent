@@ -4,8 +4,40 @@ Data Models for A/B Testing Results
 Contains dataclasses and type definitions for statistical analysis results.
 """
 
+from collections.abc import Mapping as MappingABC
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+
+
+class LegacyMappingMixin(MappingABC):
+    """Expose typed dataclasses through the legacy mapping interface during migration."""
+
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_legacy_dict()[key]
+
+    def __iter__(self):
+        return iter(self.to_legacy_dict())
+
+    def __len__(self) -> int:
+        return len(self.to_legacy_dict())
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.to_legacy_dict()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.to_legacy_dict().get(key, default)
+
+    def keys(self):
+        return self.to_legacy_dict().keys()
+
+    def items(self):
+        return self.to_legacy_dict().items()
+
+    def values(self):
+        return self.to_legacy_dict().values()
 
 
 @dataclass
@@ -34,7 +66,7 @@ class AATestResult:
 
 
 @dataclass
-class ABTestResult:
+class ABTestResult(LegacyMappingMixin):
     """Container for A/B test results for a single segment"""
 
     # Basic info
@@ -139,6 +171,192 @@ class ABTestResult:
     bayesian_total_effect: float = 0.0  # Expected total effect from Bayesian DiD
     bayesian_total_effect_per_customer: float = 0.0
 
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        """Expose the summary detail payload used by reports and charts."""
+        experiment_quality = self.diagnostics.get("experiment_quality", {})
+        srm = experiment_quality.get("srm", {})
+        assumptions = experiment_quality.get("assumptions", {})
+        outlier_sensitivity = experiment_quality.get("outlier_sensitivity", {})
+
+        return {
+            "segment": self.segment,
+            "treatment_n": self.treatment_size,
+            "control_n": self.control_size,
+            "treatment_pre_mean": self.treatment_pre_mean,
+            "treatment_post_mean": self.treatment_post_mean,
+            "control_pre_mean": self.control_pre_mean,
+            "control_post_mean": self.control_post_mean,
+            "aa_test_passed": self.aa_test_passed,
+            "aa_p_value": self.aa_p_value,
+            "bootstrapping_applied": self.bootstrapping_applied,
+            "original_control_size": self.original_control_size,
+            "did_treatment_change": self.did_treatment_change,
+            "did_control_change": self.did_control_change,
+            "did_effect": self.did_effect,
+            "effect": self.effect_size,
+            "cohens_d": self.cohens_d,
+            "p_value": self.p_value,
+            "significant": self.is_significant,
+            "p_value_adjusted": self.p_value_adjusted,
+            "significant_adjusted": self.is_significant_adjusted,
+            "power": self.power,
+            "adequate_sample": self.is_sample_adequate,
+            "ci_lower": self.confidence_interval[0],
+            "ci_upper": self.confidence_interval[1],
+            "metric_type": self.metric_type,
+            "model_type": self.model_type,
+            "model_effect": self.model_effect,
+            "model_ci_lower": self.model_confidence_interval[0],
+            "model_ci_upper": self.model_confidence_interval[1],
+            "model_effect_scale": self.model_effect_scale,
+            "model_effect_exponentiated": self.model_effect_exponentiated,
+            "covariate_adjustment_applied": self.covariate_adjustment_applied,
+            "covariates_used": list(self.covariates_used),
+            "covariate_adjusted_effect": self.covariate_adjusted_effect,
+            "covariate_adjusted_p_value": self.covariate_adjusted_p_value,
+            "covariate_adjusted_ci_lower": self.covariate_adjusted_confidence_interval[0],
+            "covariate_adjusted_ci_upper": self.covariate_adjusted_confidence_interval[1],
+            "covariate_adjusted_model_type": self.covariate_adjusted_model_type,
+            "covariate_adjusted_effect_scale": self.covariate_adjusted_effect_scale,
+            "covariate_adjusted_effect_exponentiated": self.covariate_adjusted_effect_exponentiated,
+            "treatment_prop": self.treatment_proportion,
+            "control_prop": self.control_proportion,
+            "prop_diff": self.proportion_diff,
+            "prop_p_value": self.proportion_p_value,
+            "prop_significant": self.proportion_is_significant,
+            "prop_p_value_adjusted": self.proportion_p_value_adjusted,
+            "prop_significant_adjusted": self.proportion_is_significant_adjusted,
+            "multiple_testing_method": self.multiple_testing_method,
+            "multiple_testing_applied": self.multiple_testing_applied,
+            "inference_guardrail_triggered": self.inference_guardrail_triggered,
+            "proportion_guardrail_triggered": self.proportion_guardrail_triggered,
+            "diagnostics": self.diagnostics,
+            "sequential_mode_enabled": self.sequential_mode_enabled,
+            "sequential_method": self.sequential_method,
+            "sequential_look_index": self.sequential_look_index,
+            "sequential_max_looks": self.sequential_max_looks,
+            "sequential_information_fraction": self.sequential_information_fraction,
+            "sequential_alpha_spent": self.sequential_alpha_spent,
+            "sequential_stop_recommended": self.sequential_stop_recommended,
+            "sequential_decision": self.sequential_decision,
+            "sequential_rationale": self.sequential_rationale,
+            "sequential_thresholds": self.sequential_thresholds,
+            "srm_p_value": srm.get("p_value"),
+            "srm_is_mismatch": srm.get("is_sample_ratio_mismatch", False),
+            "assumption_diagnostics": assumptions,
+            "outlier_sensitivity_diagnostics": outlier_sensitivity,
+            "prop_effect": self.proportion_effect,
+            "prop_effect_per_customer": self.proportion_effect_per_customer,
+            "total_effect": self.total_effect,
+            "total_effect_per_customer": self.total_effect_per_customer,
+            "bayesian_prob": self.bayesian_prob_treatment_better,
+            "bayesian_credible_lower": self.bayesian_credible_interval[0],
+            "bayesian_credible_upper": self.bayesian_credible_interval[1],
+            "bayesian_expected_loss": min(
+                self.bayesian_expected_loss_treatment,
+                self.bayesian_expected_loss_control,
+            ),
+            "bayesian_relative_uplift": self.bayesian_relative_uplift,
+            "bayesian_significant": self.bayesian_is_significant,
+            "bayesian_total_effect": self.bayesian_total_effect,
+            "bayesian_total_effect_per_customer": self.bayesian_total_effect_per_customer,
+        }
+@dataclass(frozen=True)
+class SegmentAnalysisFailure(LegacyMappingMixin):
+    """Structured record for a segment skipped during analysis."""
+
+    segment: str
+    error: str
+    error_type: str = "ValueError"
+
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        return {
+            "segment": self.segment,
+            "error": self.error,
+            "error_type": self.error_type,
+        }
+
+
+@dataclass
+class ABTestSummary(LegacyMappingMixin):
+    """Typed summary payload shared by the analyzer, reports, and charts."""
+
+    total_segments_analyzed: int = 0
+    segment_failures: List[SegmentAnalysisFailure] = field(default_factory=list)
+    analysis_warnings: List[str] = field(default_factory=list)
+    aa_test_passed_segments: int = 0
+    aa_test_failed_segments: int = 0
+    bootstrapped_segments: int = 0
+    aa_failed_segment_names: List[str] = field(default_factory=list)
+    did_avg_effect: float = 0.0
+    did_total_effect: float = 0.0
+    t_test_significant_segments: int = 0
+    t_test_significant_segments_adjusted: int = 0
+    t_test_significance_rate: float = 0.0
+    t_test_significance_rate_adjusted: float = 0.0
+    t_test_avg_effect: float = 0.0
+    t_test_total_effect: float = 0.0
+    t_test_effect_calculation: str = "0.0000 × 0 = 0.00"
+    prop_test_significant_segments: int = 0
+    prop_test_significant_segments_adjusted: int = 0
+    prop_test_significance_rate: float = 0.0
+    prop_test_significance_rate_adjusted: float = 0.0
+    prop_test_avg_effect: float = 0.0
+    prop_test_total_effect: float = 0.0
+    prop_test_effect_calculation: str = "0.0000 × 0 = 0.00"
+    multiple_testing_method: str = "none"
+    multiple_testing_applied_segments: int = 0
+    covariate_adjusted_segments: int = 0
+    sequential_mode_segments: int = 0
+    sequential_stop_recommended_segments: int = 0
+    sequential_continue_segments: int = 0
+    sequential_stop_segment_names: List[str] = field(default_factory=list)
+    sequential_decision_breakdown: Dict[str, int] = field(default_factory=dict)
+    metric_type_breakdown: Dict[str, int] = field(default_factory=dict)
+    model_type_breakdown: Dict[str, int] = field(default_factory=dict)
+    inference_guardrail_segments: int = 0
+    proportion_guardrail_segments: int = 0
+    srm_mismatch_segments: int = 0
+    srm_mismatch_segment_names: List[str] = field(default_factory=list)
+    assumption_warning_segments: int = 0
+    assumption_warning_segment_names: List[str] = field(default_factory=list)
+    outlier_sensitive_segments: int = 0
+    outlier_sensitive_segment_names: List[str] = field(default_factory=list)
+    guardrail_segment_names: List[str] = field(default_factory=list)
+    combined_total_effect: float = 0.0
+    combined_effect_calculation: str = "T-test (0.00) + Proportion (0.00) = 0.00"
+    bayesian_significant_segments: int = 0
+    bayesian_significance_rate: float = 0.0
+    bayesian_avg_prob_treatment_better: float = 0.0
+    bayesian_avg_expected_loss: float = 0.0
+    bayesian_total_effect: float = 0.0
+    significant_segments: int = 0
+    non_significant_segments: int = 0
+    significance_rate: float = 0.0
+    average_significant_effect: float = 0.0
+    total_treatment_in_significant_segments: int = 0
+    total_effect_size: float = 0.0
+    effect_calculation: str = "0.0000 × 0 = 0.00"
+    total_treatment_customers: int = 0
+    total_control_customers: int = 0
+    treatment_control_ratio: Optional[float] = None
+    segments_with_adequate_power: int = 0
+    segments_with_inadequate_power: int = 0
+    power_adequacy_rate: float = 0.0
+    detailed_results: List[ABTestResult] = field(default_factory=list)
+    recommendations: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        payload = {
+            field_def.name: getattr(self, field_def.name)
+            for field_def in fields(self)
+            if field_def.name not in {"segment_failures", "detailed_results"}
+        }
+        payload["segment_failures"] = [failure.to_legacy_dict() for failure in self.segment_failures]
+        payload["detailed_results"] = [result.to_legacy_dict() for result in self.detailed_results]
+        return payload
+
 
 _CANONICAL_FIELD_ALIASES: Dict[str, Tuple[str, ...]] = {
     "treatment_size": ("treatment_n",),
@@ -157,6 +375,8 @@ _CANONICAL_FIELD_ALIASES: Dict[str, Tuple[str, ...]] = {
 
 _AB_RESULT_FIELDS = tuple(fields(ABTestResult))
 _AB_RESULT_FIELD_DEFAULTS = {field_def.name: field_def for field_def in _AB_RESULT_FIELDS}
+_SUMMARY_FIELDS = tuple(fields(ABTestSummary))
+_SUMMARY_FIELD_DEFAULTS = {field_def.name: field_def for field_def in _SUMMARY_FIELDS}
 
 
 def _field_default(field_name: str) -> Any:
@@ -166,6 +386,15 @@ def _field_default(field_name: str) -> Any:
     if field_def.default_factory is not MISSING:
         return field_def.default_factory()
     raise ValueError(f"Missing required canonical field '{field_name}'")
+
+
+def _summary_field_default(field_name: str) -> Any:
+    field_def = _SUMMARY_FIELD_DEFAULTS[field_name]
+    if field_def.default is not MISSING:
+        return field_def.default
+    if field_def.default_factory is not MISSING:
+        return field_def.default_factory()
+    raise ValueError(f"Missing required summary field '{field_name}'")
 
 
 def _result_to_mapping(result: Any) -> Dict[str, Any]:
@@ -285,3 +514,43 @@ def canonical_result_as_dict(result: Any, include_legacy_aliases: bool = False) 
         )
 
     return payload
+
+
+def to_segment_analysis_failure(failure: Any) -> SegmentAnalysisFailure:
+    """Normalize failure payloads to the typed segment failure record."""
+    if isinstance(failure, SegmentAnalysisFailure):
+        return failure
+
+    data = _result_to_mapping(failure)
+    return SegmentAnalysisFailure(
+        segment=str(data.get("segment", "Unknown")),
+        error=str(data.get("error", "Unknown error")),
+        error_type=str(data.get("error_type", "ValueError")),
+    )
+
+
+def to_ab_test_summary(summary: Any) -> ABTestSummary:
+    """Normalize summary payloads into the typed ABTestSummary model."""
+    if isinstance(summary, ABTestSummary):
+        return summary
+
+    if not isinstance(summary, MappingABC):
+        data = _result_to_mapping(summary)
+    else:
+        data = dict(summary)
+
+    payload: Dict[str, Any] = {}
+    for field_def in _SUMMARY_FIELDS:
+        field_name = field_def.name
+        if field_name == "detailed_results":
+            raw_results = data.get(field_name, [])
+            payload[field_name] = normalize_ab_test_results(raw_results)
+            continue
+        if field_name == "segment_failures":
+            raw_failures = data.get(field_name, [])
+            payload[field_name] = [to_segment_analysis_failure(failure) for failure in raw_failures]
+            continue
+        value = data.get(field_name, None)
+        payload[field_name] = _summary_field_default(field_name) if value is None else value
+
+    return ABTestSummary(**payload)

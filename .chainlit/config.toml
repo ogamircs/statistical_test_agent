@@ -14,7 +14,7 @@ latex = true
 # Enable file upload via drag and drop or clipboard
 enabled = true
 # Accepted file types (extensions and MIME types)
-accept = [".csv", "text/csv", "application/vnd.ms-excel", "text/plain"]
+accept = { "text/csv" = [".csv"], "application/vnd.ms-excel" = [".csv"], "text/plain" = [".csv"] }
 # Maximum number of files per upload
 max_files = 1
 # Maximum file size in MB
@@ -29,6 +29,8 @@ description = "An intelligent agent for analyzing A/B test experiments"
 default_theme = "light"
 # Show readme as a modal dialog
 show_readme_as_default = false
+custom_css = "/public/custom.css"
+custom_js = "/public/custom.js"
 
 [UI.theme]
 # Theme customization

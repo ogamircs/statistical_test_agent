@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+import pandas as pd
+
+from src.statistics.models import ABTestSummary, to_ab_test_summary
+
 
 @dataclass(frozen=True)
 class StructuredAgentError:
@@ -139,47 +143,73 @@ def render_load_csv_success(
     return result
 
 
-def _render_ab_results_section(summary: Dict[str, Any]) -> str:
+def _render_ab_results_section(summary: Any) -> str:
     """Render the shared markdown A/B results section."""
+    normalized = to_ab_test_summary(summary)
     output = "## A/B Test Results\n\n"
 
     output += "### Overview\n"
-    output += f"- **Segments Analyzed:** {summary['total_segments_analyzed']}\n"
-    output += f"- **AA Test Passed:** {summary.get('aa_test_passed_segments', summary['total_segments_analyzed'])}\n"
-    output += f"- **AA Test Failed:** {summary.get('aa_test_failed_segments', 0)}\n"
-    output += f"- **Bootstrapped Segments:** {summary.get('bootstrapped_segments', 0)}\n"
-    output += f"- **T-test Significant:** {summary['t_test_significant_segments']} ({summary['t_test_significance_rate']:.1%})\n"
-    output += f"- **Proportion Test Significant:** {summary['prop_test_significant_segments']} ({summary['prop_test_significance_rate']:.1%})\n"
-    output += f"- **Bayesian Significant:** {summary['bayesian_significant_segments']} ({summary['bayesian_significance_rate']:.1%})\n\n"
+    output += f"- **Segments Analyzed:** {normalized.total_segments_analyzed}\n"
+    output += f"- **AA Test Passed:** {normalized.aa_test_passed_segments}\n"
+    output += f"- **AA Test Failed:** {normalized.aa_test_failed_segments}\n"
+    output += f"- **Bootstrapped Segments:** {normalized.bootstrapped_segments}\n"
+    output += (
+        f"- **T-test Significant:** {normalized.t_test_significant_segments} "
+        f"({normalized.t_test_significance_rate:.1%})\n"
+    )
+    output += (
+        f"- **Proportion Test Significant:** {normalized.prop_test_significant_segments} "
+        f"({normalized.prop_test_significance_rate:.1%})\n"
+    )
+    output += (
+        f"- **Bayesian Significant:** {normalized.bayesian_significant_segments} "
+        f"({normalized.bayesian_significance_rate:.1%})\n\n"
+    )
 
     output += "### Sample Information\n"
-    output += f"- **Total Treatment:** {summary['total_treatment_customers']:,}\n"
-    output += f"- **Total Control:** {summary['total_control_customers']:,}\n\n"
+    output += f"- **Total Treatment:** {normalized.total_treatment_customers:,}\n"
+    output += f"- **Total Control:** {normalized.total_control_customers:,}\n\n"
 
     output += "### Effect Summary\n"
-    output += f"- **DiD Avg Effect:** {summary.get('did_avg_effect', 0):.4f}\n"
-    output += f"- **DiD Total Effect:** {summary.get('did_total_effect', 0):.2f}\n"
-    output += f"- **T-test Effect:** {summary['t_test_effect_calculation']}\n"
-    output += f"- **Proportion Effect:** {summary['prop_test_effect_calculation']}\n"
-    output += f"- **Combined Total Effect:** {summary['combined_effect_calculation']}\n"
-    output += f"- **Bayesian Total Effect:** {summary.get('bayesian_total_effect', 0):.2f}\n"
-    output += f"- **Avg P(Treatment Better):** {summary['bayesian_avg_prob_treatment_better']:.1%}\n"
-    output += f"- **Avg Expected Loss:** {summary['bayesian_avg_expected_loss']:.4f}\n\n"
+    output += f"- **DiD Avg Effect:** {normalized.did_avg_effect:.4f}\n"
+    output += f"- **DiD Total Effect:** {normalized.did_total_effect:.2f}\n"
+    output += f"- **T-test Effect:** {normalized.t_test_effect_calculation}\n"
+    output += f"- **Proportion Effect:** {normalized.prop_test_effect_calculation}\n"
+    output += f"- **Combined Total Effect:** {normalized.combined_effect_calculation}\n"
+    output += f"- **Bayesian Total Effect:** {normalized.bayesian_total_effect:.2f}\n"
+    output += (
+        f"- **Avg P(Treatment Better):** "
+        f"{normalized.bayesian_avg_prob_treatment_better:.1%}\n"
+    )
+    output += f"- **Avg Expected Loss:** {normalized.bayesian_avg_expected_loss:.4f}\n\n"
+
+    if normalized.analysis_warnings:
+        output += "### Analysis Warnings\n"
+        for warning in normalized.analysis_warnings:
+            output += f"- {warning}\n"
+        output += "\n"
+
+    if normalized.segment_failures:
+        output += "### Skipped Segments\n\n"
+        output += "| Segment | Reason |\n"
+        output += "|---------|--------|\n"
+        for failure in normalized.segment_failures:
+            output += f"| {failure.segment} | {failure.error} |\n"
+        output += "\n"
 
     output += "### AA Test & Pre/Post Analysis\n\n"
     output += "| Segment | AA Pass | Boot | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
     output += "|---------|---------|------|-----------|----------|------------|-----------|------------|\n"
 
-    for r in summary["detailed_results"]:
-        aa_pass = "Yes" if r.get("aa_test_passed", True) else "No"
-        boot = "Yes" if r.get("bootstrapping_applied", False) else "No"
-        pre_treat = r.get("treatment_pre_mean", 0)
-        pre_ctrl = r.get("control_pre_mean", 0)
-        post_treat = r.get("treatment_post_mean", r.get("treatment_mean", 0))
-        post_ctrl = r.get("control_post_mean", r.get("control_mean", 0))
-        did_effect = r.get("did_effect", 0)
-
-        output += f"| {r['segment']} | {aa_pass} | {boot} | {pre_treat:.2f} | {pre_ctrl:.2f} | {post_treat:.2f} | {post_ctrl:.2f} | {did_effect:.4f} |\n"
+    for result in normalized.detailed_results:
+        aa_pass = "Yes" if result.aa_test_passed else "No"
+        boot = "Yes" if result.bootstrapping_applied else "No"
+        output += (
+            f"| {result.segment} | {aa_pass} | {boot} | "
+            f"{result.treatment_pre_mean:.2f} | {result.control_pre_mean:.2f} | "
+            f"{result.treatment_post_mean:.2f} | {result.control_post_mean:.2f} | "
+            f"{result.did_effect:.4f} |\n"
+        )
 
     output += "\n"
 
@@ -187,22 +217,28 @@ def _render_ab_results_section(summary: Dict[str, Any]) -> str:
     output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
     output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
-    for r in summary["detailed_results"]:
-        t_effect = r["effect"]
-        t_pval = r["p_value"]
-        prop_pval = r["prop_p_value"]
-        prop_effect_per_cust = r.get("prop_effect_per_customer", 0)
+    for result in normalized.detailed_results:
+        t_effect = result.effect_size
+        t_pval = result.p_value
+        prop_pval = result.proportion_p_value
+        prop_effect_per_cust = result.proportion_effect_per_customer
 
-        # Calculate total effect: t-test effect × treatment_n + prop effect × control_n
-        t_total = t_effect * r["treatment_n"] if r["significant"] else 0
-        prop_total = prop_effect_per_cust * r["control_n"] if r["prop_significant"] else 0
+        t_total = t_effect * result.treatment_size if result.is_significant else 0
+        prop_total = (
+            prop_effect_per_cust * result.control_size
+            if result.proportion_is_significant
+            else 0
+        )
         total_effect = t_total + prop_total
 
-        # Add significance markers
-        t_sig_marker = "*" if r["significant"] else ""
-        p_sig_marker = "*" if r["prop_significant"] else ""
+        t_sig_marker = "*" if result.is_significant else ""
+        p_sig_marker = "*" if result.proportion_is_significant else ""
 
-        output += f"| {r['segment']} | {r['treatment_n']:,} | {r['control_n']:,} | {t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | {prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+        output += (
+            f"| {result.segment} | {result.treatment_size:,} | {result.control_size:,} | "
+            f"{t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | "
+            f"{prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+        )
 
     output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
 
@@ -210,20 +246,23 @@ def _render_ab_results_section(summary: Dict[str, Any]) -> str:
     output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Bayesian Total Effect |\n"
     output += "|---------|---------------|----------------------|---------------|----------------------|\n"
 
-    for r in summary["detailed_results"]:
-        bayesian_prob = r.get("bayesian_prob", 0.5)
-        ci_lower = r.get("bayesian_credible_lower", 0)
-        ci_upper = r.get("bayesian_credible_upper", 0)
-        expected_loss = r.get("bayesian_expected_loss", 0)
-        bayesian_total = r.get("bayesian_total_effect", 0)
-        b_sig_marker = "*" if r.get("bayesian_significant", False) else ""
+    for result in normalized.detailed_results:
+        expected_loss = min(
+            result.bayesian_expected_loss_treatment,
+            result.bayesian_expected_loss_control,
+        )
+        b_sig_marker = "*" if result.bayesian_is_significant else ""
 
-        output += f"| {r['segment']} | {bayesian_prob:.1%}{b_sig_marker} | [{ci_lower:.4f}, {ci_upper:.4f}] | {expected_loss:.4f} | {bayesian_total:.2f} |\n"
+        output += (
+            f"| {result.segment} | {result.bayesian_prob_treatment_better:.1%}{b_sig_marker} | "
+            f"[{result.bayesian_credible_interval[0]:.4f}, {result.bayesian_credible_interval[1]:.4f}] | "
+            f"{expected_loss:.4f} | {result.bayesian_total_effect:.2f} |\n"
+        )
 
     output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
     output += "\n### Recommendations\n\n"
-    for i, rec in enumerate(summary["recommendations"], 1):
+    for i, rec in enumerate(normalized.recommendations, 1):
         output += f"{i}. {rec}\n"
 
     output += "\n---\n*Would you like to see the visualizations?*"
@@ -239,7 +278,7 @@ def render_load_and_auto_analyze_report(
     backend: str,
     fallback_note: Optional[str],
     config: Dict[str, Any],
-    summary: Dict[str, Any],
+    summary: Any,
 ) -> str:
     """Render load_and_auto_analyze output."""
     output = "## Best Guess Mode - Analysis Complete\n\n"
@@ -280,7 +319,7 @@ def render_configure_and_analyze_report(
     treatment_label: str,
     control_label: str,
     segment_column: Optional[str],
-    summary: Dict[str, Any],
+    summary: Any,
 ) -> str:
     """Render configure_and_analyze output."""
     output = "## Configuration Applied\n\n"
@@ -297,7 +336,7 @@ def render_configure_and_analyze_report(
     return output
 
 
-def render_auto_configure_and_analyze_report(config: Dict[str, Any], summary: Dict[str, Any]) -> str:
+def render_auto_configure_and_analyze_report(config: Dict[str, Any], summary: Any) -> str:
     """Render auto_configure_and_analyze output."""
     output = "## Best Guess Mode - Analysis Complete\n\n"
 
@@ -366,48 +405,58 @@ def render_run_ab_test_output(result: Any) -> str:
     return output
 
 
-def render_full_analysis_output(summary: Dict[str, Any]) -> str:
+def render_full_analysis_output(summary: Any) -> str:
     """Render run_full_analysis output."""
+    normalized = to_ab_test_summary(summary)
     output = f"\n{'=' * 60}\n"
     output += "FULL A/B TEST ANALYSIS SUMMARY\n"
     output += f"{'=' * 60}\n\n"
 
     output += "OVERVIEW:\n"
-    output += f"  Segments Analyzed: {summary['total_segments_analyzed']}\n"
-    output += f"  Significant Results: {summary['significant_segments']}\n"
-    output += f"  Non-Significant: {summary['non_significant_segments']}\n"
-    output += f"  Significance Rate: {summary['significance_rate']:.1%}\n\n"
+    output += f"  Segments Analyzed: {normalized.total_segments_analyzed}\n"
+    output += f"  Significant Results: {normalized.significant_segments}\n"
+    output += f"  Non-Significant: {normalized.non_significant_segments}\n"
+    output += f"  Significance Rate: {normalized.significance_rate:.1%}\n\n"
 
     output += "SAMPLE INFORMATION:\n"
-    output += f"  Total Treatment Customers: {summary['total_treatment_customers']}\n"
-    output += f"  Total Control Customers: {summary['total_control_customers']}\n"
-    if summary["treatment_control_ratio"]:
-        output += f"  Treatment/Control Ratio: {summary['treatment_control_ratio']:.2f}\n\n"
+    output += f"  Total Treatment Customers: {normalized.total_treatment_customers}\n"
+    output += f"  Total Control Customers: {normalized.total_control_customers}\n"
+    if normalized.treatment_control_ratio:
+        output += f"  Treatment/Control Ratio: {normalized.treatment_control_ratio:.2f}\n\n"
 
     output += "EFFECT SIZE SUMMARY:\n"
-    output += f"  Average Significant Effect: {summary['average_significant_effect']:.4f}\n"
-    output += f"  Treatment in Significant Segments: {summary['total_treatment_in_significant_segments']}\n"
-    output += f"  Total Effect Size: {summary['effect_calculation']}\n\n"
+    output += f"  Average Significant Effect: {normalized.average_significant_effect:.4f}\n"
+    output += (
+        f"  Treatment in Significant Segments: "
+        f"{normalized.total_treatment_in_significant_segments}\n"
+    )
+    output += f"  Total Effect Size: {normalized.effect_calculation}\n\n"
 
     output += "POWER ANALYSIS:\n"
-    output += f"  Segments with Adequate Power: {summary['segments_with_adequate_power']}\n"
-    output += f"  Segments with Inadequate Power: {summary['segments_with_inadequate_power']}\n"
-    output += f"  Power Adequacy Rate: {summary['power_adequacy_rate']:.1%}\n\n"
+    output += f"  Segments with Adequate Power: {normalized.segments_with_adequate_power}\n"
+    output += (
+        f"  Segments with Inadequate Power: {normalized.segments_with_inadequate_power}\n"
+    )
+    output += f"  Power Adequacy Rate: {normalized.power_adequacy_rate:.1%}\n\n"
 
     output += "SEGMENT DETAILS:\n"
     output += "-" * 100 + "\n"
     output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<6} {'Power':<8} {'Adequate?':<10}\n"
     output += "-" * 100 + "\n"
 
-    for r in summary["detailed_results"]:
-        sig = "YES" if r["significant"] else "NO"
-        adeq = "YES" if r["adequate_sample"] else "NO"
-        output += f"{r['segment']:<20} {r['treatment_n']:<10} {r['control_n']:<10} {r['effect']:<12.4f} {r['p_value']:<12.6f} {sig:<6} {r['power']:<8.2%} {adeq:<10}\n"
+    for result in normalized.detailed_results:
+        sig = "YES" if result.is_significant else "NO"
+        adeq = "YES" if result.is_sample_adequate else "NO"
+        output += (
+            f"{result.segment:<20} {result.treatment_size:<10} {result.control_size:<10} "
+            f"{result.effect_size:<12.4f} {result.p_value:<12.6f} {sig:<6} "
+            f"{result.power:<8.2%} {adeq:<10}\n"
+        )
 
     output += "-" * 100 + "\n\n"
 
     output += "RECOMMENDATIONS:\n"
-    for i, rec in enumerate(summary["recommendations"], 1):
+    for i, rec in enumerate(normalized.recommendations, 1):
         output += f"  {i}. {rec}\n\n"
 
     return output
@@ -416,6 +465,40 @@ def render_full_analysis_output(summary: Dict[str, Any]) -> str:
 def render_query_data_output(result: Any) -> str:
     """Render query_data output."""
     return f"Query result ({len(result)} rows):\n{result.head(20).to_string()}\n\n(Showing first 20 rows)"
+
+
+def render_data_question_output(answer: Any) -> str:
+    """Render formatted output for natural-language data questions."""
+    if isinstance(answer, Mapping):
+        answer_text = str(answer.get("answer_text", "I found a result."))
+        source_tables = answer.get("source_tables", [])
+        sql = str(answer.get("sql", "")).strip()
+        data = answer.get("data")
+    else:
+        answer_text = str(getattr(answer, "answer_text", "I found a result."))
+        source_tables = getattr(answer, "source_tables", [])
+        sql = str(getattr(answer, "sql", "")).strip()
+        data = getattr(answer, "data", None)
+
+    output = "## Data Answer\n\n"
+    output += f"{answer_text}\n\n"
+
+    if source_tables:
+        output += f"**Source Tables:** {', '.join(f'`{table}`' for table in source_tables)}\n\n"
+
+    if isinstance(data, pd.DataFrame) and not data.empty:
+        output += "### Results\n\n"
+        output += data.head(20).to_markdown(index=False)
+        output += "\n\n"
+    elif isinstance(data, pd.DataFrame):
+        output += "_No matching rows returned._\n\n"
+
+    if sql:
+        output += "### SQL Used\n\n```sql\n"
+        output += sql
+        output += "\n```\n"
+
+    return output
 
 
 def render_data_summary_output(summary: Dict[str, Any]) -> str:

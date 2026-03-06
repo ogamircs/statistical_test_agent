@@ -4,23 +4,40 @@ Summary and recommendation builder for A/B test result sets.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 
-from .models import ABTestResult, normalize_ab_test_results
+from .models import (
+    ABTestResult,
+    ABTestSummary,
+    normalize_ab_test_results,
+    to_segment_analysis_failure,
+)
 
 
 class ABTestSummaryBuilder:
     """Build summary payloads and recommendations from segment-level results."""
 
-    def generate_summary(self, results: Iterable[Any]) -> Dict[str, Any]:
+    def generate_summary(
+        self,
+        results: Iterable[Any],
+        *,
+        segment_failures: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> ABTestSummary:
         """Generate comprehensive summary used by UI and agent output."""
         canonical_results = normalize_ab_test_results(results)
         results = canonical_results
+        failures = [to_segment_analysis_failure(failure) for failure in (segment_failures or [])]
 
         if not results:
-            return {"error": "No results to summarize"}
+            summary = ABTestSummary(error="No results to summarize")
+            if failures:
+                summary.segment_failures = failures
+                summary.analysis_warnings = [
+                    f"Skipped {len(failures)} segment(s) during analysis due to data or configuration errors."
+                ]
+            return summary
 
         aa_failed_segments = [r for r in results if not r.aa_test_passed]
         bootstrapped_segments = [r for r in results if r.bootstrapping_applied]
@@ -141,179 +158,104 @@ class ABTestSummaryBuilder:
                 metric_type_breakdown.get(result.metric_type, 0) + 1
             )
 
-        return {
-            "total_segments_analyzed": len(results),
-            "aa_test_passed_segments": len(results) - len(aa_failed_segments),
-            "aa_test_failed_segments": len(aa_failed_segments),
-            "bootstrapped_segments": len(bootstrapped_segments),
-            "aa_failed_segment_names": [r.segment for r in aa_failed_segments],
-            "did_avg_effect": avg_did_effect,
-            "did_total_effect": total_did_effect,
-            "t_test_significant_segments": len(t_significant_results),
-            "t_test_significant_segments_adjusted": len(t_significant_adjusted_results),
-            "t_test_significance_rate": len(t_significant_results) / len(results) if results else 0.0,
-            "t_test_significance_rate_adjusted": (
+        analysis_warnings: List[str] = []
+        if failures:
+            failed_segments = ", ".join(failure.segment for failure in failures[:5])
+            suffix = "" if len(failures) <= 5 else ", ..."
+            analysis_warnings.append(
+                f"Skipped {len(failures)} segment(s) during analysis: {failed_segments}{suffix}"
+            )
+
+        return ABTestSummary(
+            total_segments_analyzed=len(results),
+            segment_failures=failures,
+            analysis_warnings=analysis_warnings,
+            aa_test_passed_segments=len(results) - len(aa_failed_segments),
+            aa_test_failed_segments=len(aa_failed_segments),
+            bootstrapped_segments=len(bootstrapped_segments),
+            aa_failed_segment_names=[r.segment for r in aa_failed_segments],
+            did_avg_effect=avg_did_effect,
+            did_total_effect=total_did_effect,
+            t_test_significant_segments=len(t_significant_results),
+            t_test_significant_segments_adjusted=len(t_significant_adjusted_results),
+            t_test_significance_rate=len(t_significant_results) / len(results) if results else 0.0,
+            t_test_significance_rate_adjusted=(
                 len(t_significant_adjusted_results) / len(results) if results else 0.0
             ),
-            "t_test_avg_effect": avg_t_test_effect,
-            "t_test_total_effect": t_test_total_effect,
-            "t_test_effect_calculation": f"{avg_t_test_effect:.4f} × {total_treatment_in_t_significant} = {t_test_total_effect:.2f}",
-            "prop_test_significant_segments": len(prop_significant_results),
-            "prop_test_significant_segments_adjusted": len(prop_significant_adjusted_results),
-            "prop_test_significance_rate": len(prop_significant_results) / len(results) if results else 0.0,
-            "prop_test_significance_rate_adjusted": (
+            t_test_avg_effect=avg_t_test_effect,
+            t_test_total_effect=t_test_total_effect,
+            t_test_effect_calculation=(
+                f"{avg_t_test_effect:.4f} × {total_treatment_in_t_significant} = "
+                f"{t_test_total_effect:.2f}"
+            ),
+            prop_test_significant_segments=len(prop_significant_results),
+            prop_test_significant_segments_adjusted=len(prop_significant_adjusted_results),
+            prop_test_significance_rate=(
+                len(prop_significant_results) / len(results) if results else 0.0
+            ),
+            prop_test_significance_rate_adjusted=(
                 len(prop_significant_adjusted_results) / len(results) if results else 0.0
             ),
-            "prop_test_avg_effect": avg_prop_effect,
-            "prop_test_total_effect": prop_total_effect,
-            "prop_test_effect_calculation": f"{avg_prop_effect:.4f} × {total_treatment_in_prop_significant} = {prop_total_effect:.2f}",
-            "multiple_testing_method": multiple_testing_method,
-            "multiple_testing_applied_segments": len(multiple_testing_applied_segments),
-            "covariate_adjusted_segments": len(covariate_adjusted_segments),
-            "sequential_mode_segments": len(sequential_enabled_segments),
-            "sequential_stop_recommended_segments": len(sequential_stop_segments),
-            "sequential_continue_segments": len(sequential_continue_segments),
-            "sequential_stop_segment_names": [r.segment for r in sequential_stop_segments],
-            "sequential_decision_breakdown": sequential_decision_breakdown,
-            "metric_type_breakdown": metric_type_breakdown,
-            "model_type_breakdown": model_type_breakdown,
-            "inference_guardrail_segments": len(inference_guardrailed),
-            "proportion_guardrail_segments": len(proportion_guardrailed),
-            "srm_mismatch_segments": len(srm_mismatch_results),
-            "srm_mismatch_segment_names": [r.segment for r in srm_mismatch_results],
-            "assumption_warning_segments": len(assumption_warning_results),
-            "assumption_warning_segment_names": [r.segment for r in assumption_warning_results],
-            "outlier_sensitive_segments": len(outlier_sensitive_results),
-            "outlier_sensitive_segment_names": [r.segment for r in outlier_sensitive_results],
-            "guardrail_segment_names": sorted(
-                {
-                    r.segment
-                    for r in [*inference_guardrailed, *proportion_guardrailed]
-                }
+            prop_test_avg_effect=avg_prop_effect,
+            prop_test_total_effect=prop_total_effect,
+            prop_test_effect_calculation=(
+                f"{avg_prop_effect:.4f} × {total_treatment_in_prop_significant} = "
+                f"{prop_total_effect:.2f}"
             ),
-            "combined_total_effect": combined_total_effect,
-            "combined_effect_calculation": f"T-test ({t_test_total_effect:.2f}) + Proportion ({prop_total_effect:.2f}) = {combined_total_effect:.2f}",
-            "bayesian_significant_segments": len(bayesian_significant_results),
-            "bayesian_significance_rate": len(bayesian_significant_results) / len(results) if results else 0.0,
-            "bayesian_avg_prob_treatment_better": avg_bayesian_prob,
-            "bayesian_avg_expected_loss": avg_expected_loss,
-            "bayesian_total_effect": total_bayesian_effect,
-            # Legacy fields
-            "significant_segments": len(t_significant_results),
-            "non_significant_segments": len(results) - len(t_significant_results),
-            "significance_rate": len(t_significant_results) / len(results) if results else 0.0,
-            "average_significant_effect": avg_t_test_effect,
-            "total_treatment_in_significant_segments": total_treatment_in_t_significant,
-            "total_effect_size": t_test_total_effect,
-            "effect_calculation": f"{avg_t_test_effect:.4f} × {total_treatment_in_t_significant} = {t_test_total_effect:.2f}",
-            "total_treatment_customers": total_treatment,
-            "total_control_customers": total_control,
-            "treatment_control_ratio": total_treatment / total_control if total_control > 0 else None,
-            "segments_with_adequate_power": len(adequate_samples),
-            "segments_with_inadequate_power": len(inadequate_samples),
-            "power_adequacy_rate": len(adequate_samples) / len(results) if results else 0.0,
-            "detailed_results": [
-                {
-                    "segment": r.segment,
-                    "treatment_n": r.treatment_size,
-                    "control_n": r.control_size,
-                    "treatment_pre_mean": r.treatment_pre_mean,
-                    "treatment_post_mean": r.treatment_post_mean,
-                    "control_pre_mean": r.control_pre_mean,
-                    "control_post_mean": r.control_post_mean,
-                    "aa_test_passed": r.aa_test_passed,
-                    "aa_p_value": r.aa_p_value,
-                    "bootstrapping_applied": r.bootstrapping_applied,
-                    "original_control_size": r.original_control_size,
-                    "did_treatment_change": r.did_treatment_change,
-                    "did_control_change": r.did_control_change,
-                    "did_effect": r.did_effect,
-                    "effect": r.effect_size,
-                    "cohens_d": r.cohens_d,
-                    "p_value": r.p_value,
-                    "significant": r.is_significant,
-                    "p_value_adjusted": r.p_value_adjusted,
-                    "significant_adjusted": r.is_significant_adjusted,
-                    "power": r.power,
-                    "adequate_sample": r.is_sample_adequate,
-                    "ci_lower": r.confidence_interval[0],
-                    "ci_upper": r.confidence_interval[1],
-                    "metric_type": r.metric_type,
-                    "model_type": r.model_type,
-                    "model_effect": r.model_effect,
-                    "model_ci_lower": r.model_confidence_interval[0],
-                    "model_ci_upper": r.model_confidence_interval[1],
-                    "model_effect_scale": r.model_effect_scale,
-                    "model_effect_exponentiated": r.model_effect_exponentiated,
-                    "covariate_adjustment_applied": r.covariate_adjustment_applied,
-                    "covariates_used": r.covariates_used,
-                    "covariate_adjusted_effect": r.covariate_adjusted_effect,
-                    "covariate_adjusted_p_value": r.covariate_adjusted_p_value,
-                    "covariate_adjusted_ci_lower": r.covariate_adjusted_confidence_interval[0],
-                    "covariate_adjusted_ci_upper": r.covariate_adjusted_confidence_interval[1],
-                    "covariate_adjusted_model_type": r.covariate_adjusted_model_type,
-                    "covariate_adjusted_effect_scale": r.covariate_adjusted_effect_scale,
-                    "covariate_adjusted_effect_exponentiated": r.covariate_adjusted_effect_exponentiated,
-                    "treatment_prop": r.treatment_proportion,
-                    "control_prop": r.control_proportion,
-                    "prop_diff": r.proportion_diff,
-                    "prop_p_value": r.proportion_p_value,
-                    "prop_significant": r.proportion_is_significant,
-                    "prop_p_value_adjusted": r.proportion_p_value_adjusted,
-                    "prop_significant_adjusted": r.proportion_is_significant_adjusted,
-                    "multiple_testing_method": r.multiple_testing_method,
-                    "multiple_testing_applied": r.multiple_testing_applied,
-                    "inference_guardrail_triggered": r.inference_guardrail_triggered,
-                    "proportion_guardrail_triggered": r.proportion_guardrail_triggered,
-                    "diagnostics": r.diagnostics,
-                    "sequential_mode_enabled": r.sequential_mode_enabled,
-                    "sequential_method": r.sequential_method,
-                    "sequential_look_index": r.sequential_look_index,
-                    "sequential_max_looks": r.sequential_max_looks,
-                    "sequential_information_fraction": r.sequential_information_fraction,
-                    "sequential_alpha_spent": r.sequential_alpha_spent,
-                    "sequential_stop_recommended": r.sequential_stop_recommended,
-                    "sequential_decision": r.sequential_decision,
-                    "sequential_rationale": r.sequential_rationale,
-                    "sequential_thresholds": r.sequential_thresholds,
-                    "srm_p_value": (
-                        r.diagnostics.get("experiment_quality", {})
-                        .get("srm", {})
-                        .get("p_value")
-                    ),
-                    "srm_is_mismatch": (
-                        r.diagnostics.get("experiment_quality", {})
-                        .get("srm", {})
-                        .get("is_sample_ratio_mismatch", False)
-                    ),
-                    "assumption_diagnostics": (
-                        r.diagnostics.get("experiment_quality", {})
-                        .get("assumptions", {})
-                    ),
-                    "outlier_sensitivity_diagnostics": (
-                        r.diagnostics.get("experiment_quality", {})
-                        .get("outlier_sensitivity", {})
-                    ),
-                    "prop_effect": r.proportion_effect,
-                    "prop_effect_per_customer": r.proportion_effect_per_customer,
-                    "total_effect": r.total_effect,
-                    "total_effect_per_customer": r.total_effect_per_customer,
-                    "bayesian_prob": r.bayesian_prob_treatment_better,
-                    "bayesian_credible_lower": r.bayesian_credible_interval[0],
-                    "bayesian_credible_upper": r.bayesian_credible_interval[1],
-                    "bayesian_expected_loss": min(
-                        r.bayesian_expected_loss_treatment,
-                        r.bayesian_expected_loss_control,
-                    ),
-                    "bayesian_relative_uplift": r.bayesian_relative_uplift,
-                    "bayesian_significant": r.bayesian_is_significant,
-                    "bayesian_total_effect": r.bayesian_total_effect,
-                    "bayesian_total_effect_per_customer": r.bayesian_total_effect_per_customer,
-                }
-                for r in results
-            ],
-            "recommendations": self._generate_recommendations(results),
-        }
+            multiple_testing_method=multiple_testing_method,
+            multiple_testing_applied_segments=len(multiple_testing_applied_segments),
+            covariate_adjusted_segments=len(covariate_adjusted_segments),
+            sequential_mode_segments=len(sequential_enabled_segments),
+            sequential_stop_recommended_segments=len(sequential_stop_segments),
+            sequential_continue_segments=len(sequential_continue_segments),
+            sequential_stop_segment_names=[r.segment for r in sequential_stop_segments],
+            sequential_decision_breakdown=sequential_decision_breakdown,
+            metric_type_breakdown=metric_type_breakdown,
+            model_type_breakdown=model_type_breakdown,
+            inference_guardrail_segments=len(inference_guardrailed),
+            proportion_guardrail_segments=len(proportion_guardrailed),
+            srm_mismatch_segments=len(srm_mismatch_results),
+            srm_mismatch_segment_names=[r.segment for r in srm_mismatch_results],
+            assumption_warning_segments=len(assumption_warning_results),
+            assumption_warning_segment_names=[r.segment for r in assumption_warning_results],
+            outlier_sensitive_segments=len(outlier_sensitive_results),
+            outlier_sensitive_segment_names=[r.segment for r in outlier_sensitive_results],
+            guardrail_segment_names=sorted(
+                {r.segment for r in [*inference_guardrailed, *proportion_guardrailed]}
+            ),
+            combined_total_effect=combined_total_effect,
+            combined_effect_calculation=(
+                f"T-test ({t_test_total_effect:.2f}) + Proportion ({prop_total_effect:.2f}) = "
+                f"{combined_total_effect:.2f}"
+            ),
+            bayesian_significant_segments=len(bayesian_significant_results),
+            bayesian_significance_rate=(
+                len(bayesian_significant_results) / len(results) if results else 0.0
+            ),
+            bayesian_avg_prob_treatment_better=avg_bayesian_prob,
+            bayesian_avg_expected_loss=avg_expected_loss,
+            bayesian_total_effect=total_bayesian_effect,
+            significant_segments=len(t_significant_results),
+            non_significant_segments=len(results) - len(t_significant_results),
+            significance_rate=len(t_significant_results) / len(results) if results else 0.0,
+            average_significant_effect=avg_t_test_effect,
+            total_treatment_in_significant_segments=total_treatment_in_t_significant,
+            total_effect_size=t_test_total_effect,
+            effect_calculation=(
+                f"{avg_t_test_effect:.4f} × {total_treatment_in_t_significant} = "
+                f"{t_test_total_effect:.2f}"
+            ),
+            total_treatment_customers=total_treatment,
+            total_control_customers=total_control,
+            treatment_control_ratio=(
+                total_treatment / total_control if total_control > 0 else None
+            ),
+            segments_with_adequate_power=len(adequate_samples),
+            segments_with_inadequate_power=len(inadequate_samples),
+            power_adequacy_rate=len(adequate_samples) / len(results) if results else 0.0,
+            detailed_results=results,
+            recommendations=self._generate_recommendations(results),
+        )
 
     def _generate_recommendations(self, results: List[ABTestResult]) -> List[str]:
         """Generate actionable recommendations from result set."""

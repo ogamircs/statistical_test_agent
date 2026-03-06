@@ -18,6 +18,8 @@ Performance Notes:
 - Cache intermediate results for iterative operations
 """
 
+import logging
+
 from pyspark.sql import SparkSession, DataFrame, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType, ArrayType
@@ -29,8 +31,13 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 import json
 
+from ..agent_reporting import AgentUserFacingError
+from .label_inference import infer_group_labels
 from .models import ABTestResult
 from .summary_builder import ABTestSummaryBuilder
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -135,6 +142,7 @@ class PySparkABTestAnalyzer:
         self.treatment_label: Optional[str] = None
         self.control_label: Optional[str] = None
         self.summary_builder = ABTestSummaryBuilder()
+        self.segment_failures: List[Dict[str, str]] = []
 
     def load_data(self, path: str, format: str = "csv", **options) -> Dict[str, Any]:
         """
@@ -262,6 +270,109 @@ class PySparkABTestAnalyzer:
         self.treatment_label = treatment_label
         self.control_label = control_label
 
+    def get_group_values(self) -> Dict[str, List[Any]]:
+        """Return unique values for the configured group column."""
+        if self.df is None or "group" not in self.column_mapping:
+            raise ValueError("Data not loaded or group column not set")
+
+        group_col = self.column_mapping["group"]
+        values = [row[0] for row in self.df.select(group_col).distinct().collect()]
+        return {"group_column": group_col, "unique_values": values}
+
+    def query_data(self, query: str):
+        """Spark backend does not support pandas-query semantics."""
+        raise AgentUserFacingError(
+            "BACKEND_OPERATION_UNSUPPORTED",
+            "Querying data is not supported for the active backend (spark).",
+        )
+
+    def get_data_summary(self) -> Dict[str, Any]:
+        """Return high-level profiling summary for the active Spark DataFrame."""
+        if self.df is None:
+            raise ValueError("No data loaded")
+
+        row_count = self.df.count()
+        columns = list(self.df.columns)
+        dtypes = {name: dtype for name, dtype in self.df.dtypes}
+        missing_values = (
+            self.df.select(
+                [
+                    F.sum(F.when(F.col(column).isNull(), 1).otherwise(0)).alias(column)
+                    for column in columns
+                ]
+            )
+            .first()
+            .asDict()
+        )
+
+        numeric_types = {"int", "bigint", "long", "double", "float", "decimal"}
+        numeric_columns = [
+            name
+            for name, dtype in self.df.dtypes
+            if any(token in dtype.lower() for token in numeric_types)
+        ]
+
+        numeric_summary: Dict[str, Dict[str, Any]] = {}
+        if numeric_columns:
+            described_rows = self.df.select(*numeric_columns).describe().collect()
+            described = {row["summary"]: row.asDict() for row in described_rows}
+            for metric in ("mean", "stddev", "min", "max"):
+                metric_name = "std" if metric == "stddev" else metric
+                numeric_summary[metric_name] = {}
+                metric_row = described.get(metric, {})
+                for column in numeric_columns:
+                    value = metric_row.get(column)
+                    if value is None:
+                        continue
+                    try:
+                        numeric_summary[metric_name][column] = float(value)
+                    except (TypeError, ValueError):
+                        numeric_summary[metric_name][column] = value
+
+        sample_rows = self.df.limit(5).toPandas().to_dict()
+
+        return {
+            "shape": (row_count, len(columns)),
+            "columns": columns,
+            "dtypes": dtypes,
+            "missing_values": missing_values,
+            "numeric_summary": numeric_summary,
+            "sample_rows": sample_rows,
+        }
+
+    def get_segment_distribution(self) -> Dict[str, Any]:
+        """Return group and segment distribution tables."""
+        if self.df is None:
+            raise ValueError("No data loaded")
+
+        result: Dict[str, Any] = {"columns_used": dict(self.column_mapping)}
+
+        if "group" in self.column_mapping:
+            group_col = self.column_mapping["group"]
+            group_counts = self.df.groupBy(group_col).count().collect()
+            result["group_distribution"] = {
+                row[group_col]: int(row["count"]) for row in group_counts
+            }
+
+        if "segment" in self.column_mapping:
+            segment_col = self.column_mapping["segment"]
+            segment_counts = self.df.groupBy(segment_col).count().collect()
+            result["segment_distribution"] = {
+                row[segment_col]: int(row["count"]) for row in segment_counts
+            }
+
+            if "group" in self.column_mapping:
+                group_col = self.column_mapping["group"]
+                cross_rows = self.df.groupBy(group_col, segment_col).count().collect()
+                segment_by_group: Dict[Any, Dict[Any, int]] = {}
+                for row in cross_rows:
+                    group_value = row[group_col]
+                    segment_value = row[segment_col]
+                    segment_by_group.setdefault(group_value, {})[segment_value] = int(row["count"])
+                result["segment_by_group"] = segment_by_group
+
+        return result
+
     def auto_configure(self) -> Dict[str, Any]:
         """
         Automatically detect and configure columns and labels
@@ -314,26 +425,10 @@ class PySparkABTestAnalyzer:
         group_col = config["mapping"]["group"]
         unique_values = [row[0] for row in self.df.select(group_col).distinct().collect()]
 
-        treatment_patterns = ['treatment', 'treat', 'test', 'experiment', 'variant', 'exposed', '1', 'true', 'yes', 'a']
-        control_patterns = ['control', 'ctrl', 'baseline', 'placebo', 'unexposed', '0', 'false', 'no', 'b']
-
-        treatment_label = None
-        control_label = None
-
-        for val in unique_values:
-            val_lower = str(val).lower().strip()
-            if any(p in val_lower for p in treatment_patterns):
-                treatment_label = val
-            elif any(p in val_lower for p in control_patterns):
-                control_label = val
-
-        # Fallback to sorted order
-        if treatment_label is None or control_label is None:
-            if len(unique_values) >= 2:
-                sorted_vals = sorted(unique_values, key=lambda x: str(x).lower())
-                control_label = sorted_vals[0]
-                treatment_label = sorted_vals[1]
-                config["warnings"].append(f"Guessed treatment='{treatment_label}', control='{control_label}' based on order")
+        label_guess = infer_group_labels(unique_values)
+        treatment_label = label_guess["treatment"]
+        control_label = label_guess["control"]
+        config["warnings"].extend(label_guess["warnings"])
 
         if treatment_label is None or control_label is None:
             return {"success": False, "error": "Could not detect treatment/control labels"}
@@ -786,6 +881,8 @@ class PySparkABTestAnalyzer:
         Returns:
             List of SparkABTestResult for each segment
         """
+        self.segment_failures = []
+
         if "segment" not in self.column_mapping:
             # No segmentation - run overall analysis
             return [self.run_ab_test()]
@@ -801,7 +898,16 @@ class PySparkABTestAnalyzer:
                 result = self.run_ab_test(segment_filter=segment)
                 results.append(result)
             except ValueError as e:
-                print(f"Skipping segment '{segment}': {e}")
+                failure = {
+                    "segment": str(segment),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                }
+                self.segment_failures.append(failure)
+                logger.warning(
+                    "Skipping segment during Spark segmented analysis",
+                    extra={"segment": str(segment), "error": str(e)},
+                )
 
         return results
 
@@ -815,7 +921,10 @@ class PySparkABTestAnalyzer:
         Returns:
             Dictionary with aggregated metrics and recommendations
         """
-        return self.summary_builder.generate_summary(results)
+        return self.summary_builder.generate_summary(
+            results,
+            segment_failures=self.segment_failures,
+        )
 
     def _generate_recommendations(self, results: List[SparkABTestResult]) -> List[str]:
         """Backward-compatible recommendation helper."""
@@ -832,7 +941,7 @@ class PySparkABTestAnalyzer:
         results_dicts = [r.to_serializable_dict() for r in results]
         results_df = self.spark.createDataFrame(results_dicts)
         results_df.write.mode("overwrite").parquet(path)
-        print(f"Results saved to {path}")
+        logger.info("Saved Spark results to Parquet (path=%s, rows=%d)", path, len(results_dicts))
 
     def save_results_to_delta(self, results: List[SparkABTestResult], path: str, partition_by: Optional[List[str]] = None):
         """
@@ -852,7 +961,12 @@ class PySparkABTestAnalyzer:
             writer = writer.partitionBy(*partition_by)
 
         writer.save(path)
-        print(f"Results saved to Delta table at {path}")
+        logger.info(
+            "Saved Spark results to Delta (path=%s, rows=%d, partition_by=%s)",
+            path,
+            len(results_dicts),
+            partition_by or [],
+        )
 
 
 def create_spark_session(
@@ -928,17 +1042,19 @@ if __name__ == "__main__":
 
     # Auto-configure
     config = analyzer.auto_configure()
-    print("Auto-configuration:", json.dumps(config, indent=2))
+    logger.info("Auto-configuration: %s", json.dumps(config, indent=2))
 
     # Run segmented analysis (distributed across Spark cluster)
     results = analyzer.run_segmented_analysis()
 
     # Generate summary
     summary = analyzer.generate_summary(results)
-    print("\nSummary:")
-    print(f"Total segments: {summary['total_segments_analyzed']}")
-    print(f"Significant segments: {summary['t_test_significant_segments']}")
-    print(f"Total effect: {summary['combined_total_effect']:.2f}")
+    logger.info(
+        "Spark example summary: segments=%s significant=%s combined_effect=%.2f",
+        summary["total_segments_analyzed"],
+        summary["t_test_significant_segments"],
+        summary["combined_total_effect"],
+    )
 
     # Save results to Parquet for downstream analysis
     analyzer.save_results_to_parquet(results, "output/ab_test_results.parquet")

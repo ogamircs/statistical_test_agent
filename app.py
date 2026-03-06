@@ -110,7 +110,7 @@ async def main(message: cl.Message):
 @cl.on_settings_update
 async def setup_agent(settings):
     """Handle settings updates"""
-    print(f"Settings updated: {settings}")
+    logger.info("Chainlit settings updated")
 
 
 # Custom action handlers for common operations

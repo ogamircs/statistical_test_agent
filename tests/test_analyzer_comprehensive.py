@@ -16,9 +16,11 @@ Tests all statistical functions including:
 import pytest
 import pandas as pd
 import numpy as np
+import warnings
 
 from src.statistics.analyzer import ABTestAnalyzer
-from src.statistics.models import ABTestResult, AATestResult
+from src.agent_reporting import render_full_analysis_output
+from src.statistics.models import AATestResult, ABTestResult, ABTestSummary
 
 
 @pytest.fixture
@@ -117,6 +119,22 @@ class TestColumnDetection:
         assert config['success'] is True
         assert config['mapping']['pre_effect'] == 'pre_revenue'
         assert config['mapping']['post_effect'] == 'post_revenue'
+
+    def test_auto_configure_ambiguous_variant_labels_use_low_confidence_fallback(self, analyzer):
+        """Variant A/B labels should use a low-confidence fallback instead of substring guesses."""
+        df = pd.DataFrame({
+            'ab_variant': ['variant_a', 'variant_b'] * 5,
+            'post_effect': [1.0, 0.0] * 5,
+            'segment': ['All'] * 10,
+        })
+
+        analyzer.set_dataframe(df)
+        config = analyzer.auto_configure()
+
+        assert config['success'] is True
+        assert config['labels']['control'] == 'variant_a'
+        assert config['labels']['treatment'] == 'variant_b'
+        assert any('low-confidence' in warning.lower() for warning in config['warnings'])
 
 
 class TestStatisticalCalculations:
@@ -217,6 +235,20 @@ class TestProportionTest:
         assert diagnostics["guardrail_triggered"] is True
         assert diagnostics["non_finite_values_removed"] > 0
         assert diagnostics["blocks_significance"] is True
+
+    def test_run_proportion_test_extreme_boundary_case_emits_no_runtime_warnings(self, analyzer):
+        """Extreme 0/1 boundary inputs should short-circuit guardrails without library warnings."""
+        treatment_data = np.ones(50)
+        control_data = np.zeros(50)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyzer.run_proportion_test(treatment_data, control_data)
+
+        assert caught == []
+        assert result["p_value"] == 1.0
+        assert result["diagnostics"]["blocks_significance"] is True
+        assert result["diagnostics"]["expected_counts_too_small"] is True
 
 
 class TestBayesianTest:
@@ -627,6 +659,34 @@ class TestSegmentedAnalysis:
         assert results[0].multiple_testing_applied is False
         assert results[0].multiple_testing_method == "none"
 
+    def test_segmented_analysis_surfaces_failed_segments_in_summary(self, analyzer):
+        """Failed segments should be captured and exposed in the generated summary."""
+        df = pd.DataFrame({
+            'experiment_group': [
+                'treatment', 'treatment', 'control', 'control',
+                'treatment', 'control',
+            ],
+            'post_effect': [10.0, 11.0, 9.5, 10.5, 12.0, 8.0],
+            'customer_segment': ['Good', 'Good', 'Good', 'Good', 'Bad', 'Bad'],
+        })
+
+        analyzer.set_dataframe(df)
+        analyzer.set_column_mapping({
+            'group': 'experiment_group',
+            'effect_value': 'post_effect',
+            'post_effect': 'post_effect',
+            'segment': 'customer_segment',
+        })
+        analyzer.set_group_labels('treatment', 'control')
+
+        results = analyzer.run_segmented_analysis()
+        summary = analyzer.generate_summary(results)
+
+        assert [result.segment for result in results] == ['Good']
+        assert len(summary['segment_failures']) == 1
+        assert summary['segment_failures'][0]['segment'] == 'Bad'
+        assert 'Skipped 1 segment' in summary['analysis_warnings'][0]
+
 
 class TestSummaryGeneration:
     """Test summary generation and recommendations"""
@@ -639,18 +699,18 @@ class TestSummaryGeneration:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        assert 'total_segments_analyzed' in summary
-        assert 't_test_significant_segments' in summary
-        assert 't_test_significant_segments_adjusted' in summary
-        assert 'prop_test_significant_segments' in summary
-        assert 'prop_test_significant_segments_adjusted' in summary
-        assert 'multiple_testing_method' in summary
-        assert 'guardrail_segment_names' in summary
-        assert 'bayesian_significant_segments' in summary
-        assert 'combined_total_effect' in summary
-        assert 'recommendations' in summary
-
-        assert summary['total_segments_analyzed'] == 3
+        assert isinstance(summary, ABTestSummary)
+        assert summary.total_segments_analyzed == 3
+        assert summary.t_test_significant_segments >= 0
+        assert summary.t_test_significant_segments_adjusted >= 0
+        assert summary.prop_test_significant_segments >= 0
+        assert summary.prop_test_significant_segments_adjusted >= 0
+        assert summary.multiple_testing_method in {"none", "fdr_bh"}
+        assert isinstance(summary.guardrail_segment_names, list)
+        assert summary.bayesian_significant_segments >= 0
+        assert isinstance(summary.combined_total_effect, float)
+        assert isinstance(summary.recommendations, list)
+        assert summary["total_segments_analyzed"] == summary.total_segments_analyzed
 
     def test_generate_recommendations(self, analyzer, sample_data):
         """Test recommendation generation"""
@@ -660,7 +720,7 @@ class TestSummaryGeneration:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        recommendations = summary['recommendations']
+        recommendations = summary.recommendations
 
         assert isinstance(recommendations, list)
         assert len(recommendations) > 0
@@ -673,12 +733,13 @@ class TestSummaryGeneration:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        detail = summary["detailed_results"][0]
+        detail = summary.detailed_results[0]
+        detail_payload = detail.to_legacy_dict()
         assert "diagnostics" in detail
         assert "experiment_quality" in detail["diagnostics"]
-        assert "srm_p_value" in detail
-        assert "assumption_diagnostics" in detail
-        assert "outlier_sensitivity_diagnostics" in detail
+        assert "srm_p_value" in detail_payload
+        assert "assumption_diagnostics" in detail_payload
+        assert "outlier_sensitivity_diagnostics" in detail_payload
 
     def test_summary_exposes_sequential_fields_when_enabled(self, analyzer, sample_data):
         """Summary should include additive sequential decision metadata when configured."""
@@ -690,15 +751,97 @@ class TestSummaryGeneration:
         )
         summary = analyzer.generate_summary(results)
 
-        assert "sequential_mode_segments" in summary
-        assert "sequential_stop_recommended_segments" in summary
-        assert "sequential_decision_breakdown" in summary
-        assert summary["sequential_mode_segments"] == len(results)
+        assert summary.sequential_mode_segments == len(results)
+        assert summary.sequential_stop_recommended_segments >= 0
+        assert isinstance(summary.sequential_decision_breakdown, dict)
 
-        detail = summary["detailed_results"][0]
+        detail = summary.detailed_results[0]
         assert "sequential_mode_enabled" in detail
         assert "sequential_decision" in detail
         assert "sequential_thresholds" in detail
+
+    def test_render_full_analysis_accepts_typed_summary(self, analyzer, sample_data):
+        """Report renderers should consume the typed summary model directly."""
+        analyzer.set_dataframe(sample_data)
+        analyzer.auto_configure()
+
+        results = analyzer.run_segmented_analysis()
+        summary = analyzer.generate_summary(results)
+
+        output = render_full_analysis_output(summary)
+
+        assert "FULL A/B TEST ANALYSIS SUMMARY" in output
+        assert f"Segments Analyzed: {summary.total_segments_analyzed}" in output
+
+
+class TestAnalysisStages:
+    """Targeted tests for the staged run_ab_test orchestration helpers."""
+
+    def test_prepare_segment_data_falls_back_to_post_only_when_pre_alignment_collapses(self, analyzer):
+        """Pre-period alignment should gracefully fall back to post-only analysis when too sparse."""
+        data = pd.DataFrame(
+            {
+                "group": ["treatment", "treatment", "control", "control"],
+                "pre_metric": [1.0, np.nan, np.nan, np.nan],
+                "post_metric": [10.0, 12.0, 9.0, 11.0],
+            }
+        )
+
+        analyzer.set_dataframe(data)
+        analyzer.set_column_mapping(
+            {
+                "group": "group",
+                "effect_value": "post_metric",
+                "pre_effect": "pre_metric",
+                "post_effect": "post_metric",
+            }
+        )
+        analyzer.set_group_labels("treatment", "control")
+
+        selection = analyzer._resolve_analysis_selection(None)
+        prepared = analyzer._prepare_segment_data(selection)
+
+        assert prepared.has_pre_effect is False
+        assert prepared.treatment_pre_aligned is None
+        assert prepared.control_pre_aligned is None
+        assert len(prepared.treatment_post_aligned) == 2
+        assert len(prepared.control_post_aligned) == 2
+
+    def test_apply_covariate_alignment_reuses_covariate_complete_rows(self, analyzer):
+        """Covariate alignment should trim the modeled arrays to rows with complete covariates."""
+        data = pd.DataFrame(
+            {
+                "group": ["treatment"] * 3 + ["control"] * 3,
+                "pre_metric": [5.0, 6.0, np.nan, 4.0, 4.5, 5.0],
+                "post_metric": [7.0, 8.5, 9.0, 4.5, 5.0, 5.5],
+                "aux_covariate": [1.0, 2.0, 3.0, 1.5, np.nan, 2.5],
+            }
+        )
+
+        analyzer.set_dataframe(data)
+        analyzer.set_column_mapping(
+            {
+                "group": "group",
+                "effect_value": "post_metric",
+                "pre_effect": "pre_metric",
+                "post_effect": "post_metric",
+                "covariates": ["aux_covariate"],
+            }
+        )
+        analyzer.set_group_labels("treatment", "control")
+
+        selection = analyzer._resolve_analysis_selection(None)
+        prepared = analyzer._prepare_segment_data(selection)
+        covariates, treatment_model_df, control_model_df = analyzer._apply_covariate_alignment(
+            selection,
+            prepared,
+        )
+
+        assert covariates == ["aux_covariate", "pre_metric"]
+        assert len(treatment_model_df) == 2
+        assert len(control_model_df) == 2
+        assert len(prepared.treatment_post_aligned) == 2
+        assert len(prepared.control_post_aligned) == 2
 
 
 class TestBootstrapping:
@@ -811,6 +954,26 @@ class TestEdgeCases:
         assert result.inference_guardrail_triggered is True
         assert result.diagnostics["frequentist"]["t_test"]["degenerate_variance"] is True
 
+    def test_zero_variance_ab_test_emits_no_runtime_warnings(self, analyzer):
+        """Deterministic zero-variance inputs should be handled without SciPy runtime warnings."""
+        data = pd.DataFrame({
+            'group': ['treatment'] * 50 + ['control'] * 50,
+            'effect': [10] * 100,
+        })
+
+        analyzer.set_dataframe(data)
+        analyzer.set_column_mapping({'group': 'group', 'effect_value': 'effect'})
+        analyzer.set_group_labels('treatment', 'control')
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyzer.run_ab_test()
+
+        assert caught == []
+        assumptions = result.diagnostics["experiment_quality"]["assumptions"]
+        assert assumptions["variance_test"] == "not_applicable"
+        assert assumptions["variance_reason"] == "degenerate_variance"
+
     def test_zero_variance_with_constant_difference_is_significant(self, analyzer):
         """Deterministic group separation should remain significant even with zero variance."""
         data = pd.DataFrame({
@@ -847,6 +1010,24 @@ class TestEdgeCases:
         assert result.is_significant is False
         assert result.proportion_guardrail_triggered is True
         assert result.proportion_is_significant is False
+
+    def test_small_sample_ab_test_emits_no_runtime_warnings(self, analyzer):
+        """Small-sample guardrails should avoid leaking power-analysis warnings."""
+        data = pd.DataFrame({
+            "group": ["treatment"] * 3 + ["control"] * 3,
+            "effect": [10.0, 11.0, 12.0, 1.0, 2.0, 3.0],
+        })
+
+        analyzer.set_dataframe(data)
+        analyzer.set_column_mapping({"group": "group", "effect_value": "effect"})
+        analyzer.set_group_labels("treatment", "control")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyzer.run_ab_test()
+
+        assert caught == []
+        assert result.inference_guardrail_triggered is True
 
 
 class TestCompleteWorkflow:

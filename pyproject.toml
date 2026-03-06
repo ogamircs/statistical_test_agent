@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "statistical-test-agent"
+version = "0.1.0"
+description = "Conversational A/B testing analysis agent with pandas and PySpark backends."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "chainlit>=1.0.0",
+    "langchain>=0.1.0",
+    "langchain-openai>=0.0.5",
+    "langgraph>=0.0.1",
+    "numpy>=1.24.0",
+    "openai>=1.0.0",
+    "pandas>=2.0.0",
+    "plotly>=5.0.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "scipy>=1.10.0",
+    "statsmodels>=0.14.0",
+    "tabulate>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+spark = [
+    "pyspark>=3.5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
