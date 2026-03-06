@@ -9,13 +9,14 @@ Provides a web-based chat interface for:
 - Showing interactive visualizations
 """
 
-import os
+import logging
 import chainlit as cl
 from dotenv import load_dotenv
 
 from src import ABTestingAgent
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_agent() -> ABTestingAgent:
@@ -29,6 +30,7 @@ def get_or_create_agent() -> ABTestingAgent:
         agent = ABTestingAgent()
         cl.user_session.set("agent", agent)
         cl.user_session.set("uploaded_file", None)
+        logger.info("Created session agent")
     return agent
 
 
@@ -58,64 +60,57 @@ async def display_charts(agent):
 @cl.on_message
 async def main(message: cl.Message):
     """Handle incoming messages"""
+    try:
+        agent = get_or_create_agent()
+        logger.info("Received chat message (has_elements=%s)", bool(message.elements))
 
-    agent = get_or_create_agent()
+        # Check for file attachments
+        if message.elements:
+            for element in message.elements:
+                if element.name.endswith('.csv'):
+                    file_path = element.path
+                    cl.user_session.set("uploaded_file", file_path)
+                    logger.info("Processing uploaded CSV (name=%s)", element.name)
 
-    # Check for file attachments
-    if message.elements:
-        for element in message.elements:
-            if element.name.endswith('.csv'):
-                # Save the file temporarily
-                file_path = element.path
+                    await cl.Message(
+                        content=f"Received file: **{element.name}**\n\nProcessing..."
+                    ).send()
 
-                # Update session
-                cl.user_session.set("uploaded_file", file_path)
+                    user_text = message.content.strip() if message.content else ""
+                    if user_text:
+                        agent_message = f"User request: {user_text}\n\nCSV file path: {file_path}"
+                    else:
+                        agent_message = f"Load the CSV file at path: {file_path}"
 
-                # Inform user and process
-                await cl.Message(
-                    content=f"Received file: **{element.name}**\n\nProcessing..."
-                ).send()
+                    response = await cl.make_async(agent.run)(agent_message)
+                    await cl.Message(content=response).send()
 
-                # Build the agent message - include user's text if provided
-                user_text = message.content.strip() if message.content else ""
+                    await display_charts(agent)
+                    return
 
-                if user_text:
-                    # User provided instructions - put their intent FIRST
-                    agent_message = f"User request: {user_text}\n\nCSV file path: {file_path}"
-                else:
-                    # Just the file, no additional instructions
-                    agent_message = f"Load the CSV file at path: {file_path}"
+        user_message = message.content
+        msg = cl.Message(content="")
+        await msg.send()
 
-                response = await cl.make_async(agent.run)(agent_message)
+        response = await cl.make_async(agent.run)(user_message)
+        msg.content = response
+        await msg.update()
 
-                await cl.Message(content=response).send()
-
-                # Display any charts
-                await display_charts(agent)
-                return
-
-    # Process the text message
-    user_message = message.content
-
-    # Show thinking indicator
-    msg = cl.Message(content="")
-    await msg.send()
-
-    # Get response from agent
-    response = await cl.make_async(agent.run)(user_message)
-
-    # Update the message with the response
-    msg.content = response
-    await msg.update()
-
-    # Display any charts that were generated
-    await display_charts(agent)
+        await display_charts(agent)
+    except Exception:
+        logger.exception("Unhandled error while processing chat message")
+        await cl.Message(
+            content=(
+                "Error processing request: Unable to handle this UI request right now. "
+                "[error_code=UI_MESSAGE_HANDLING_FAILED]"
+            )
+        ).send()
 
 
 @cl.on_settings_update
 async def setup_agent(settings):
     """Handle settings updates"""
-    print(f"Settings updated: {settings}")
+    logger.info("Chainlit settings updated")
 
 
 # Custom action handlers for common operations

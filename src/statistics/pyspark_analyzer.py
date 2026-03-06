@@ -18,6 +18,8 @@ Performance Notes:
 - Cache intermediate results for iterative operations
 """
 
+import logging
+
 from pyspark.sql import SparkSession, DataFrame, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType, ArrayType
@@ -29,72 +31,98 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 import json
 
+from ..agent_reporting import AgentUserFacingError
+from .label_inference import infer_group_labels
+from .models import ABTestResult
+from .summary_builder import ABTestSummaryBuilder
+
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_spark_result_value(value: Any) -> Any:
+    """Convert result payload values into Spark-inferable Python primitives."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        normalized = {
+            str(key): _normalize_spark_result_value(item)
+            for key, item in value.items()
+        }
+        return json.dumps(normalized, sort_keys=True)
+    if isinstance(value, (list, tuple)):
+        normalized = [_normalize_spark_result_value(item) for item in value]
+        return json.dumps(normalized)
+    return value
+
 
 @dataclass
-class SparkABTestResult:
-    """Results for a single segment's A/B test"""
-    segment: str
-    treatment_size: int
-    control_size: int
+class SparkABTestResult(ABTestResult):
+    """
+    Spark result type compatible with canonical ABTestResult schema.
 
-    # Pre/Post metrics
-    treatment_pre_mean: float = 0.0
-    treatment_post_mean: float = 0.0
-    control_pre_mean: float = 0.0
-    control_post_mean: float = 0.0
+    Backward-compatibility aliases (`*_lower` / `*_upper`) are exposed as
+    properties while canonical storage uses tuple intervals.
+    """
 
-    # T-test results
-    treatment_mean: float = 0.0
-    control_mean: float = 0.0
-    effect_size: float = 0.0
-    cohens_d: float = 0.0
-    t_statistic: float = 0.0
-    p_value: float = 1.0
-    is_significant: bool = False
-    confidence_interval_lower: float = 0.0
-    confidence_interval_upper: float = 0.0
     pooled_std: float = 0.0
 
-    # Power analysis
-    power: float = 0.0
-    required_sample_size: int = 0
-    is_sample_adequate: bool = False
+    @property
+    def confidence_interval_lower(self) -> float:
+        return float(self.confidence_interval[0])
 
-    # DiD analysis
-    did_treatment_change: float = 0.0
-    did_control_change: float = 0.0
-    did_effect: float = 0.0
+    @confidence_interval_lower.setter
+    def confidence_interval_lower(self, value: float) -> None:
+        self.confidence_interval = (float(value), float(self.confidence_interval[1]))
 
-    # AA test
-    aa_test_passed: bool = True
-    aa_p_value: float = 1.0
-    bootstrapping_applied: bool = False
-    original_control_size: int = 0
+    @property
+    def confidence_interval_upper(self) -> float:
+        return float(self.confidence_interval[1])
 
-    # Proportion test
-    treatment_proportion: float = 0.0
-    control_proportion: float = 0.0
-    proportion_diff: float = 0.0
-    proportion_z_stat: float = 0.0
-    proportion_p_value: float = 1.0
-    proportion_is_significant: bool = False
-    proportion_effect: float = 0.0
-    proportion_effect_per_customer: float = 0.0
+    @confidence_interval_upper.setter
+    def confidence_interval_upper(self, value: float) -> None:
+        self.confidence_interval = (float(self.confidence_interval[0]), float(value))
 
-    # Combined effects
-    total_effect: float = 0.0
-    total_effect_per_customer: float = 0.0
+    @property
+    def bayesian_credible_interval_lower(self) -> float:
+        return float(self.bayesian_credible_interval[0])
 
-    # Bayesian results
-    bayesian_prob_treatment_better: float = 0.5
-    bayesian_expected_loss_treatment: float = 0.0
-    bayesian_expected_loss_control: float = 0.0
-    bayesian_credible_interval_lower: float = 0.0
-    bayesian_credible_interval_upper: float = 0.0
-    bayesian_relative_uplift: float = 0.0
-    bayesian_is_significant: bool = False
-    bayesian_total_effect: float = 0.0
-    bayesian_total_effect_per_customer: float = 0.0
+    @bayesian_credible_interval_lower.setter
+    def bayesian_credible_interval_lower(self, value: float) -> None:
+        self.bayesian_credible_interval = (
+            float(value),
+            float(self.bayesian_credible_interval[1]),
+        )
+
+    @property
+    def bayesian_credible_interval_upper(self) -> float:
+        return float(self.bayesian_credible_interval[1])
+
+    @bayesian_credible_interval_upper.setter
+    def bayesian_credible_interval_upper(self, value: float) -> None:
+        self.bayesian_credible_interval = (
+            float(self.bayesian_credible_interval[0]),
+            float(value),
+        )
+
+    def to_serializable_dict(self, include_legacy_aliases: bool = True) -> Dict[str, Any]:
+        """Serialize result for persistence layers."""
+        payload = asdict(self)
+        payload.pop("confidence_interval", None)
+        payload.pop("bayesian_credible_interval", None)
+
+        # Preserve flattened interval columns for downstream compatibility.
+        payload["confidence_interval_lower"] = self.confidence_interval_lower
+        payload["confidence_interval_upper"] = self.confidence_interval_upper
+        payload["bayesian_credible_interval_lower"] = self.bayesian_credible_interval_lower
+        payload["bayesian_credible_interval_upper"] = self.bayesian_credible_interval_upper
+
+        if include_legacy_aliases:
+            payload["ci_lower"] = self.confidence_interval_lower
+            payload["ci_upper"] = self.confidence_interval_upper
+            payload["bayesian_credible_lower"] = self.bayesian_credible_interval_lower
+            payload["bayesian_credible_upper"] = self.bayesian_credible_interval_upper
+        return payload
 
 
 class PySparkABTestAnalyzer:
@@ -129,6 +157,8 @@ class PySparkABTestAnalyzer:
         self.column_mapping: Dict[str, str] = {}
         self.treatment_label: Optional[str] = None
         self.control_label: Optional[str] = None
+        self.summary_builder = ABTestSummaryBuilder()
+        self.segment_failures: List[Dict[str, str]] = []
 
     def load_data(self, path: str, format: str = "csv", **options) -> Dict[str, Any]:
         """
@@ -153,9 +183,13 @@ class PySparkABTestAnalyzer:
         # Collect summary stats
         row_count = self.df.count()
         columns = self.df.columns
+        shape = (row_count, len(columns))
+        dtypes = dict(self.df.dtypes)
 
         return {
             "columns": columns,
+            "shape": shape,
+            "dtypes": dtypes,
             "row_count": row_count,
             "partitions": self.df.rdd.getNumPartitions(),
             "schema": self.df.schema.json()
@@ -241,6 +275,18 @@ class PySparkABTestAnalyzer:
             if any(pattern in col for pattern in duration_patterns):
                 suggestions["duration"].append(columns[i])
 
+        if not suggestions["post_effect"] and not suggestions["effect_value"]:
+            excluded = set(
+                suggestions["customer_id"]
+                + suggestions["group"]
+                + suggestions["pre_effect"]
+                + suggestions["segment"]
+                + suggestions["duration"]
+            )
+            for column in numeric_columns:
+                if column not in excluded:
+                    suggestions["effect_value"].append(column)
+
         return suggestions
 
     def set_column_mapping(self, mapping: Dict[str, str]) -> None:
@@ -251,6 +297,109 @@ class PySparkABTestAnalyzer:
         """Set treatment and control group labels"""
         self.treatment_label = treatment_label
         self.control_label = control_label
+
+    def get_group_values(self) -> Dict[str, List[Any]]:
+        """Return unique values for the configured group column."""
+        if self.df is None or "group" not in self.column_mapping:
+            raise ValueError("Data not loaded or group column not set")
+
+        group_col = self.column_mapping["group"]
+        values = [row[0] for row in self.df.select(group_col).distinct().collect()]
+        return {"group_column": group_col, "unique_values": values}
+
+    def query_data(self, query: str):
+        """Spark backend does not support pandas-query semantics."""
+        raise AgentUserFacingError(
+            "BACKEND_OPERATION_UNSUPPORTED",
+            "Querying data is not supported for the active backend (spark).",
+        )
+
+    def get_data_summary(self) -> Dict[str, Any]:
+        """Return high-level profiling summary for the active Spark DataFrame."""
+        if self.df is None:
+            raise ValueError("No data loaded")
+
+        row_count = self.df.count()
+        columns = list(self.df.columns)
+        dtypes = {name: dtype for name, dtype in self.df.dtypes}
+        missing_values = (
+            self.df.select(
+                [
+                    F.sum(F.when(F.col(column).isNull(), 1).otherwise(0)).alias(column)
+                    for column in columns
+                ]
+            )
+            .first()
+            .asDict()
+        )
+
+        numeric_types = {"int", "bigint", "long", "double", "float", "decimal"}
+        numeric_columns = [
+            name
+            for name, dtype in self.df.dtypes
+            if any(token in dtype.lower() for token in numeric_types)
+        ]
+
+        numeric_summary: Dict[str, Dict[str, Any]] = {}
+        if numeric_columns:
+            described_rows = self.df.select(*numeric_columns).describe().collect()
+            described = {row["summary"]: row.asDict() for row in described_rows}
+            for metric in ("mean", "stddev", "min", "max"):
+                metric_name = "std" if metric == "stddev" else metric
+                numeric_summary[metric_name] = {}
+                metric_row = described.get(metric, {})
+                for column in numeric_columns:
+                    value = metric_row.get(column)
+                    if value is None:
+                        continue
+                    try:
+                        numeric_summary[metric_name][column] = float(value)
+                    except (TypeError, ValueError):
+                        numeric_summary[metric_name][column] = value
+
+        sample_rows = self.df.limit(5).toPandas().to_dict()
+
+        return {
+            "shape": (row_count, len(columns)),
+            "columns": columns,
+            "dtypes": dtypes,
+            "missing_values": missing_values,
+            "numeric_summary": numeric_summary,
+            "sample_rows": sample_rows,
+        }
+
+    def get_segment_distribution(self) -> Dict[str, Any]:
+        """Return group and segment distribution tables."""
+        if self.df is None:
+            raise ValueError("No data loaded")
+
+        result: Dict[str, Any] = {"columns_used": dict(self.column_mapping)}
+
+        if "group" in self.column_mapping:
+            group_col = self.column_mapping["group"]
+            group_counts = self.df.groupBy(group_col).count().collect()
+            result["group_distribution"] = {
+                row[group_col]: int(row["count"]) for row in group_counts
+            }
+
+        if "segment" in self.column_mapping:
+            segment_col = self.column_mapping["segment"]
+            segment_counts = self.df.groupBy(segment_col).count().collect()
+            result["segment_distribution"] = {
+                row[segment_col]: int(row["count"]) for row in segment_counts
+            }
+
+            if "group" in self.column_mapping:
+                group_col = self.column_mapping["group"]
+                cross_rows = self.df.groupBy(group_col, segment_col).count().collect()
+                segment_by_group: Dict[Any, Dict[Any, int]] = {}
+                for row in cross_rows:
+                    group_value = row[group_col]
+                    segment_value = row[segment_col]
+                    segment_by_group.setdefault(group_value, {})[segment_value] = int(row["count"])
+                result["segment_by_group"] = segment_by_group
+
+        return result
 
     def auto_configure(self) -> Dict[str, Any]:
         """
@@ -304,26 +453,10 @@ class PySparkABTestAnalyzer:
         group_col = config["mapping"]["group"]
         unique_values = [row[0] for row in self.df.select(group_col).distinct().collect()]
 
-        treatment_patterns = ['treatment', 'treat', 'test', 'experiment', 'variant', 'exposed', '1', 'true', 'yes', 'a']
-        control_patterns = ['control', 'ctrl', 'baseline', 'placebo', 'unexposed', '0', 'false', 'no', 'b']
-
-        treatment_label = None
-        control_label = None
-
-        for val in unique_values:
-            val_lower = str(val).lower().strip()
-            if any(p in val_lower for p in treatment_patterns):
-                treatment_label = val
-            elif any(p in val_lower for p in control_patterns):
-                control_label = val
-
-        # Fallback to sorted order
-        if treatment_label is None or control_label is None:
-            if len(unique_values) >= 2:
-                sorted_vals = sorted(unique_values, key=lambda x: str(x).lower())
-                control_label = sorted_vals[0]
-                treatment_label = sorted_vals[1]
-                config["warnings"].append(f"Guessed treatment='{treatment_label}', control='{control_label}' based on order")
+        label_guess = infer_group_labels(unique_values)
+        treatment_label = label_guess["treatment"]
+        control_label = label_guess["control"]
+        config["warnings"].extend(label_guess["warnings"])
 
         if treatment_label is None or control_label is None:
             return {"success": False, "error": "Could not detect treatment/control labels"}
@@ -362,11 +495,6 @@ class PySparkABTestAnalyzer:
             df_filtered = df_filtered.filter(F.col(segment_col) == segment_filter)
             segment_name = segment_filter
 
-        # Add segment column if not exists
-        if not segment_col:
-            df_filtered = df_filtered.withColumn("_segment", F.lit(segment_name))
-            segment_col = "_segment"
-
         # Split into treatment and control
         treatment_df = df_filtered.filter(F.col(group_col) == self.treatment_label).dropna(subset=[post_col])
         control_df = df_filtered.filter(F.col(group_col) == self.control_label).dropna(subset=[post_col])
@@ -391,11 +519,12 @@ class PySparkABTestAnalyzer:
                 F.stddev(pre_col).alias("pre_std")
             ])
 
-        # Group by segment and calculate stats
-        group_by_col = segment_col if segment_filter is None else F.lit(segment_name).alias("segment")
-
-        treatment_stats = treatment_df.groupBy(group_by_col).agg(*agg_exprs)
-        control_stats = control_df.groupBy(group_by_col).agg(*agg_exprs)
+        # Aggregate the current analysis scope directly. Grouping by the segment
+        # column here makes overall analysis accidentally return per-segment rows,
+        # and downstream `.first()` then picks an arbitrary segment instead of the
+        # full experiment totals.
+        treatment_stats = treatment_df.agg(*agg_exprs).withColumn("segment", F.lit(segment_name))
+        control_stats = control_df.agg(*agg_exprs).withColumn("segment", F.lit(segment_name))
 
         return treatment_stats, control_stats
 
@@ -729,8 +858,7 @@ class PySparkABTestAnalyzer:
             t_statistic=t_stat,
             p_value=p_value,
             is_significant=is_significant,
-            confidence_interval_lower=ci_lower,
-            confidence_interval_upper=ci_upper,
+            confidence_interval=(ci_lower, ci_upper),
             pooled_std=pooled_std,
             power=power,
             required_sample_size=required_n,
@@ -755,8 +883,10 @@ class PySparkABTestAnalyzer:
             bayesian_prob_treatment_better=bayesian_results["prob_treatment_better"],
             bayesian_expected_loss_treatment=bayesian_results["expected_loss_treatment"],
             bayesian_expected_loss_control=bayesian_results["expected_loss_control"],
-            bayesian_credible_interval_lower=bayesian_results["credible_interval"][0],
-            bayesian_credible_interval_upper=bayesian_results["credible_interval"][1],
+            bayesian_credible_interval=(
+                bayesian_results["credible_interval"][0],
+                bayesian_results["credible_interval"][1],
+            ),
             bayesian_relative_uplift=bayesian_results["relative_uplift"],
             bayesian_is_significant=bayesian_is_significant,
             bayesian_total_effect=bayesian_results["total_effect"],
@@ -775,6 +905,8 @@ class PySparkABTestAnalyzer:
         Returns:
             List of SparkABTestResult for each segment
         """
+        self.segment_failures = []
+
         if "segment" not in self.column_mapping:
             # No segmentation - run overall analysis
             return [self.run_ab_test()]
@@ -790,13 +922,22 @@ class PySparkABTestAnalyzer:
                 result = self.run_ab_test(segment_filter=segment)
                 results.append(result)
             except ValueError as e:
-                print(f"Skipping segment '{segment}': {e}")
+                failure = {
+                    "segment": str(segment),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                }
+                self.segment_failures.append(failure)
+                logger.warning(
+                    "Skipping segment during Spark segmented analysis",
+                    extra={"segment": str(segment), "error": str(e)},
+                )
 
         return results
 
     def generate_summary(self, results: List[SparkABTestResult]) -> Dict[str, Any]:
         """
-        Generate summary statistics from all segment results
+        Generate summary statistics using canonical summary builder.
 
         Args:
             results: List of SparkABTestResult objects
@@ -804,135 +945,14 @@ class PySparkABTestAnalyzer:
         Returns:
             Dictionary with aggregated metrics and recommendations
         """
-        if not results:
-            return {"error": "No results to summarize"}
-
-        # Calculate aggregates
-        total_segments = len(results)
-
-        # AA test
-        aa_failed = [r for r in results if not r.aa_test_passed]
-
-        # Significance
-        t_significant = [r for r in results if r.is_significant]
-        prop_significant = [r for r in results if r.proportion_is_significant]
-        bayesian_significant = [r for r in results if r.bayesian_is_significant]
-
-        # Effects
-        t_test_total = sum(r.effect_size * r.treatment_size for r in t_significant)
-        prop_test_total = sum(r.proportion_effect for r in prop_significant)
-        combined_total = sum(r.total_effect for r in results)
-        did_total = sum(r.did_effect * r.treatment_size for r in results)
-        bayesian_total = sum(r.bayesian_total_effect for r in results)
-
-        # Averages
-        avg_t_effect = np.mean([r.effect_size for r in t_significant]) if t_significant else 0.0
-        avg_prop_effect = np.mean([r.proportion_effect_per_customer for r in prop_significant]) if prop_significant else 0.0
-        avg_did_effect = np.mean([r.did_effect for r in results])
-        avg_bayesian_prob = np.mean([r.bayesian_prob_treatment_better for r in results])
-        avg_expected_loss = np.mean([
-            min(r.bayesian_expected_loss_treatment, r.bayesian_expected_loss_control)
-            for r in results
-        ])
-
-        # Sample adequacy
-        adequate = [r for r in results if r.is_sample_adequate]
-
-        # Total customers
-        total_treatment = sum(r.treatment_size for r in results)
-        total_control = sum(r.control_size for r in results)
-
-        return {
-            "total_segments_analyzed": total_segments,
-
-            # AA test
-            "aa_test_passed_segments": total_segments - len(aa_failed),
-            "aa_test_failed_segments": len(aa_failed),
-            "aa_failed_segment_names": [r.segment for r in aa_failed],
-
-            # DiD
-            "did_avg_effect": avg_did_effect,
-            "did_total_effect": did_total,
-
-            # T-test
-            "t_test_significant_segments": len(t_significant),
-            "t_test_significance_rate": len(t_significant) / total_segments,
-            "t_test_avg_effect": avg_t_effect,
-            "t_test_total_effect": t_test_total,
-
-            # Proportion test
-            "prop_test_significant_segments": len(prop_significant),
-            "prop_test_significance_rate": len(prop_significant) / total_segments,
-            "prop_test_avg_effect": avg_prop_effect,
-            "prop_test_total_effect": prop_test_total,
-
-            # Combined
-            "combined_total_effect": combined_total,
-
-            # Bayesian
-            "bayesian_significant_segments": len(bayesian_significant),
-            "bayesian_significance_rate": len(bayesian_significant) / total_segments,
-            "bayesian_avg_prob_treatment_better": avg_bayesian_prob,
-            "bayesian_avg_expected_loss": avg_expected_loss,
-            "bayesian_total_effect": bayesian_total,
-
-            # Customers
-            "total_treatment_customers": total_treatment,
-            "total_control_customers": total_control,
-
-            # Power
-            "segments_with_adequate_power": len(adequate),
-            "segments_with_inadequate_power": total_segments - len(adequate),
-
-            # Detailed results
-            "detailed_results": [asdict(r) for r in results],
-
-            # Recommendations
-            "recommendations": self._generate_recommendations(results)
-        }
+        return self.summary_builder.generate_summary(
+            results,
+            segment_failures=self.segment_failures,
+        )
 
     def _generate_recommendations(self, results: List[SparkABTestResult]) -> List[str]:
-        """Generate actionable recommendations"""
-        recommendations = []
-
-        # AA test warnings
-        aa_failed = [r for r in results if not r.aa_test_passed]
-        if aa_failed:
-            segments = [r.segment for r in aa_failed]
-            recommendations.append(
-                f"AA TEST WARNING: {len(aa_failed)} segment(s) failed balance check: {', '.join(segments)}"
-            )
-
-        # Significance
-        significant = [r for r in results if r.is_significant]
-        if significant:
-            positive = [r for r in significant if r.effect_size > 0]
-            negative = [r for r in significant if r.effect_size < 0]
-
-            if positive:
-                recommendations.append(
-                    f"POSITIVE IMPACT: Treatment shows significant positive effect in {len(positive)} segment(s): "
-                    f"{', '.join([r.segment for r in positive])}"
-                )
-
-            if negative:
-                recommendations.append(
-                    f"NEGATIVE IMPACT: Treatment shows significant negative effect in {len(negative)} segment(s): "
-                    f"{', '.join([r.segment for r in negative])}"
-                )
-        else:
-            recommendations.append(
-                "NO SIGNIFICANT EFFECTS: No segments showed statistically significant differences."
-            )
-
-        # Sample size
-        inadequate = [r for r in results if not r.is_sample_adequate]
-        if inadequate:
-            recommendations.append(
-                f"SAMPLE SIZE: {len(inadequate)} segment(s) have insufficient statistical power"
-            )
-
-        return recommendations
+        """Backward-compatible recommendation helper."""
+        return self.summary_builder._generate_recommendations(results)
 
     def save_results_to_parquet(self, results: List[SparkABTestResult], path: str):
         """
@@ -942,10 +962,16 @@ class PySparkABTestAnalyzer:
             results: List of analysis results
             path: Output path (supports S3, HDFS, etc.)
         """
-        results_dicts = [asdict(r) for r in results]
+        results_dicts = [
+            {
+                key: _normalize_spark_result_value(value)
+                for key, value in r.to_serializable_dict().items()
+            }
+            for r in results
+        ]
         results_df = self.spark.createDataFrame(results_dicts)
         results_df.write.mode("overwrite").parquet(path)
-        print(f"Results saved to {path}")
+        logger.info("Saved Spark results to Parquet (path=%s, rows=%d)", path, len(results_dicts))
 
     def save_results_to_delta(self, results: List[SparkABTestResult], path: str, partition_by: Optional[List[str]] = None):
         """
@@ -956,7 +982,13 @@ class PySparkABTestAnalyzer:
             path: Output path
             partition_by: Optional columns to partition by (e.g., ["segment"])
         """
-        results_dicts = [asdict(r) for r in results]
+        results_dicts = [
+            {
+                key: _normalize_spark_result_value(value)
+                for key, value in r.to_serializable_dict().items()
+            }
+            for r in results
+        ]
         results_df = self.spark.createDataFrame(results_dicts)
 
         writer = results_df.write.format("delta").mode("overwrite")
@@ -965,7 +997,12 @@ class PySparkABTestAnalyzer:
             writer = writer.partitionBy(*partition_by)
 
         writer.save(path)
-        print(f"Results saved to Delta table at {path}")
+        logger.info(
+            "Saved Spark results to Delta (path=%s, rows=%d, partition_by=%s)",
+            path,
+            len(results_dicts),
+            partition_by or [],
+        )
 
 
 def create_spark_session(
@@ -1041,17 +1078,19 @@ if __name__ == "__main__":
 
     # Auto-configure
     config = analyzer.auto_configure()
-    print("Auto-configuration:", json.dumps(config, indent=2))
+    logger.info("Auto-configuration: %s", json.dumps(config, indent=2))
 
     # Run segmented analysis (distributed across Spark cluster)
     results = analyzer.run_segmented_analysis()
 
     # Generate summary
     summary = analyzer.generate_summary(results)
-    print("\nSummary:")
-    print(f"Total segments: {summary['total_segments_analyzed']}")
-    print(f"Significant segments: {summary['t_test_significant_segments']}")
-    print(f"Total effect: {summary['combined_total_effect']:.2f}")
+    logger.info(
+        "Spark example summary: segments=%s significant=%s combined_effect=%.2f",
+        summary["total_segments_analyzed"],
+        summary["t_test_significant_segments"],
+        summary["combined_total_effect"],
+    )
 
     # Save results to Parquet for downstream analysis
     analyzer.save_results_to_parquet(results, "output/ab_test_results.parquet")

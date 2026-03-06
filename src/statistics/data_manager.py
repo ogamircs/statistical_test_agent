@@ -7,9 +7,24 @@ and basic data queries from statistical computation.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+from .label_inference import infer_group_labels
+
+logger = logging.getLogger(__name__)
+
+
+class DataQueryError(ValueError):
+    """User-facing query validation error with stable metadata."""
+
+    def __init__(self, code: str, message: str, *, query: Optional[str] = None) -> None:
+        self.code = code
+        self.user_message = message
+        self.query = query
+        super().__init__(message)
 
 
 class ABTestDataManager:
@@ -203,48 +218,10 @@ class ABTestDataManager:
         group_col = config["mapping"]["group"]
         unique_values = self.df[group_col].dropna().unique().tolist()
 
-        treatment_patterns = [
-            "treatment",
-            "treat",
-            "test",
-            "experiment",
-            "variant",
-            "exposed",
-            "1",
-            "true",
-            "yes",
-            "a",
-        ]
-        control_patterns = [
-            "control",
-            "ctrl",
-            "baseline",
-            "placebo",
-            "unexposed",
-            "0",
-            "false",
-            "no",
-            "b",
-        ]
-
-        treatment_label = None
-        control_label = None
-
-        for value in unique_values:
-            value_lower = str(value).lower().strip()
-            if any(pattern in value_lower for pattern in treatment_patterns):
-                treatment_label = value
-            elif any(pattern in value_lower for pattern in control_patterns):
-                control_label = value
-
-        if treatment_label is None or control_label is None:
-            if len(unique_values) >= 2:
-                sorted_vals = sorted(unique_values, key=lambda x: str(x).lower())
-                control_label = sorted_vals[0]
-                treatment_label = sorted_vals[1]
-                config["warnings"].append(
-                    f"Guessed treatment='{treatment_label}', control='{control_label}' based on order"
-                )
+        label_guess = infer_group_labels(unique_values)
+        treatment_label = label_guess["treatment"]
+        control_label = label_guess["control"]
+        config["warnings"].extend(label_guess["warnings"])
 
         if treatment_label is None or control_label is None:
             return {"success": False, "error": "Could not detect treatment/control labels"}
@@ -258,12 +235,44 @@ class ABTestDataManager:
     def query_data(self, query: str) -> pd.DataFrame:
         """Execute pandas query expression against active dataframe."""
         if self.df is None:
-            raise ValueError("No data loaded")
+            raise DataQueryError("DATA_NOT_LOADED", "No data loaded")
+
+        normalized_query = (query or "").strip()
+        if not normalized_query:
+            raise DataQueryError(
+                "QUERY_EMPTY",
+                "Query cannot be empty. Please provide a filter expression.",
+            )
+
+        broad_patterns = {
+            "*",
+            "all",
+            "true",
+            "1 == 1",
+            "1==1",
+            "index == index",
+            "index==index",
+        }
+        if normalized_query.lower() in broad_patterns:
+            raise DataQueryError(
+                "QUERY_TOO_BROAD",
+                "Query is too broad. Please provide a specific filter condition.",
+                query=normalized_query,
+            )
 
         try:
-            return self.df.query(query)
-        except Exception:
-            return self.df
+            return self.df.query(normalized_query)
+        except Exception as error:
+            logger.warning(
+                "Invalid dataframe query rejected: %s",
+                normalized_query,
+                exc_info=error,
+            )
+            raise DataQueryError(
+                "INVALID_QUERY",
+                "Invalid query syntax. Use pandas query syntax, e.g. segment == 'Premium'.",
+                query=normalized_query,
+            ) from error
 
     def get_data_summary(self) -> Dict[str, Any]:
         """Return high-level data profiling summary."""

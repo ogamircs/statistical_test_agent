@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from src.statistics import ABTestAnalyzer
 
 
@@ -42,3 +44,19 @@ def test_data_summary_and_distribution() -> None:
     assert "shape" in data_summary
     assert "columns" in data_summary
     assert "group_distribution" in distribution
+
+
+def test_query_data_rejects_invalid_query_instead_of_fallback() -> None:
+    analyzer = ABTestAnalyzer()
+    analyzer.load_data(str(DATA_PATH))
+
+    with pytest.raises(ValueError, match="Invalid query syntax"):
+        analyzer.query_data("not a valid query expression")
+
+
+def test_query_data_rejects_broad_patterns() -> None:
+    analyzer = ABTestAnalyzer()
+    analyzer.load_data(str(DATA_PATH))
+
+    with pytest.raises(ValueError, match="too broad"):
+        analyzer.query_data("1==1")

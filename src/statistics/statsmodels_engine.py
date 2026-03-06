@@ -1,26 +1,56 @@
-"""
-Statsmodels-driven statistical engine for A/B testing.
-
-This module centralizes inferential statistics and keeps computation logic
-separate from data management/orchestration.
-"""
+"""Statsmodels-driven statistical engine for A/B testing."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
-import pandas as pd
-import statsmodels.api as sm
-from statsmodels.stats.power import TTestIndPower
+from scipy.stats import norm
 from statsmodels.stats.proportion import confint_proportions_2indep, test_proportions_2indep
-from statsmodels.stats.weightstats import CompareMeans, DescrStatsW
 
+from .bayesian import run_bayesian_test as compute_bayesian_test
+from .diagnostics import (
+    run_assumption_diagnostics as compute_assumption_diagnostics,
+    run_outlier_sensitivity as compute_outlier_sensitivity,
+    run_srm_diagnostics as compute_srm_diagnostics,
+)
+from .engine_helpers import build_diagnostics, sanitize_numeric, sanitize_p_value, zero_if_tiny
+from .experiment_design import (
+    bootstrap_balanced_control as compute_bootstrap_balanced_control,
+    run_aa_test as compute_aa_test,
+)
+from .model_families import (
+    coerce_covariate_frame,
+    estimate_did_effect as compute_did_effect,
+    estimate_treatment_effect as compute_treatment_effect,
+    extract_term_inference,
+    infer_metric_type,
+    is_binary_metric,
+    is_count_metric,
+    is_heavy_tail_metric,
+)
 from .models import AATestResult
+from .power_analysis import (
+    calculate_cohens_d as compute_cohens_d,
+    calculate_power as compute_power,
+    calculate_required_sample_size as compute_required_sample_size,
+)
 
 
 class StatsmodelsABTestEngine:
     """Encapsulates frequentist and Bayesian A/B test computations."""
+
+    MIN_RECOMMENDED_SAMPLE_SIZE = 8
+    MIN_EXPECTED_PROPORTION_CELL = 5
+    VARIANCE_EPSILON = 1e-12
+    DEFAULT_EXPECTED_TREATMENT_RATIO = 0.5
+    DEFAULT_WINSOR_LIMIT = 0.05
+    DEFAULT_TRIM_FRACTION = 0.10
+    DEFAULT_COUNT_MODEL = "auto"
+    DEFAULT_HEAVY_TAIL_STRATEGY = "robust"
+    DEFAULT_SEQUENTIAL_METHOD = "obrien_fleming"
+    DEFAULT_FUTILITY_MIN_INFORMATION_FRACTION = 0.75
+    DEFAULT_FUTILITY_P_VALUE_THRESHOLD = 0.5
 
     def __init__(
         self,
@@ -34,64 +64,244 @@ class StatsmodelsABTestEngine:
 
     @staticmethod
     def _zero_if_tiny(value: float, tol: float = 1e-12) -> float:
-        """Normalize numerical noise around zero for stable downstream assertions."""
-        return 0.0 if abs(value) < tol else value
+        return zero_if_tiny(value, tol)
+
+    @staticmethod
+    def _sanitize_numeric(values: np.ndarray) -> Tuple[np.ndarray, int]:
+        return sanitize_numeric(values)
+
+    @staticmethod
+    def _sanitize_p_value(value: Any, fallback: float = 1.0) -> float:
+        return sanitize_p_value(value, fallback)
+
+    @staticmethod
+    def _build_diagnostics(
+        reasons: List[str],
+        *,
+        blocks_significance: bool,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return build_diagnostics(reasons, blocks_significance=blocks_significance, **kwargs)
+
+    def evaluate_sequential_decision(
+        self,
+        *,
+        p_value: float,
+        effect_size: float,
+        confidence_interval: Tuple[float, float],
+        look_index: int,
+        max_looks: int,
+        method: str = DEFAULT_SEQUENTIAL_METHOD,
+        futility_min_information_fraction: float = DEFAULT_FUTILITY_MIN_INFORMATION_FRACTION,
+        futility_p_value_threshold: float = DEFAULT_FUTILITY_P_VALUE_THRESHOLD,
+    ) -> Dict[str, Any]:
+        """Pragmatic group-sequential decision support for interim looks."""
+        safe_max_looks = max(int(max_looks), 1)
+        safe_look_index = min(max(int(look_index), 1), safe_max_looks)
+        information_fraction = float(safe_look_index / safe_max_looks)
+        safe_method = str(method or self.DEFAULT_SEQUENTIAL_METHOD).strip().lower()
+        safe_futility_info = float(min(max(futility_min_information_fraction, 0.0), 1.0))
+        safe_futility_p = self._sanitize_p_value(
+            futility_p_value_threshold,
+            fallback=self.DEFAULT_FUTILITY_P_VALUE_THRESHOLD,
+        )
+
+        if safe_method == "pocock":
+            alpha_spent = float(
+                self.significance_level
+                * (np.log(1.0 + (np.e - 1.0) * information_fraction))
+            )
+        else:
+            safe_method = "obrien_fleming"
+            z_alpha_two_sided = float(norm.ppf(1.0 - self.significance_level / 2.0))
+            alpha_spent = float(
+                2.0 - 2.0 * norm.cdf(z_alpha_two_sided / np.sqrt(information_fraction))
+            )
+
+        alpha_spent = float(min(max(alpha_spent, 0.0), self.significance_level))
+        ci_low, ci_high = float(confidence_interval[0]), float(confidence_interval[1])
+        ci_crosses_zero = ci_low <= 0.0 <= ci_high
+        is_final_look = safe_look_index >= safe_max_looks
+        sanitized_p_value = self._sanitize_p_value(p_value)
+
+        stop_recommended = False
+        decision = "continue"
+        rationale = (
+            f"Interim look {safe_look_index}/{safe_max_looks}: "
+            f"p={sanitized_p_value:.4g} does not cross efficacy ({alpha_spent:.4g}) "
+            "or futility thresholds."
+        )
+
+        if is_final_look:
+            stop_recommended = True
+            if sanitized_p_value <= self.significance_level:
+                decision = "final_accept"
+                rationale = (
+                    f"Final look reached with p={sanitized_p_value:.4g} <= "
+                    f"alpha={self.significance_level:.4g}; recommend concluding efficacy."
+                )
+            else:
+                decision = "final_reject"
+                rationale = (
+                    f"Final look reached with p={sanitized_p_value:.4g} > "
+                    f"alpha={self.significance_level:.4g}; recommend concluding no effect."
+                )
+        elif sanitized_p_value <= alpha_spent:
+            stop_recommended = True
+            decision = "stop_efficacy"
+            rationale = (
+                f"Interim efficacy boundary crossed: p={sanitized_p_value:.4g} <= "
+                f"alpha_spent={alpha_spent:.4g} at look {safe_look_index}/{safe_max_looks}."
+            )
+        elif (
+            information_fraction >= safe_futility_info
+            and sanitized_p_value >= safe_futility_p
+            and ci_crosses_zero
+        ):
+            stop_recommended = True
+            decision = "stop_futility"
+            rationale = (
+                f"Futility threshold met at look {safe_look_index}/{safe_max_looks}: "
+                f"p={sanitized_p_value:.4g} >= {safe_futility_p:.4g}, "
+                f"information_fraction={information_fraction:.3f} >= {safe_futility_info:.3f}, "
+                "and confidence interval crosses zero."
+            )
+        else:
+            rationale = (
+                f"Continue to next look: p={sanitized_p_value:.4g}, "
+                f"efficacy threshold={alpha_spent:.4g}, "
+                f"information_fraction={information_fraction:.3f}."
+            )
+
+        return {
+            "enabled": True,
+            "method": safe_method,
+            "look_index": safe_look_index,
+            "max_looks": safe_max_looks,
+            "information_fraction": information_fraction,
+            "alpha_spent": alpha_spent,
+            "stop_recommended": stop_recommended,
+            "decision": decision,
+            "rationale": rationale,
+            "thresholds": {
+                "significance_level": float(self.significance_level),
+                "efficacy_p_value_threshold": alpha_spent,
+                "futility_p_value_threshold": safe_futility_p,
+                "futility_min_information_fraction": safe_futility_info,
+                "information_fraction": information_fraction,
+                "ci_crosses_zero": ci_crosses_zero,
+            },
+            "observed": {
+                "p_value": sanitized_p_value,
+                "effect_size": float(effect_size),
+                "confidence_interval": (ci_low, ci_high),
+            },
+        }
+
+    @staticmethod
+    def _coerce_covariate_frame(
+        covariates: Any,
+        *,
+        n_rows: int,
+        names: Sequence[str] | None = None,
+        prefix: str = "covariate",
+    ):
+        return coerce_covariate_frame(
+            covariates,
+            n_rows=n_rows,
+            names=names,
+            prefix=prefix,
+        )
+
+    def _infer_metric_type(self, values: np.ndarray, requested_metric_type: str = "auto") -> str:
+        return infer_metric_type(
+            values,
+            requested_metric_type=requested_metric_type,
+            variance_epsilon=self.VARIANCE_EPSILON,
+        )
+
+    @staticmethod
+    def _is_binary_metric(values: np.ndarray) -> bool:
+        return is_binary_metric(values)
+
+    def _is_count_metric(self, values: np.ndarray) -> bool:
+        return is_count_metric(values)
+
+    def _is_heavy_tail_metric(self, values: np.ndarray) -> bool:
+        return is_heavy_tail_metric(values, variance_epsilon=self.VARIANCE_EPSILON)
+
+    def _extract_term_inference(
+        self,
+        model_result: Any,
+        *,
+        term: str = "treatment",
+    ) -> Dict[str, float]:
+        return extract_term_inference(
+            model_result,
+            term=term,
+            significance_level=self.significance_level,
+        )
+
+    def run_srm_diagnostics(
+        self,
+        treatment_size: int,
+        control_size: int,
+        expected_treatment_ratio: float = DEFAULT_EXPECTED_TREATMENT_RATIO,
+    ) -> Dict[str, Any]:
+        return compute_srm_diagnostics(
+            treatment_size=treatment_size,
+            control_size=control_size,
+            expected_treatment_ratio=expected_treatment_ratio,
+            significance_level=self.significance_level,
+        )
+
+    def run_assumption_diagnostics(
+        self,
+        treatment_data: np.ndarray,
+        control_data: np.ndarray,
+    ) -> Dict[str, Any]:
+        return compute_assumption_diagnostics(
+            treatment_data=treatment_data,
+            control_data=control_data,
+            significance_level=self.significance_level,
+            variance_epsilon=self.VARIANCE_EPSILON,
+        )
+
+    def run_outlier_sensitivity(
+        self,
+        treatment_data: np.ndarray,
+        control_data: np.ndarray,
+        baseline_effect: float | None = None,
+        winsor_limit: float = DEFAULT_WINSOR_LIMIT,
+        trim_fraction: float = DEFAULT_TRIM_FRACTION,
+    ) -> Dict[str, Any]:
+        return compute_outlier_sensitivity(
+            treatment_data=treatment_data,
+            control_data=control_data,
+            baseline_effect=baseline_effect,
+            winsor_limit=winsor_limit,
+            trim_fraction=trim_fraction,
+            variance_epsilon=self.VARIANCE_EPSILON,
+        )
 
     def calculate_cohens_d(self, treatment_data: np.ndarray, control_data: np.ndarray) -> float:
-        """Calculate Cohen's d effect size using pooled variance."""
-        n_treatment, n_control = len(treatment_data), len(control_data)
-        if n_treatment < 2 or n_control < 2:
-            return 0.0
-
-        var_treatment = np.var(treatment_data, ddof=1)
-        var_control = np.var(control_data, ddof=1)
-
-        pooled_var = (
-            ((n_treatment - 1) * var_treatment + (n_control - 1) * var_control)
-            / (n_treatment + n_control - 2)
-        )
-        pooled_std = np.sqrt(max(pooled_var, 0.0))
-
-        if pooled_std <= 0:
-            return 0.0
-
-        return float((np.mean(treatment_data) - np.mean(control_data)) / pooled_std)
+        return compute_cohens_d(treatment_data, control_data)
 
     def calculate_power(self, effect_size: float, n_treatment: int, n_control: int) -> float:
-        """Calculate achieved power for two-sample test."""
-        if effect_size == 0 or n_treatment <= 1 or n_control <= 1:
-            return 0.0
-
-        power_analysis = TTestIndPower()
-        ratio = n_control / n_treatment if n_treatment > 0 else 1
-
-        try:
-            power = power_analysis.solve_power(
-                effect_size=abs(effect_size),
-                nobs1=n_treatment,
-                ratio=ratio,
-                alpha=self.significance_level,
-            )
-            return float(min(power, 1.0))
-        except Exception:
-            return 0.0
+        return compute_power(
+            effect_size=effect_size,
+            n_treatment=n_treatment,
+            n_control=n_control,
+            significance_level=self.significance_level,
+        )
 
     def calculate_required_sample_size(self, effect_size: float, ratio: float = 1.0) -> int:
-        """Calculate required sample size per group for target power."""
-        if effect_size == 0:
-            return int(1e9)
-
-        power_analysis = TTestIndPower()
-        try:
-            n_required = power_analysis.solve_power(
-                effect_size=abs(effect_size),
-                power=self.power_threshold,
-                ratio=ratio,
-                alpha=self.significance_level,
-            )
-            return int(np.ceil(n_required))
-        except Exception:
-            return int(1e9)
+        return compute_required_sample_size(
+            effect_size=effect_size,
+            ratio=ratio,
+            power_threshold=self.power_threshold,
+            significance_level=self.significance_level,
+        )
 
     def run_aa_test(
         self,
@@ -99,182 +309,55 @@ class StatsmodelsABTestEngine:
         control_pre: np.ndarray,
         segment_name: str = "Overall",
     ) -> AATestResult:
-        """Run pre-period balance check between treatment and control."""
-        n_treatment = len(treatment_pre)
-        n_control = len(control_pre)
-
-        if n_treatment < 2 or n_control < 2:
-            return AATestResult(
-                segment=segment_name,
-                treatment_size=n_treatment,
-                control_size=n_control,
-                treatment_pre_mean=float(np.mean(treatment_pre)) if n_treatment > 0 else 0.0,
-                control_pre_mean=float(np.mean(control_pre)) if n_control > 0 else 0.0,
-                pre_effect_diff=0.0,
-                aa_t_statistic=0.0,
-                aa_p_value=1.0,
-                is_balanced=True,
-            )
-
-        treatment_pre_mean = float(np.mean(treatment_pre))
-        control_pre_mean = float(np.mean(control_pre))
-        pre_effect_diff = treatment_pre_mean - control_pre_mean
-
-        d_treatment = DescrStatsW(treatment_pre)
-        d_control = DescrStatsW(control_pre)
-        compare = CompareMeans(d_treatment, d_control)
-        t_stat, p_value, _df = compare.ttest_ind(usevar="unequal")
-
-        is_balanced = float(p_value) > self.significance_level
-
-        return AATestResult(
-            segment=segment_name,
-            treatment_size=n_treatment,
-            control_size=n_control,
-            treatment_pre_mean=treatment_pre_mean,
-            control_pre_mean=control_pre_mean,
-            pre_effect_diff=pre_effect_diff,
-            aa_t_statistic=float(t_stat),
-            aa_p_value=float(p_value),
-            is_balanced=is_balanced,
+        return compute_aa_test(
+            treatment_pre=treatment_pre,
+            control_pre=control_pre,
+            segment_name=segment_name,
+            significance_level=self.significance_level,
         )
 
     def bootstrap_balanced_control(
         self,
         treatment_pre: np.ndarray,
-        control_df: pd.DataFrame,
+        control_df,
         pre_col: str,
         max_iterations: int = 1000,
         target_p_value: float = 0.10,
-    ) -> Tuple[pd.DataFrame, AATestResult]:
-        """
-        Subsample control to improve pre-period balance when AA test fails.
-        """
-        original_control_size = len(control_df)
-        control_pre = control_df[pre_col].to_numpy()
-
-        initial_aa = self.run_aa_test(treatment_pre, control_pre)
-        if initial_aa.is_balanced:
-            initial_aa.bootstrapping_applied = False
-            initial_aa.original_control_size = original_control_size
-            initial_aa.balanced_control_size = original_control_size
-            return control_df, initial_aa
-
-        np.random.seed(42)
-        best_control_df = control_df.copy()
-        best_p_value = 0.0
-        best_aa_result = None
-
-        for iteration in range(max_iterations):
-            sample_size = min(len(control_df), len(treatment_pre))
-            sample_indices = np.random.choice(len(control_df), size=sample_size, replace=False)
-            sampled_control = control_df.iloc[sample_indices]
-            sampled_pre = sampled_control[pre_col].to_numpy()
-
-            aa_result = self.run_aa_test(treatment_pre, sampled_pre)
-            if aa_result.aa_p_value > best_p_value:
-                best_p_value = float(aa_result.aa_p_value)
-                best_control_df = sampled_control.copy()
-                best_aa_result = aa_result
-
-                if best_p_value >= target_p_value:
-                    break
-
-        if best_aa_result is not None:
-            best_aa_result.bootstrapping_applied = True
-            best_aa_result.original_control_size = original_control_size
-            best_aa_result.balanced_control_size = len(best_control_df)
-            best_aa_result.bootstrap_iterations = iteration + 1
-            best_aa_result.is_balanced = best_p_value > self.significance_level
-            return best_control_df, best_aa_result
-
-        initial_aa.bootstrapping_applied = True
-        initial_aa.original_control_size = original_control_size
-        initial_aa.balanced_control_size = original_control_size
-        initial_aa.bootstrap_iterations = max_iterations
-        return control_df, initial_aa
+    ):
+        return compute_bootstrap_balanced_control(
+            treatment_pre=treatment_pre,
+            control_df=control_df,
+            pre_col=pre_col,
+            max_iterations=max_iterations,
+            target_p_value=target_p_value,
+            significance_level=self.significance_level,
+        )
 
     def estimate_treatment_effect(
         self,
         treatment_data: np.ndarray,
         control_data: np.ndarray,
+        *,
+        metric_type: str = "auto",
+        treatment_covariates=None,
+        control_covariates=None,
+        covariate_names: Sequence[str] | None = None,
+        count_model: str = DEFAULT_COUNT_MODEL,
+        heavy_tail_strategy: str = DEFAULT_HEAVY_TAIL_STRATEGY,
     ) -> Dict[str, Any]:
-        """
-        Estimate treatment effect with statsmodels OLS + HC3 robust covariance.
-
-        Model: y = beta0 + beta1 * treatment_indicator + error
-        where beta1 is mean(treatment) - mean(control).
-        """
-        n_treatment = len(treatment_data)
-        n_control = len(control_data)
-
-        if n_treatment < 2 or n_control < 2:
-            return {
-                "treatment_mean": float(np.mean(treatment_data)) if n_treatment else 0.0,
-                "control_mean": float(np.mean(control_data)) if n_control else 0.0,
-                "effect_size": 0.0,
-                "t_statistic": 0.0,
-                "p_value": 1.0,
-                "confidence_interval": (0.0, 0.0),
-            }
-
-        var_treatment = float(np.var(treatment_data, ddof=1))
-        var_control = float(np.var(control_data, ddof=1))
-        if var_treatment == 0.0 and var_control == 0.0:
-            effect = self._zero_if_tiny(float(np.mean(treatment_data) - np.mean(control_data)))
-            # Deterministic case: when both groups are constant, significance depends
-            # entirely on whether their means differ.
-            if effect == 0.0:
-                t_statistic = 0.0
-                p_value = 1.0
-            else:
-                t_statistic = float(np.sign(effect) * np.inf)
-                p_value = 0.0
-            return {
-                "treatment_mean": float(np.mean(treatment_data)),
-                "control_mean": float(np.mean(control_data)),
-                "effect_size": effect,
-                "t_statistic": t_statistic,
-                "p_value": p_value,
-                "confidence_interval": (effect, effect),
-            }
-
-        y = np.concatenate([treatment_data, control_data])
-        treatment_indicator = np.concatenate([np.ones(n_treatment), np.zeros(n_control)])
-
-        try:
-            X = sm.add_constant(treatment_indicator, has_constant="add")
-            ols_result = sm.OLS(y, X).fit(cov_type="HC3")
-
-            ci = ols_result.conf_int(alpha=self.significance_level)
-            effect_ci = ci[1]
-
-            effect = self._zero_if_tiny(float(ols_result.params[1]))
-            return {
-                "treatment_mean": float(np.mean(treatment_data)),
-                "control_mean": float(np.mean(control_data)),
-                "effect_size": effect,
-                "t_statistic": float(ols_result.tvalues[1]),
-                "p_value": float(ols_result.pvalues[1]),
-                "confidence_interval": (float(effect_ci[0]), float(effect_ci[1])),
-            }
-        except Exception:
-            # CompareMeans fallback keeps behavior resilient.
-            d_treatment = DescrStatsW(treatment_data)
-            d_control = DescrStatsW(control_data)
-            compare = CompareMeans(d_treatment, d_control)
-            t_stat, p_value, _df = compare.ttest_ind(usevar="unequal")
-            ci_low, ci_high = compare.tconfint_diff(alpha=self.significance_level, usevar="unequal")
-
-            effect = self._zero_if_tiny(float(np.mean(treatment_data) - np.mean(control_data)))
-            return {
-                "treatment_mean": float(np.mean(treatment_data)),
-                "control_mean": float(np.mean(control_data)),
-                "effect_size": effect,
-                "t_statistic": float(t_stat),
-                "p_value": float(p_value),
-                "confidence_interval": (float(ci_low), float(ci_high)),
-            }
+        return compute_treatment_effect(
+            treatment_data=treatment_data,
+            control_data=control_data,
+            significance_level=self.significance_level,
+            min_recommended_sample_size=self.MIN_RECOMMENDED_SAMPLE_SIZE,
+            variance_epsilon=self.VARIANCE_EPSILON,
+            metric_type=metric_type,
+            treatment_covariates=treatment_covariates,
+            control_covariates=control_covariates,
+            covariate_names=covariate_names,
+            count_model=count_model,
+            heavy_tail_strategy=heavy_tail_strategy,
+        )
 
     def estimate_did_effect(
         self,
@@ -283,65 +366,82 @@ class StatsmodelsABTestEngine:
         control_pre: np.ndarray,
         control_post: np.ndarray,
     ) -> Dict[str, float]:
-        """
-        Estimate DiD with statsmodels OLS on per-user deltas.
-
-        delta = post - pre
-        delta = beta0 + beta1 * treatment_indicator + error
-        beta1 is DiD effect estimate.
-        """
-        treatment_change = treatment_post - treatment_pre
-        control_change = control_post - control_pre
-
-        if len(treatment_change) < 2 or len(control_change) < 2:
-            did_effect = self._zero_if_tiny(float(np.mean(treatment_change) - np.mean(control_change)))
-            return {
-                "did_effect": did_effect,
-                "treatment_change": float(np.mean(treatment_change)),
-                "control_change": float(np.mean(control_change)),
-            }
-
-        delta = np.concatenate([treatment_change, control_change])
-        treatment_indicator = np.concatenate(
-            [np.ones(len(treatment_change)), np.zeros(len(control_change))]
+        return compute_did_effect(
+            treatment_pre=treatment_pre,
+            treatment_post=treatment_post,
+            control_pre=control_pre,
+            control_post=control_post,
         )
-
-        try:
-            X = sm.add_constant(treatment_indicator, has_constant="add")
-            ols_result = sm.OLS(delta, X).fit(cov_type="HC3")
-            did_effect = self._zero_if_tiny(float(ols_result.params[1]))
-        except Exception:
-            did_effect = self._zero_if_tiny(float(np.mean(treatment_change) - np.mean(control_change)))
-
-        return {
-            "did_effect": did_effect,
-            "treatment_change": float(np.mean(treatment_change)),
-            "control_change": float(np.mean(control_change)),
-        }
 
     def run_proportion_test(
         self,
         treatment_data: np.ndarray,
         control_data: np.ndarray,
-    ) -> Dict[str, float]:
-        """
-        Run two-proportion z-test with statsmodels.
+    ) -> Dict[str, Any]:
+        """Run two-proportion z-test with statsmodels."""
+        treatment_data, treatment_invalid = self._sanitize_numeric(treatment_data)
+        control_data, control_invalid = self._sanitize_numeric(control_data)
 
-        Conversion is defined as non-zero metric value.
-        """
         treatment_conversions = int(np.sum(treatment_data != 0))
         control_conversions = int(np.sum(control_data != 0))
-
         n_treatment = len(treatment_data)
         n_control = len(control_data)
 
         p_treatment = treatment_conversions / n_treatment if n_treatment > 0 else 0.0
         p_control = control_conversions / n_control if n_control > 0 else 0.0
 
-        if (
-            (treatment_conversions == 0 and control_conversions == 0)
-            or (treatment_conversions == n_treatment and control_conversions == n_control)
-        ):
+        non_finite_removed = treatment_invalid + control_invalid
+        small_n = (
+            n_treatment < self.MIN_RECOMMENDED_SAMPLE_SIZE
+            or n_control < self.MIN_RECOMMENDED_SAMPLE_SIZE
+        )
+        invalid_inputs = n_treatment <= 0 or n_control <= 0
+        degenerate_proportions = (
+            n_treatment > 0
+            and n_control > 0
+            and (
+                (treatment_conversions == 0 and control_conversions == 0)
+                or (treatment_conversions == n_treatment and control_conversions == n_control)
+            )
+        )
+        expected_counts_too_small = False
+        if n_treatment > 0 and n_control > 0:
+            expected_counts = [
+                treatment_conversions,
+                n_treatment - treatment_conversions,
+                control_conversions,
+                n_control - control_conversions,
+            ]
+            expected_counts_too_small = any(
+                count < self.MIN_EXPECTED_PROPORTION_CELL for count in expected_counts
+            )
+
+        reasons: List[str] = []
+        if non_finite_removed > 0:
+            reasons.append("non_finite_values_removed")
+        if invalid_inputs:
+            reasons.append("invalid_proportion_inputs")
+        if small_n:
+            reasons.append("small_sample_size")
+        if expected_counts_too_small:
+            reasons.append("expected_counts_too_small")
+        if degenerate_proportions:
+            reasons.append("degenerate_proportions")
+
+        blocks_significance = (
+            invalid_inputs or small_n or expected_counts_too_small or degenerate_proportions
+        )
+        diagnostics = self._build_diagnostics(
+            reasons,
+            blocks_significance=blocks_significance,
+            small_n=small_n,
+            invalid_proportion_inputs=invalid_inputs,
+            expected_counts_too_small=expected_counts_too_small,
+            degenerate_proportions=degenerate_proportions,
+            non_finite_values_removed=non_finite_removed,
+        )
+
+        if invalid_inputs or expected_counts_too_small or degenerate_proportions:
             return {
                 "treatment_proportion": p_treatment,
                 "control_proportion": p_control,
@@ -350,6 +450,7 @@ class StatsmodelsABTestEngine:
                 "p_value": 1.0,
                 "ci_lower": 0.0,
                 "ci_upper": 0.0,
+                "diagnostics": diagnostics,
             }
 
         try:
@@ -358,7 +459,7 @@ class StatsmodelsABTestEngine:
                 n_treatment,
                 control_conversions,
                 n_control,
-                method="wald",
+                method="score",
                 alternative="two-sided",
             )
             ci_lower, ci_upper = confint_proportions_2indep(
@@ -366,19 +467,37 @@ class StatsmodelsABTestEngine:
                 n_treatment,
                 control_conversions,
                 n_control,
-                method="wald",
+                method="score",
             )
+
+            raw_p_value = float(p_value)
+            if not np.isfinite(raw_p_value) or raw_p_value < 0.0 or raw_p_value > 1.0:
+                raw_p_value = 1.0
+                diagnostics["guardrail_triggered"] = True
+                diagnostics["blocks_significance"] = True
+                diagnostics["invalid_proportion_inputs"] = True
+                diagnostics["reasons"] = [*diagnostics["reasons"], "invalid_p_value"]
 
             return {
                 "treatment_proportion": p_treatment,
                 "control_proportion": p_control,
                 "proportion_diff": p_treatment - p_control,
                 "z_stat": float(z_stat),
-                "p_value": float(p_value),
+                "p_value": raw_p_value,
                 "ci_lower": float(ci_lower),
                 "ci_upper": float(ci_upper),
+                "diagnostics": diagnostics,
             }
         except Exception:
+            fallback_diagnostics = self._build_diagnostics(
+                [*reasons, "proportion_test_failed"],
+                blocks_significance=True,
+                small_n=small_n,
+                invalid_proportion_inputs=True,
+                expected_counts_too_small=expected_counts_too_small,
+                degenerate_proportions=degenerate_proportions,
+                non_finite_values_removed=non_finite_removed,
+            )
             return {
                 "treatment_proportion": p_treatment,
                 "control_proportion": p_control,
@@ -387,6 +506,7 @@ class StatsmodelsABTestEngine:
                 "p_value": 1.0,
                 "ci_lower": 0.0,
                 "ci_upper": 0.0,
+                "diagnostics": fallback_diagnostics,
             }
 
     def run_bayesian_test(
@@ -397,109 +517,12 @@ class StatsmodelsABTestEngine:
         control_pre: np.ndarray | None = None,
         n_samples: int | None = None,
     ) -> Dict[str, Any]:
-        """
-        Monte Carlo Bayesian effect estimate.
-
-        Uses DiD deltas when pre-period metrics are available.
-        """
         if n_samples is None:
             n_samples = self.bayesian_samples
-
-        n_treatment = len(treatment_post)
-        n_control = len(control_post)
-
-        if n_treatment < 2 or n_control < 2:
-            return {
-                "prob_treatment_better": 0.5,
-                "expected_loss_treatment": 0.0,
-                "expected_loss_control": 0.0,
-                "credible_interval": (0.0, 0.0),
-                "relative_uplift": 0.0,
-                "total_effect": 0.0,
-                "did_effect": 0.0,
-                "treatment_change": 0.0,
-                "control_change": 0.0,
-            }
-
-        use_did = (
-            treatment_pre is not None
-            and control_pre is not None
-            and len(treatment_pre) == n_treatment
-            and len(control_pre) == n_control
+        return compute_bayesian_test(
+            treatment_post=treatment_post,
+            control_post=control_post,
+            treatment_pre=treatment_pre,
+            control_pre=control_pre,
+            n_samples=n_samples,
         )
-
-        if use_did:
-            treatment_change = treatment_post - treatment_pre
-            control_change = control_post - control_pre
-            mean_t = float(np.mean(treatment_change))
-            mean_c = float(np.mean(control_change))
-            var_t = float(np.var(treatment_change, ddof=1)) if n_treatment > 1 else 0.0
-            var_c = float(np.var(control_change, ddof=1)) if n_control > 1 else 0.0
-            did_effect = mean_t - mean_c
-            treatment_change_mean = mean_t
-            control_change_mean = mean_c
-        else:
-            mean_t = float(np.mean(treatment_post))
-            mean_c = float(np.mean(control_post))
-            var_t = float(np.var(treatment_post, ddof=1)) if n_treatment > 1 else 0.0
-            var_c = float(np.var(control_post, ddof=1)) if n_control > 1 else 0.0
-            did_effect = 0.0
-            treatment_change_mean = 0.0
-            control_change_mean = 0.0
-
-        if var_t == 0 and var_c == 0:
-            diff = mean_t - mean_c
-            total_effect = did_effect * n_treatment if use_did else diff * n_treatment
-            return {
-                "prob_treatment_better": 1.0 if diff > 0 else (0.0 if diff < 0 else 0.5),
-                "expected_loss_treatment": 0.0 if diff >= 0 else abs(diff),
-                "expected_loss_control": 0.0 if diff <= 0 else abs(diff),
-                "credible_interval": (diff, diff),
-                "relative_uplift": (diff / mean_c) if mean_c != 0 else 0.0,
-                "total_effect": float(total_effect),
-                "did_effect": float(did_effect),
-                "treatment_change": float(treatment_change_mean),
-                "control_change": float(control_change_mean),
-            }
-
-        se_t = np.sqrt(max(var_t, 1e-10) / n_treatment)
-        se_c = np.sqrt(max(var_c, 1e-10) / n_control)
-
-        np.random.seed(42)
-
-        if n_treatment > 30 and n_control > 30:
-            treatment_samples = np.random.normal(mean_t, se_t, n_samples)
-            control_samples = np.random.normal(mean_c, se_c, n_samples)
-        else:
-            treatment_samples = mean_t + se_t * np.random.standard_t(max(n_treatment - 1, 1), n_samples)
-            control_samples = mean_c + se_c * np.random.standard_t(max(n_control - 1, 1), n_samples)
-
-        diff_samples = treatment_samples - control_samples
-
-        prob_treatment_better = float(np.mean(diff_samples > 0))
-        expected_loss_treatment = float(np.mean(np.abs(diff_samples) * (diff_samples < 0)))
-        expected_loss_control = float(np.mean(np.abs(diff_samples) * (diff_samples > 0)))
-
-        ci_lower = float(np.percentile(diff_samples, 2.5))
-        ci_upper = float(np.percentile(diff_samples, 97.5))
-
-        mean_diff = float(np.mean(diff_samples))
-        if use_did:
-            baseline = float(np.mean(control_post)) if abs(mean_c) < 1e-10 else mean_c
-            relative_uplift = mean_diff / abs(baseline) if baseline != 0 else 0.0
-        else:
-            relative_uplift = mean_diff / mean_c if mean_c != 0 else 0.0
-
-        total_effect = mean_diff * n_treatment
-
-        return {
-            "prob_treatment_better": prob_treatment_better,
-            "expected_loss_treatment": expected_loss_treatment,
-            "expected_loss_control": expected_loss_control,
-            "credible_interval": (ci_lower, ci_upper),
-            "relative_uplift": float(relative_uplift),
-            "total_effect": float(total_effect),
-            "did_effect": float(did_effect),
-            "treatment_change": float(treatment_change_mean),
-            "control_change": float(control_change_mean),
-        }
