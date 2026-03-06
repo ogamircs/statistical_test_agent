@@ -40,6 +40,22 @@ from .summary_builder import ABTestSummaryBuilder
 logger = logging.getLogger(__name__)
 
 
+def _normalize_spark_result_value(value: Any) -> Any:
+    """Convert result payload values into Spark-inferable Python primitives."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        normalized = {
+            str(key): _normalize_spark_result_value(item)
+            for key, item in value.items()
+        }
+        return json.dumps(normalized, sort_keys=True)
+    if isinstance(value, (list, tuple)):
+        normalized = [_normalize_spark_result_value(item) for item in value]
+        return json.dumps(normalized)
+    return value
+
+
 @dataclass
 class SparkABTestResult(ABTestResult):
     """
@@ -259,6 +275,18 @@ class PySparkABTestAnalyzer:
             if any(pattern in col for pattern in duration_patterns):
                 suggestions["duration"].append(columns[i])
 
+        if not suggestions["post_effect"] and not suggestions["effect_value"]:
+            excluded = set(
+                suggestions["customer_id"]
+                + suggestions["group"]
+                + suggestions["pre_effect"]
+                + suggestions["segment"]
+                + suggestions["duration"]
+            )
+            for column in numeric_columns:
+                if column not in excluded:
+                    suggestions["effect_value"].append(column)
+
         return suggestions
 
     def set_column_mapping(self, mapping: Dict[str, str]) -> None:
@@ -467,11 +495,6 @@ class PySparkABTestAnalyzer:
             df_filtered = df_filtered.filter(F.col(segment_col) == segment_filter)
             segment_name = segment_filter
 
-        # Add segment column if not exists
-        if not segment_col:
-            df_filtered = df_filtered.withColumn("_segment", F.lit(segment_name))
-            segment_col = "_segment"
-
         # Split into treatment and control
         treatment_df = df_filtered.filter(F.col(group_col) == self.treatment_label).dropna(subset=[post_col])
         control_df = df_filtered.filter(F.col(group_col) == self.control_label).dropna(subset=[post_col])
@@ -496,11 +519,12 @@ class PySparkABTestAnalyzer:
                 F.stddev(pre_col).alias("pre_std")
             ])
 
-        # Group by segment and calculate stats
-        group_by_col = segment_col if segment_filter is None else F.lit(segment_name).alias("segment")
-
-        treatment_stats = treatment_df.groupBy(group_by_col).agg(*agg_exprs)
-        control_stats = control_df.groupBy(group_by_col).agg(*agg_exprs)
+        # Aggregate the current analysis scope directly. Grouping by the segment
+        # column here makes overall analysis accidentally return per-segment rows,
+        # and downstream `.first()` then picks an arbitrary segment instead of the
+        # full experiment totals.
+        treatment_stats = treatment_df.agg(*agg_exprs).withColumn("segment", F.lit(segment_name))
+        control_stats = control_df.agg(*agg_exprs).withColumn("segment", F.lit(segment_name))
 
         return treatment_stats, control_stats
 
@@ -938,7 +962,13 @@ class PySparkABTestAnalyzer:
             results: List of analysis results
             path: Output path (supports S3, HDFS, etc.)
         """
-        results_dicts = [r.to_serializable_dict() for r in results]
+        results_dicts = [
+            {
+                key: _normalize_spark_result_value(value)
+                for key, value in r.to_serializable_dict().items()
+            }
+            for r in results
+        ]
         results_df = self.spark.createDataFrame(results_dicts)
         results_df.write.mode("overwrite").parquet(path)
         logger.info("Saved Spark results to Parquet (path=%s, rows=%d)", path, len(results_dicts))
@@ -952,7 +982,13 @@ class PySparkABTestAnalyzer:
             path: Output path
             partition_by: Optional columns to partition by (e.g., ["segment"])
         """
-        results_dicts = [r.to_serializable_dict() for r in results]
+        results_dicts = [
+            {
+                key: _normalize_spark_result_value(value)
+                for key, value in r.to_serializable_dict().items()
+            }
+            for r in results
+        ]
         results_df = self.spark.createDataFrame(results_dicts)
 
         writer = results_df.write.format("delta").mode("overwrite")
