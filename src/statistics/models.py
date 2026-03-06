@@ -398,10 +398,10 @@ def _summary_field_default(field_name: str) -> Any:
 
 
 def _result_to_mapping(result: Any) -> Dict[str, Any]:
-    if isinstance(result, Mapping):
-        return dict(result)
     if is_dataclass(result):
         return asdict(result)
+    if isinstance(result, Mapping):
+        return dict(result)
     if hasattr(result, "__dict__"):
         return dict(vars(result))
     raise TypeError(f"Unsupported result type: {type(result)!r}")
