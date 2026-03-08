@@ -140,3 +140,7 @@ GitHub Actions runs two paths:
 
 - [LARGE_FILE_SUPPORT.md](LARGE_FILE_SUPPORT.md)
 - [TEST_RESULTS.md](TEST_RESULTS.md)
+
+## Support
+
+If you enjoy this, buy me some tokens: [buymeacoffee.com/amircs](https://buymeacoffee.com/amircs)
