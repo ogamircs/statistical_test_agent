@@ -52,6 +52,80 @@ def test_runtime_prefers_spark_for_large_files(monkeypatch, tmp_path: Path) -> N
     assert len(pandas_analyzer.load_calls) == 0
 
 
+def test_runtime_prefers_pandas_for_small_files_even_when_spark_available(
+    monkeypatch, tmp_path: Path
+) -> None:
+    pandas_analyzer = _FakeAnalyzer()
+    runtime = AgentRuntime(
+        analyzer=pandas_analyzer,
+        spark_factory=lambda: pytest.fail("Spark factory should not be called for small files"),
+        spark_available=lambda: True,
+        file_size_threshold_mb=2.0,
+    )
+    csv_path = tmp_path / "small.csv"
+    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
+    monkeypatch.setattr(runtime, "get_file_size_mb", lambda _filepath: 0.5)
+
+    analyzer, info, backend, file_size_mb, spark_selected, fallback_note = runtime.load_data_with_backend(str(csv_path))
+
+    assert analyzer is pandas_analyzer
+    assert info["shape"] == (10, 2)
+    assert backend == "pandas"
+    assert file_size_mb == 0.5
+    assert spark_selected is False
+    assert fallback_note is None
+    assert runtime.using_spark is False
+    assert len(pandas_analyzer.load_calls) == 1
+
+
+def test_runtime_never_selects_spark_when_unavailable(monkeypatch, tmp_path: Path) -> None:
+    pandas_analyzer = _FakeAnalyzer()
+    runtime = AgentRuntime(
+        analyzer=pandas_analyzer,
+        spark_factory=lambda: pytest.fail("Spark factory should not be called when unavailable"),
+        spark_available=lambda: False,
+        file_size_threshold_mb=2.0,
+    )
+    csv_path = tmp_path / "large.csv"
+    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
+    monkeypatch.setattr(runtime, "get_file_size_mb", lambda _filepath: 10.0)
+
+    assert runtime.should_use_spark(str(csv_path)) is False
+
+    analyzer, info, backend, file_size_mb, spark_selected, fallback_note = runtime.load_data_with_backend(str(csv_path))
+
+    assert analyzer is pandas_analyzer
+    assert info["shape"] == (10, 2)
+    assert backend == "pandas"
+    assert file_size_mb == 10.0
+    assert spark_selected is False
+    assert fallback_note is None
+    assert runtime.using_spark is False
+    assert len(pandas_analyzer.load_calls) == 1
+
+
+def test_runtime_reuses_cached_spark_analyzer_instance() -> None:
+    spark_analyzer = _FakeAnalyzer()
+    factory_calls = []
+
+    def _factory():
+        factory_calls.append(1)
+        return spark_analyzer
+
+    runtime = AgentRuntime(
+        analyzer=_FakeAnalyzer(),
+        spark_factory=_factory,
+        spark_available=lambda: True,
+    )
+
+    first = runtime.init_spark_analyzer()
+    second = runtime.init_spark_analyzer()
+
+    assert first is spark_analyzer
+    assert second is spark_analyzer
+    assert len(factory_calls) == 1
+
+
 def test_runtime_falls_back_to_pandas_when_spark_load_fails(monkeypatch, tmp_path: Path) -> None:
     pandas_analyzer = _FakeAnalyzer()
     spark_analyzer = _FailingAnalyzer()

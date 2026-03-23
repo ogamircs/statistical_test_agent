@@ -10,10 +10,12 @@ Tests distributed statistical analysis using PySpark including:
 - Result persistence (Parquet, Delta)
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 import pandas as pd
 import numpy as np
-from pathlib import Path
 
 pytest.importorskip("pyspark", reason="PySpark not installed; skipping PySpark analyzer tests.")
 
@@ -109,6 +111,8 @@ class TestSparkSessionCreation:
         spark = _create_spark_or_skip()
         assert spark is not None
         assert spark.sparkContext.appName == "ABTestingAnalyzer"
+        assert Path(spark.conf.get("spark.pyspark.python")).resolve() == Path(sys.executable).resolve()
+        assert Path(spark.conf.get("spark.pyspark.driver.python")).resolve() == Path(sys.executable).resolve()
         spark.stop()
 
     def test_create_spark_session_custom_config(self):

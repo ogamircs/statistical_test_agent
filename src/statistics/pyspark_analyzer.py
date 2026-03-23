@@ -19,6 +19,8 @@ Performance Notes:
 """
 
 import logging
+import os
+import sys
 
 from pyspark.sql import SparkSession, DataFrame, Window
 from pyspark.sql import functions as F
@@ -1037,6 +1039,12 @@ def create_spark_session(
         ...     }
         ... )
     """
+    python_executable = os.environ.get("PYSPARK_PYTHON") or sys.executable
+    driver_executable = os.environ.get("PYSPARK_DRIVER_PYTHON") or sys.executable
+
+    os.environ.setdefault("PYSPARK_PYTHON", python_executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", driver_executable)
+
     builder = SparkSession.builder.appName(app_name).master(master)
 
     # Default optimizations for A/B testing workloads
@@ -1045,6 +1053,9 @@ def create_spark_session(
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        "spark.pyspark.python": python_executable,
+        "spark.pyspark.driver.python": driver_executable,
+        "spark.executorEnv.PYSPARK_PYTHON": python_executable,
     }
 
     if config:

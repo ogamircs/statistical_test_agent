@@ -138,8 +138,9 @@ GitHub Actions runs two paths:
 
 ## Related Docs
 
-- [LARGE_FILE_SUPPORT.md](LARGE_FILE_SUPPORT.md)
-- [TEST_RESULTS.md](TEST_RESULTS.md)
+- [docs/architecture.md](docs/architecture.md)
+- [docs/development.md](docs/development.md)
+- [docs/testing.md](docs/testing.md)
 
 ## Support
 

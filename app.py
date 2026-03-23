@@ -10,6 +10,8 @@ Provides a web-based chat interface for:
 """
 
 import logging
+from pathlib import Path
+
 import chainlit as cl
 from dotenv import load_dotenv
 
@@ -17,6 +19,11 @@ from src import ABTestingAgent
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def _ensure_chainlit_files_root() -> None:
+    """Ensure Chainlit has a root directory for persisted element files."""
+    Path(".files").mkdir(exist_ok=True)
 
 
 def get_or_create_agent() -> ABTestingAgent:
@@ -39,6 +46,7 @@ async def display_charts(agent):
     charts = agent.get_charts()
 
     if charts:
+        _ensure_chainlit_files_root()
         elements = []
         for name, fig in charts.items():
             # Create a Plotly element for each chart
