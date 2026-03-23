@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 import plotly.graph_objects as go
 
-from .chart_catalog import build_chart_map
+from .chart_catalog import all_chart_keys, build_chart_map
 from .charts_core import CoreChartsMixin
 from .charts_dashboard import DashboardChartsMixin
 from .charts_extended import ExtendedChartsMixin
@@ -89,8 +89,11 @@ class ABTestVisualizer(CoreChartsMixin, ExtendedChartsMixin, DashboardChartsMixi
 
         Returns a dictionary of chart name -> Plotly figure
         """
+        selected_keys = all_chart_keys() if df is not None and group_col is not None else None
+
         charts = build_chart_map(
             self, results, summary,
+            selected_keys=selected_keys,
             df=df, group_col=group_col, segment_col=segment_col,
         )
 

@@ -4,6 +4,7 @@
   const SUGGESTIONS_ID = "starter-suggestions";
   const CONVERSATION_STORAGE_KEY = "ab-testing-agent.conversation-list";
   const ACTIVE_CONVERSATION_KEY = "ab-testing-agent.active-conversation";
+  const CLEAR_HISTORY_SUPPRESSION_KEY = "ab-testing-agent.clear-history-suppression";
   const PROCESSING_GIF_URL = "https://upload.wikimedia.org/wikipedia/commons/d/de/Ajax-loader.gif";
   const SUGGESTIONS = [
     "Analyze it",
@@ -82,9 +83,14 @@
   }
 
   function clearAllConversations() {
+    const suppression = {
+      title: firstUserMessageTitle(),
+      userMessageCount: document.querySelectorAll('[data-step-type="user_message"]').length,
+    };
     try {
       window.localStorage.removeItem(CONVERSATION_STORAGE_KEY);
       clearActiveConversationId();
+      window.sessionStorage.setItem(CLEAR_HISTORY_SUPPRESSION_KEY, JSON.stringify(suppression));
     } catch (_error) { /* ignore */ }
     const list = document.getElementById(HISTORY_LIST_ID);
     if (list) {
@@ -205,13 +211,48 @@
     }
   }
 
+  function loadClearHistorySuppression() {
+    try {
+      const raw = window.sessionStorage.getItem(CLEAR_HISTORY_SUPPRESSION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      return {
+        title: typeof parsed.title === "string" ? parsed.title : "",
+        userMessageCount: Number.isFinite(parsed.userMessageCount) ? parsed.userMessageCount : 0,
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function clearHistorySuppression() {
+    try {
+      window.sessionStorage.removeItem(CLEAR_HISTORY_SUPPRESSION_KEY);
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+  }
+
   function syncConversationList() {
     const messagesPresent = hasMessages();
     const title = firstUserMessageTitle();
+    const userMessageCount = document.querySelectorAll('[data-step-type="user_message"]').length;
+    const clearSuppression = loadClearHistorySuppression();
 
     if (!messagesPresent || !title) {
       clearActiveConversationId();
+      clearHistorySuppression();
       return { conversations: loadConversationList(), activeConversationId: "" };
+    }
+
+    if (clearSuppression) {
+      const isSameConversation = clearSuppression.title && clearSuppression.title === title;
+      const hasNoNewUserMessages = userMessageCount <= clearSuppression.userMessageCount;
+      if (isSameConversation && hasNoNewUserMessages) {
+        return { conversations: loadConversationList(), activeConversationId: "" };
+      }
+      clearHistorySuppression();
     }
 
     const now = new Date().toISOString();

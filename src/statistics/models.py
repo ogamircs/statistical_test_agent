@@ -9,6 +9,37 @@ from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
+class LegacyMappingMixin(MappingABC):
+    """Expose typed dataclasses through the legacy mapping interface during migration."""
+
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_legacy_dict()[key]
+
+    def __iter__(self):
+        return iter(self.to_legacy_dict())
+
+    def __len__(self) -> int:
+        return len(self.to_legacy_dict())
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.to_legacy_dict()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.to_legacy_dict().get(key, default)
+
+    def keys(self):
+        return self.to_legacy_dict().keys()
+
+    def items(self):
+        return self.to_legacy_dict().items()
+
+    def values(self):
+        return self.to_legacy_dict().values()
+
+
 @dataclass
 class AATestResult:
     """Container for AA test results to check treatment/control balance"""
@@ -35,7 +66,7 @@ class AATestResult:
 
 
 @dataclass
-class ABTestResult:
+class ABTestResult(LegacyMappingMixin):
     """Container for A/B test results for a single segment"""
 
     # Basic info
@@ -140,18 +171,116 @@ class ABTestResult:
     bayesian_total_effect: float = 0.0  # Expected total effect from Bayesian DiD
     bayesian_total_effect_per_customer: float = 0.0
 
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        """Expose the legacy mapping payload used by reports and external callers."""
+        experiment_quality = self.diagnostics.get("experiment_quality", {})
+        srm = experiment_quality.get("srm", {})
+        assumptions = experiment_quality.get("assumptions", {})
+        outlier_sensitivity = experiment_quality.get("outlier_sensitivity", {})
+
+        return {
+            "segment": self.segment,
+            "treatment_n": self.treatment_size,
+            "control_n": self.control_size,
+            "treatment_pre_mean": self.treatment_pre_mean,
+            "treatment_post_mean": self.treatment_post_mean,
+            "control_pre_mean": self.control_pre_mean,
+            "control_post_mean": self.control_post_mean,
+            "aa_test_passed": self.aa_test_passed,
+            "aa_p_value": self.aa_p_value,
+            "bootstrapping_applied": self.bootstrapping_applied,
+            "original_control_size": self.original_control_size,
+            "did_treatment_change": self.did_treatment_change,
+            "did_control_change": self.did_control_change,
+            "did_effect": self.did_effect,
+            "effect": self.effect_size,
+            "cohens_d": self.cohens_d,
+            "p_value": self.p_value,
+            "significant": self.is_significant,
+            "p_value_adjusted": self.p_value_adjusted,
+            "significant_adjusted": self.is_significant_adjusted,
+            "power": self.power,
+            "adequate_sample": self.is_sample_adequate,
+            "ci_lower": self.confidence_interval[0],
+            "ci_upper": self.confidence_interval[1],
+            "metric_type": self.metric_type,
+            "model_type": self.model_type,
+            "model_effect": self.model_effect,
+            "model_ci_lower": self.model_confidence_interval[0],
+            "model_ci_upper": self.model_confidence_interval[1],
+            "model_effect_scale": self.model_effect_scale,
+            "model_effect_exponentiated": self.model_effect_exponentiated,
+            "covariate_adjustment_applied": self.covariate_adjustment_applied,
+            "covariates_used": list(self.covariates_used),
+            "covariate_adjusted_effect": self.covariate_adjusted_effect,
+            "covariate_adjusted_p_value": self.covariate_adjusted_p_value,
+            "covariate_adjusted_ci_lower": self.covariate_adjusted_confidence_interval[0],
+            "covariate_adjusted_ci_upper": self.covariate_adjusted_confidence_interval[1],
+            "covariate_adjusted_model_type": self.covariate_adjusted_model_type,
+            "covariate_adjusted_effect_scale": self.covariate_adjusted_effect_scale,
+            "covariate_adjusted_effect_exponentiated": self.covariate_adjusted_effect_exponentiated,
+            "treatment_prop": self.treatment_proportion,
+            "control_prop": self.control_proportion,
+            "prop_diff": self.proportion_diff,
+            "prop_p_value": self.proportion_p_value,
+            "prop_significant": self.proportion_is_significant,
+            "prop_p_value_adjusted": self.proportion_p_value_adjusted,
+            "prop_significant_adjusted": self.proportion_is_significant_adjusted,
+            "multiple_testing_method": self.multiple_testing_method,
+            "multiple_testing_applied": self.multiple_testing_applied,
+            "inference_guardrail_triggered": self.inference_guardrail_triggered,
+            "proportion_guardrail_triggered": self.proportion_guardrail_triggered,
+            "diagnostics": self.diagnostics,
+            "sequential_mode_enabled": self.sequential_mode_enabled,
+            "sequential_method": self.sequential_method,
+            "sequential_look_index": self.sequential_look_index,
+            "sequential_max_looks": self.sequential_max_looks,
+            "sequential_information_fraction": self.sequential_information_fraction,
+            "sequential_alpha_spent": self.sequential_alpha_spent,
+            "sequential_stop_recommended": self.sequential_stop_recommended,
+            "sequential_decision": self.sequential_decision,
+            "sequential_rationale": self.sequential_rationale,
+            "sequential_thresholds": self.sequential_thresholds,
+            "srm_p_value": srm.get("p_value"),
+            "srm_is_mismatch": srm.get("is_sample_ratio_mismatch", False),
+            "assumption_diagnostics": assumptions,
+            "outlier_sensitivity_diagnostics": outlier_sensitivity,
+            "prop_effect": self.proportion_effect,
+            "prop_effect_per_customer": self.proportion_effect_per_customer,
+            "total_effect": self.total_effect,
+            "total_effect_per_customer": self.total_effect_per_customer,
+            "bayesian_prob": self.bayesian_prob_treatment_better,
+            "bayesian_credible_lower": self.bayesian_credible_interval[0],
+            "bayesian_credible_upper": self.bayesian_credible_interval[1],
+            "bayesian_expected_loss": min(
+                self.bayesian_expected_loss_treatment,
+                self.bayesian_expected_loss_control,
+            ),
+            "bayesian_relative_uplift": self.bayesian_relative_uplift,
+            "bayesian_significant": self.bayesian_is_significant,
+            "bayesian_total_effect": self.bayesian_total_effect,
+            "bayesian_total_effect_per_customer": self.bayesian_total_effect_per_customer,
+        }
+
 
 @dataclass(frozen=True)
-class SegmentAnalysisFailure:
+class SegmentAnalysisFailure(LegacyMappingMixin):
     """Structured record for a segment skipped during analysis."""
 
     segment: str
     error: str
     error_type: str = "ValueError"
 
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        return {
+            "segment": self.segment,
+            "error": self.error,
+            "error_type": self.error_type,
+        }
+
 
 @dataclass
-class ABTestSummary:
+class ABTestSummary(LegacyMappingMixin):
     """Typed summary payload shared by the analyzer, reports, and charts."""
 
     total_segments_analyzed: int = 0
@@ -219,6 +348,16 @@ class ABTestSummary:
     detailed_results: List[ABTestResult] = field(default_factory=list)
     recommendations: List[str] = field(default_factory=list)
     error: Optional[str] = None
+
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        payload = {
+            field_def.name: getattr(self, field_def.name)
+            for field_def in fields(self)
+            if field_def.name not in {"segment_failures", "detailed_results"}
+        }
+        payload["segment_failures"] = [failure.to_legacy_dict() for failure in self.segment_failures]
+        payload["detailed_results"] = [result.to_legacy_dict() for result in self.detailed_results]
+        return payload
 
 
 _CANONICAL_FIELD_ALIASES: Dict[str, Tuple[str, ...]] = {

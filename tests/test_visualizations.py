@@ -38,6 +38,7 @@ def test_create_all_charts() -> None:
     assert len(charts) >= 10
     assert "statistical_summary" in charts
     assert "dashboard" in charts
+    assert "distribution" in charts
 
 
 def test_statistical_summary_chart_has_traces() -> None:

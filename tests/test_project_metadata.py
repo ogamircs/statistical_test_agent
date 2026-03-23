@@ -88,7 +88,9 @@ def test_custom_ui_assets_define_conversation_sidebar_hooks() -> None:
     custom_css = _read("public/custom.css")
     assert "ab-testing-agent.conversation-list" in custom_js
     assert "ab-testing-agent.active-conversation" in custom_js
+    assert "ab-testing-agent.clear-history-suppression" in custom_js
     assert "firstUserMessageTitle" in custom_js
+    assert "loadClearHistorySuppression" in custom_js
     assert "conversation-history-title-text" in custom_js
     assert ".conversation-history-title-text" in custom_css
     assert ".conversation-history-item.is-active" in custom_css
