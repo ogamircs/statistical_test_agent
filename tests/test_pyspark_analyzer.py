@@ -443,8 +443,9 @@ class TestSchemaParity:
         pandas_analyzer.auto_configure()
         pandas_summary = pandas_analyzer.generate_summary(pandas_analyzer.run_segmented_analysis())
 
-        spark_detail_keys = set(spark_summary["detailed_results"][0].keys())
-        pandas_detail_keys = set(pandas_summary["detailed_results"][0].keys())
+        from dataclasses import asdict
+        spark_detail_keys = set(asdict(spark_summary.detailed_results[0]).keys())
+        pandas_detail_keys = set(asdict(pandas_summary.detailed_results[0]).keys())
 
         assert spark_detail_keys == pandas_detail_keys
 
@@ -500,14 +501,14 @@ class TestSummaryGeneration:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        assert 'total_segments_analyzed' in summary
-        assert 't_test_significant_segments' in summary
-        assert 'prop_test_significant_segments' in summary
-        assert 'bayesian_significant_segments' in summary
-        assert 'combined_total_effect' in summary
-        assert 'recommendations' in summary
+        assert hasattr(summary, 'total_segments_analyzed')
+        assert hasattr(summary, 't_test_significant_segments')
+        assert hasattr(summary, 'prop_test_significant_segments')
+        assert hasattr(summary, 'bayesian_significant_segments')
+        assert hasattr(summary, 'combined_total_effect')
+        assert hasattr(summary, 'recommendations')
 
-        assert summary['total_segments_analyzed'] == 3
+        assert summary.total_segments_analyzed == 3
 
     def test_summary_aggregations(self, analyzer, sample_spark_df):
         """Test summary aggregation calculations"""
@@ -521,8 +522,8 @@ class TestSummaryGeneration:
         total_t = sum(r.treatment_size for r in results)
         total_c = sum(r.control_size for r in results)
 
-        assert summary['total_treatment_customers'] == total_t
-        assert summary['total_control_customers'] == total_c
+        assert summary.total_treatment_customers == total_t
+        assert summary.total_control_customers == total_c
 
     def test_generate_recommendations(self, analyzer, sample_spark_df):
         """Test recommendation generation"""
@@ -532,7 +533,7 @@ class TestSummaryGeneration:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        recommendations = summary['recommendations']
+        recommendations = summary.recommendations
 
         assert isinstance(recommendations, list)
         assert len(recommendations) > 0
@@ -674,7 +675,7 @@ class TestCompleteWorkflow:
 
         # Generate summary
         summary = analyzer.generate_summary(results)
-        assert 'total_segments_analyzed' in summary
+        assert hasattr(summary, 'total_segments_analyzed')
 
     def test_complete_workflow_with_persistence(self, analyzer, sample_spark_df, tmp_path):
         """Test workflow with result persistence"""
@@ -693,4 +694,4 @@ class TestCompleteWorkflow:
 
         # Generate summary
         summary = analyzer.generate_summary(results)
-        assert summary['total_segments_analyzed'] == 3
+        assert summary.total_segments_analyzed == 3

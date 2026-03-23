@@ -15,15 +15,8 @@ class _DummyGraphAgent:
     def invoke(self, _payload):
         return {"messages": [AIMessage(content="dummy response")]}
 
-    async def ainvoke(self, _payload):
-        return {"messages": [AIMessage(content="dummy async response")]}
-
-
 class _FailingGraphAgent:
     def invoke(self, _payload):
-        raise RuntimeError("boom")
-
-    async def ainvoke(self, _payload):
         raise RuntimeError("boom")
 
 
@@ -287,7 +280,7 @@ def test_load_csv_uses_spark_for_large_files(stubbed_agent, monkeypatch, tmp_pat
     fake_pandas_analyzer = _FakeAnalyzer()
     stubbed_agent.analyzer = fake_pandas_analyzer
 
-    monkeypatch.setattr(stubbed_agent, "_get_file_size_mb", lambda _filepath: 10.0)
+    monkeypatch.setattr(stubbed_agent.runtime, "get_file_size_mb", lambda _filepath: 10.0)
     monkeypatch.setattr(agent_module, "PYSPARK_AVAILABLE", True)
     monkeypatch.setattr(agent_module, "PySparkABTestAnalyzer", lambda: fake_spark_analyzer)
 
@@ -309,7 +302,7 @@ def test_load_csv_falls_back_to_pandas_when_spark_init_fails(
     fake_pandas_analyzer = _FakeAnalyzer()
     stubbed_agent.analyzer = fake_pandas_analyzer
 
-    monkeypatch.setattr(stubbed_agent, "_get_file_size_mb", lambda _filepath: 10.0)
+    monkeypatch.setattr(stubbed_agent.runtime, "get_file_size_mb", lambda _filepath: 10.0)
     monkeypatch.setattr(agent_module, "PYSPARK_AVAILABLE", True)
 
     def _raise_spark_init_error():
@@ -335,7 +328,7 @@ def test_load_and_auto_analyze_reports_actual_backend_after_fallback(
     fake_pandas_analyzer = _FakeAnalyzer()
     stubbed_agent.analyzer = fake_pandas_analyzer
 
-    monkeypatch.setattr(stubbed_agent, "_get_file_size_mb", lambda _filepath: 10.0)
+    monkeypatch.setattr(stubbed_agent.runtime, "get_file_size_mb", lambda _filepath: 10.0)
     monkeypatch.setattr(agent_module, "PYSPARK_AVAILABLE", True)
 
     def _raise_spark_init_error():

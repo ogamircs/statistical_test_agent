@@ -52,15 +52,9 @@
     composer?.classList.remove("centered-conversation-composer");
   }
 
-  function shouldCenterConversation(messagesPresent) {
-    if (!messagesPresent) {
-      return false;
-    }
-
-    const root = conversationRoot();
-    const scroller = conversationScroller(root);
-    const composer = composerShell(root);
-    return Boolean(root && scroller && composer);
+  function shouldCenterConversation(_messagesPresent) {
+    // Never center — keep composer pinned to bottom so content fills the viewport.
+    return false;
   }
 
   function applyConversationLayoutClasses(isCentered) {
@@ -87,6 +81,18 @@
     applyConversationLayoutClasses(isCenteredConversation);
   }
 
+  function clearAllConversations() {
+    try {
+      window.localStorage.removeItem(CONVERSATION_STORAGE_KEY);
+      clearActiveConversationId();
+    } catch (_error) { /* ignore */ }
+    const list = document.getElementById(HISTORY_LIST_ID);
+    if (list) {
+      list.innerHTML =
+        '<div class="conversation-history-empty">New conversations will appear here after your first message.</div>';
+    }
+  }
+
   function ensureHistoryPanel() {
     const layoutShell = shell();
     const mainColumn = appColumn();
@@ -97,12 +103,48 @@
       panel = document.createElement("aside");
       panel.id = HISTORY_PANEL_ID;
       panel.innerHTML = [
-        '<div class="history-kicker">Navigator</div>',
-        '<div class="history-title">Conversation History</div>',
+        '<div class="history-header-row">',
+        '  <div>',
+        '    <div class="history-kicker">Navigator</div>',
+        '    <div class="history-title">Conversation History</div>',
+        '  </div>',
+        '  <button type="button" id="clear-history-btn" class="clear-history-btn" title="Clear all conversations">',
+        '    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+        '    <span>Clear</span>',
+        '  </button>',
+        '</div>',
         '<div class="history-caption">One line per conversation in this browser.</div>',
         `<div id="${HISTORY_LIST_ID}"></div>`,
       ].join("");
+      panel.querySelector("#clear-history-btn").addEventListener("click", clearAllConversations);
       layoutShell.insertBefore(panel, mainColumn);
+    }
+
+    // Ensure clear button exists even if panel was cached from prior session
+    if (panel && !panel.querySelector("#clear-history-btn")) {
+      const header = panel.querySelector(".history-header-row");
+      if (!header) {
+        const kicker = panel.querySelector(".history-kicker");
+        const title = panel.querySelector(".history-title");
+        if (kicker && title) {
+          const wrapper = document.createElement("div");
+          wrapper.className = "history-header-row";
+          const left = document.createElement("div");
+          left.appendChild(kicker.cloneNode(true));
+          left.appendChild(title.cloneNode(true));
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.id = "clear-history-btn";
+          btn.className = "clear-history-btn";
+          btn.title = "Clear all conversations";
+          btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>Clear</span>';
+          btn.addEventListener("click", clearAllConversations);
+          wrapper.appendChild(left);
+          wrapper.appendChild(btn);
+          kicker.replaceWith(wrapper);
+          title.remove();
+        }
+      }
     }
 
     return panel;

@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
+import plotly.graph_objects as go
+import pytest
+
 from src.statistics import ABTestAnalyzer, ABTestVisualizer
+from src.statistics.chart_catalog import build_chart_map, core_chart_keys, resolve_chart_keys
 
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "sample_ab_data.csv"
@@ -100,3 +104,44 @@ def test_plot_summary_dashboard_semantics() -> None:
     )
     assert any(shape["y0"] == shape["y1"] == 0 for shape in fig.layout.shapes)
     assert any(shape["y0"] == shape["y1"] == 0.05 for shape in fig.layout.shapes)
+
+
+def test_chart_catalog_resolves_summary_alias() -> None:
+    assert resolve_chart_keys("summary") == ["statistical_summary"]
+
+
+def test_chart_catalog_resolves_bayesian_alias_group() -> None:
+    assert resolve_chart_keys("bayesian") == [
+        "bayesian_probability",
+        "bayesian_credible_intervals",
+        "bayesian_expected_loss",
+    ]
+
+
+@pytest.mark.parametrize("chart_key", core_chart_keys())
+def test_chart_smoke_returns_valid_figure(chart_key: str) -> None:
+    analyzer, results, summary = _build_results()
+    visualizer = ABTestVisualizer()
+
+    charts = build_chart_map(visualizer, results, summary, selected_keys=[chart_key])
+
+    assert chart_key in charts
+    fig = charts[chart_key]
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) >= 1
+    assert fig.layout.title.text
+
+
+def test_segment_distribution_chart() -> None:
+    analyzer = ABTestAnalyzer()
+    analyzer.load_data(str(DATA_PATH))
+    config = analyzer.auto_configure()
+    assert config["success"] is True
+
+    visualizer = ABTestVisualizer()
+    group_col = analyzer.column_mapping["group"]
+    segment_col = analyzer.column_mapping.get("segment")
+
+    fig = visualizer.plot_segment_distribution(analyzer.df, group_col, segment_col)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) >= 1

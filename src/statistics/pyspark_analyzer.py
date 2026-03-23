@@ -27,7 +27,7 @@ from pyspark.ml.stat import Correlation, ChiSquareTest
 from pyspark.ml.feature import VectorAssembler
 from pyspark.mllib.stat import Statistics
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Mapping, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 import json
 
@@ -724,7 +724,11 @@ class PySparkABTestAnalyzer:
             "total_effect": float(total_effect)
         }
 
-    def run_ab_test(self, segment_filter: Optional[str] = None) -> SparkABTestResult:
+    def run_ab_test(
+        self,
+        segment_filter: Optional[str] = None,
+        sequential_config: Optional[Mapping[str, Any]] = None,
+    ) -> SparkABTestResult:
         """
         Run comprehensive A/B test for a segment using Spark aggregations
 
@@ -893,7 +897,10 @@ class PySparkABTestAnalyzer:
             bayesian_total_effect_per_customer=bayesian_results["total_effect"] / n_t if n_t > 0 else 0.0
         )
 
-    def run_segmented_analysis(self) -> List[SparkABTestResult]:
+    def run_segmented_analysis(
+        self,
+        sequential_config: Optional[Mapping[str, Any]] = None,
+    ) -> List[SparkABTestResult]:
         """
         Run A/B tests for all segments in parallel using Spark
 
@@ -1087,9 +1094,9 @@ if __name__ == "__main__":
     summary = analyzer.generate_summary(results)
     logger.info(
         "Spark example summary: segments=%s significant=%s combined_effect=%.2f",
-        summary["total_segments_analyzed"],
-        summary["t_test_significant_segments"],
-        summary["combined_total_effect"],
+        summary.total_segments_analyzed,
+        summary.t_test_significant_segments,
+        summary.combined_total_effect,
     )
 
     # Save results to Parquet for downstream analysis

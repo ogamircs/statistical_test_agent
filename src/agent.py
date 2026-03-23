@@ -9,25 +9,20 @@ An intelligent agent that can:
 - Generate interactive visualizations
 """
 
-import os
 import logging
-from pathlib import Path
-from typing import Optional, List, Any, Dict, Tuple
-from uuid import uuid4
+from typing import List, Any, Dict, Tuple
 from dotenv import load_dotenv
 
-import pandas as pd
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.prebuilt import create_react_agent
 import plotly.graph_objects as go
 
 from .agent_reporting import render_tool_error
+from .agent_runtime import AgentRuntime
+from .agent_session import AgentAnalysisSession
 from .agent_tools import create_agent_tools
-from .query_store import SQLiteQueryStore
-from .sql_query_service import OpenAISQLPlanner, SQLQueryService
 from .statistics import ABTestAnalyzer, ABTestVisualizer
-from .statistics.models import to_ab_test_summary
 
 # Try to import PySpark analyzer (optional dependency)
 try:
@@ -55,25 +50,25 @@ class ABTestingAgent:
     - Generating interactive visualizations
     """
 
+    @staticmethod
+    def _create_spark_backend():
+        """Create the optional Spark backend using the current module import state."""
+        if PySparkABTestAnalyzer is None:
+            raise RuntimeError("PySpark is not available in this environment")
+        return PySparkABTestAnalyzer()
+
     def __init__(self, model_name: str = "gpt-5.2", temperature: float = 0):
         self.llm = ChatOpenAI(model=model_name, temperature=temperature)
-        self.analyzer = ABTestAnalyzer()
-        self.spark_analyzer = None  # Will be initialized if needed for large files
-        self.visualizer = ABTestVisualizer()
-        query_store_path = Path("output") / "query_store" / f"session-{uuid4().hex}.sqlite"
-        self.query_store = SQLiteQueryStore(query_store_path)
-        self.data_question_service = SQLQueryService(
-            query_store=self.query_store,
-            sql_planner=OpenAISQLPlanner(self.llm),
+        self.runtime = AgentRuntime(
+            analyzer=ABTestAnalyzer(),
+            spark_factory=self._create_spark_backend,
+            spark_available=lambda: PYSPARK_AVAILABLE,
+            file_size_threshold_mb=2.0,
         )
-        self.chat_history: List[Any] = []
+        self.visualizer = ABTestVisualizer()
+        self.session = AgentAnalysisSession(llm=self.llm)
         self.agent = self._create_agent()
         self._pending_confirmation = None
-        self._last_charts: Dict[str, go.Figure] = {}
-        self._last_results = None
-        self._last_summary = None
-        self._using_spark = False  # Track which backend is in use
-        self.FILE_SIZE_THRESHOLD_MB = 2  # Auto-switch to PySpark for files >2MB
         logger.info(
             "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s)",
             model_name,
@@ -81,17 +76,98 @@ class ABTestingAgent:
             PYSPARK_AVAILABLE,
         )
 
+    @property
+    def analyzer(self) -> Any:
+        return self.runtime.analyzer
+
+    @analyzer.setter
+    def analyzer(self, value: Any) -> None:
+        self.runtime.analyzer = value
+
+    @property
+    def spark_analyzer(self) -> Any:
+        return self.runtime.spark_analyzer
+
+    @spark_analyzer.setter
+    def spark_analyzer(self, value: Any) -> None:
+        self.runtime.spark_analyzer = value
+
+    @property
+    def _using_spark(self) -> bool:
+        return self.runtime.using_spark
+
+    @_using_spark.setter
+    def _using_spark(self, value: bool) -> None:
+        self.runtime.using_spark = value
+
+    @property
+    def FILE_SIZE_THRESHOLD_MB(self) -> float:
+        return self.runtime.file_size_threshold_mb
+
+    @FILE_SIZE_THRESHOLD_MB.setter
+    def FILE_SIZE_THRESHOLD_MB(self, value: float) -> None:
+        self.runtime.file_size_threshold_mb = value
+
+    @property
+    def chat_history(self) -> List[Any]:
+        return self.session.state.chat_history
+
+    @chat_history.setter
+    def chat_history(self, value: List[Any]) -> None:
+        self.session.state.chat_history = value
+
+    @property
+    def _last_charts(self) -> Dict[str, go.Figure]:
+        return self.session.state.last_charts
+
+    @_last_charts.setter
+    def _last_charts(self, value: Dict[str, go.Figure]) -> None:
+        self.session.state.last_charts = value
+
+    @property
+    def _last_results(self) -> Any:
+        return self.session.state.last_results
+
+    @_last_results.setter
+    def _last_results(self, value: Any) -> None:
+        self.session.state.last_results = value
+
+    @property
+    def _last_summary(self) -> Any:
+        return self.session.state.last_summary
+
+    @_last_summary.setter
+    def _last_summary(self, value: Any) -> None:
+        self.session.state.last_summary = value
+
+    @property
+    def query_store(self) -> Any:
+        return self.session.query_store
+
+    @query_store.setter
+    def query_store(self, value: Any) -> None:
+        self.session.query_store = value
+        if getattr(self.session.data_question_service, "query_store", None) is not None:
+            self.session.data_question_service.query_store = value
+
+    @property
+    def data_question_service(self) -> Any:
+        return self.session.data_question_service
+
+    @data_question_service.setter
+    def data_question_service(self, value: Any) -> None:
+        self.session.data_question_service = value
+
     def persist_loaded_data(self, analyzer: Any) -> bool:
         """Persist the currently loaded raw dataframe to the session query store."""
-        df = getattr(analyzer, "df", None)
-        if not isinstance(df, pd.DataFrame):
-            logger.info("Skipping raw-data persistence for non-pandas backend")
-            return False
-
         try:
-            self.query_store.save_raw_dataframe(df)
+            persisted = self.session.persist_loaded_data(analyzer)
         except Exception:
             logger.exception("Failed to persist raw dataframe to SQLite query store")
+            return False
+
+        if not persisted:
+            logger.info("Skipping raw-data persistence for non-pandas backend")
             return False
 
         logger.info("Persisted raw dataframe to SQLite query store")
@@ -100,11 +176,7 @@ class ABTestingAgent:
     def persist_analysis_outputs(self, results: Any, summary: Any) -> None:
         """Persist analysis outputs to the session query store."""
         try:
-            normalized_summary = to_ab_test_summary(summary)
-            self.query_store.save_segment_results(results)
-            self.query_store.save_summary(normalized_summary)
-            if normalized_summary.segment_failures:
-                self.query_store.save_segment_failures(normalized_summary.segment_failures)
+            self.session.persist_analysis_outputs(results, summary)
         except Exception:
             logger.exception("Failed to persist analysis outputs to SQLite query store")
             return
@@ -117,59 +189,27 @@ class ABTestingAgent:
 
     def clear_charts(self):
         """Clear the stored charts"""
-        self._last_charts = {}
+        self.session.state.last_charts = {}
 
     def _get_file_size_mb(self, filepath: str) -> float:
-        """Get file size in megabytes"""
-        try:
-            file_size = os.path.getsize(filepath)
-            return file_size / (1024 * 1024)
-        except Exception:
-            return 0
+        """Get file size in megabytes."""
+        return self.runtime.get_file_size_mb(filepath)
 
     def _should_use_spark(self, filepath: str) -> bool:
-        """Determine if PySpark should be used based on file size"""
-        if not PYSPARK_AVAILABLE:
-            return False
-        file_size_mb = self._get_file_size_mb(filepath)
-        should_use = file_size_mb > self.FILE_SIZE_THRESHOLD_MB
-        logger.info(
-            "Backend selection evaluated (file=%s, size_mb=%.2f, threshold_mb=%.2f, use_spark=%s)",
-            filepath,
-            file_size_mb,
-            self.FILE_SIZE_THRESHOLD_MB,
-            should_use,
-        )
-        return should_use
+        """Determine if PySpark should be used based on file size."""
+        return self.runtime.should_use_spark(filepath)
 
     def _get_active_analyzer(self):
-        """Get the currently active analyzer (pandas or PySpark)"""
-        if self._using_spark and self.spark_analyzer is not None:
-            return self.spark_analyzer
-        return self.analyzer
+        """Get the currently active analyzer (pandas or PySpark)."""
+        return self.runtime.get_active_analyzer()
 
     def _init_spark_analyzer(self):
         """Initialize the Spark analyzer lazily."""
-        if self.spark_analyzer is not None:
-            return self.spark_analyzer
-        if not PYSPARK_AVAILABLE or PySparkABTestAnalyzer is None:
-            raise RuntimeError("PySpark is not available in this environment")
-        logger.info("Initializing PySpark analyzer")
-        self.spark_analyzer = PySparkABTestAnalyzer()
-        return self.spark_analyzer
+        return self.runtime.init_spark_analyzer()
 
     def _normalize_shape(self, info: Dict[str, Any]) -> Tuple[int, int]:
         """Normalize load_data metadata to (rows, columns)."""
-        shape = info.get("shape")
-        if isinstance(shape, (tuple, list)) and len(shape) >= 2:
-            return int(shape[0]), int(shape[1])
-
-        row_count = info.get("row_count")
-        columns = info.get("columns")
-        if row_count is not None and columns is not None:
-            return int(row_count), len(columns)
-
-        raise KeyError("shape")
+        return self.runtime.normalize_shape(info)
 
     def _load_data_with_backend(self, filepath: str):
         """
@@ -178,39 +218,7 @@ class ABTestingAgent:
         Returns:
             (analyzer, info, backend_name, file_size_mb, spark_selected, fallback_note)
         """
-        file_size_mb = self._get_file_size_mb(filepath)
-        spark_selected = self._should_use_spark(filepath)
-        fallback_note = None
-        logger.info(
-            "Starting data load (file=%s, size_mb=%.2f, spark_selected=%s)",
-            filepath,
-            file_size_mb,
-            spark_selected,
-        )
-
-        if spark_selected:
-            try:
-                analyzer = self._init_spark_analyzer()
-            except Exception as e:
-                self._using_spark = False
-                fallback_note = f"PySpark initialization failed: {e}. Falling back to pandas."
-                logger.warning("PySpark initialization failed; using pandas fallback", exc_info=e)
-            else:
-                try:
-                    info = analyzer.load_data(filepath, format="csv")
-                    self._using_spark = True
-                    logger.info("Data load completed with spark backend")
-                    return analyzer, info, "spark", file_size_mb, spark_selected, fallback_note
-                except Exception as e:
-                    self._using_spark = False
-                    fallback_note = f"PySpark backend failed while loading data: {e}. Falling back to pandas."
-                    logger.warning("PySpark load failed; using pandas fallback", exc_info=e)
-
-        analyzer = self.analyzer
-        info = analyzer.load_data(filepath)
-        self._using_spark = False
-        logger.info("Data load completed with pandas backend")
-        return analyzer, info, "pandas", file_size_mb, spark_selected, fallback_note
+        return self.runtime.load_data_with_backend(filepath)
 
     def _create_tools(self) -> List[Any]:
         """Create the tools for the agent."""
@@ -272,27 +280,11 @@ Be efficient - minimize steps to get users their results."""
 
         return create_react_agent(self.llm, tools, prompt=system_prompt)
 
-    async def arun(self, message: str) -> str:
-        """Run the agent asynchronously"""
-        try:
-            logger.info("Async agent run started (history_messages=%d)", len(self.chat_history))
-            self.chat_history.append(HumanMessage(content=message))
-            result = await self.agent.ainvoke({"messages": self.chat_history})
-            response = result["messages"][-1].content
-            self.chat_history.append(AIMessage(content=response))
-            logger.info("Async agent run completed (response_chars=%d)", len(str(response)))
-            return response
-        except Exception as e:
-            logger.exception("Async agent run failed")
-            return render_tool_error(
-                "Error processing request",
-                e,
-                default_code="AGENT_EXECUTION_FAILED",
-                default_message="Unable to process your request right now.",
-            )
-
     def run(self, message: str) -> str:
-        """Run the agent synchronously"""
+        """Run the agent synchronously.
+
+        Chainlit wraps this with ``cl.make_async(agent.run)`` for async dispatch.
+        """
         try:
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
@@ -312,7 +304,7 @@ Be efficient - minimize steps to get users their results."""
 
     def clear_memory(self):
         """Clear conversation memory"""
-        self.chat_history = []
+        self.session.state.clear_chat_history()
 
 
 if __name__ == "__main__":

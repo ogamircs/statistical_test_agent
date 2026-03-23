@@ -72,9 +72,8 @@ async def main(message: cl.Message):
                     cl.user_session.set("uploaded_file", file_path)
                     logger.info("Processing uploaded CSV (name=%s)", element.name)
 
-                    await cl.Message(
-                        content=f"Received file: **{element.name}**\n\nProcessing..."
-                    ).send()
+                    status_message = cl.Message(content="Processing...")
+                    await status_message.send()
 
                     user_text = message.content.strip() if message.content else ""
                     if user_text:
@@ -83,7 +82,8 @@ async def main(message: cl.Message):
                         agent_message = f"Load the CSV file at path: {file_path}"
 
                     response = await cl.make_async(agent.run)(agent_message)
-                    await cl.Message(content=response).send()
+                    status_message.content = response
+                    await status_message.update()
 
                     await display_charts(agent)
                     return

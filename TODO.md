@@ -56,3 +56,32 @@ This backlog was derived from the original codebase review and is now recorded a
 - [ ] Verify the Spark test path locally on a machine with both Java and `pyspark` installed.
   Why: the code and CI path are in place, but this local workstation currently does not have a Java runtime, so Spark tests cannot run here.
   Validation target: `pytest -q tests/test_pyspark_analyzer.py tests/test_parity_pandas_spark.py -ra`
+
+## Simplification Program
+
+### Wave 1 Completed
+
+- [x] Extract agent session state, persistence, and SQL-question handling into a dedicated session module.
+  Outcome: `src/agent_session.py` now owns chat/analysis session state, raw-data persistence, analysis-output persistence, and the SQL question-answering service setup.
+
+- [x] Split the monolithic tool registry into grouped modules.
+  Outcome: `src/agent_tools.py` is now a thin facade over `src/tooling/loading.py`, `src/tooling/analysis.py`, `src/tooling/visualization.py`, and `src/tooling/common.py`.
+
+- [x] Centralize chart selection in one shared catalog.
+  Outcome: `src/statistics/chart_catalog.py` now owns chart keys and aliases so the visualizer and agent tool layer do not maintain separate chart-selection rules.
+
+- [x] Add regression coverage for the simplification seam.
+  Outcome: `tests/test_agent_session.py` covers the new session abstraction and `tests/test_visualizations.py` now covers chart-alias resolution.
+
+### Next Simplification Wave
+
+- [x] Extract backend selection/loading out of `src/agent.py` into a dedicated runtime helper so the agent class becomes pure orchestration.
+  Outcome: `src/agent_runtime.py` now owns file-size checks, Spark selection, active-backend tracking, load fallback behavior, and shape normalization, while `src/agent.py` delegates to it.
+
+- [ ] Remove the remaining legacy mapping compatibility surface from `src/statistics/models.py` once downstream consumers stop relying on dict-like access.
+
+- [ ] Trim the visualization surface to a smaller stable default set and move rarely used chart flows behind explicit opt-in paths.
+
+- [ ] Narrow the Spark contract to the load + core analysis paths that justify the extra backend complexity.
+
+- [ ] Add file-size guardrails for the largest modules once the next simplification wave lands.
