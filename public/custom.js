@@ -83,14 +83,14 @@
   }
 
   function clearAllConversations() {
-    const suppression = {
-      title: firstUserMessageTitle(),
-      userMessageCount: document.querySelectorAll('[data-step-type="user_message"]').length,
-    };
+    const activeId = loadActiveConversationId();
     try {
       window.localStorage.removeItem(CONVERSATION_STORAGE_KEY);
-      clearActiveConversationId();
-      window.sessionStorage.setItem(CLEAR_HISTORY_SUPPRESSION_KEY, JSON.stringify(suppression));
+      // Keep the active conversation ID so syncConversationList can match it
+      // against the suppression marker and avoid re-saving.
+      if (activeId) {
+        window.sessionStorage.setItem(CLEAR_HISTORY_SUPPRESSION_KEY, activeId);
+      }
     } catch (_error) { /* ignore */ }
     const list = document.getElementById(HISTORY_LIST_ID);
     if (list) {
@@ -214,13 +214,7 @@
   function loadClearHistorySuppression() {
     try {
       const raw = window.sessionStorage.getItem(CLEAR_HISTORY_SUPPRESSION_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return null;
-      return {
-        title: typeof parsed.title === "string" ? parsed.title : "",
-        userMessageCount: Number.isFinite(parsed.userMessageCount) ? parsed.userMessageCount : 0,
-      };
+      return raw || null;
     } catch (_error) {
       return null;
     }
@@ -237,8 +231,7 @@
   function syncConversationList() {
     const messagesPresent = hasMessages();
     const title = firstUserMessageTitle();
-    const userMessageCount = document.querySelectorAll('[data-step-type="user_message"]').length;
-    const clearSuppression = loadClearHistorySuppression();
+    const suppressedId = loadClearHistorySuppression();
 
     if (!messagesPresent || !title) {
       clearActiveConversationId();
@@ -246,17 +239,21 @@
       return { conversations: loadConversationList(), activeConversationId: "" };
     }
 
-    if (clearSuppression) {
-      const isSameConversation = clearSuppression.title && clearSuppression.title === title;
-      const hasNoNewUserMessages = userMessageCount <= clearSuppression.userMessageCount;
-      if (isSameConversation && hasNoNewUserMessages) {
-        return { conversations: loadConversationList(), activeConversationId: "" };
-      }
+    const currentConversationId = loadActiveConversationId() || createConversationId();
+
+    // If this conversation was cleared, suppress re-saving for its entire
+    // lifetime.  A new conversation (different ID after page reload) will
+    // not match and will be tracked normally.
+    if (suppressedId && suppressedId === currentConversationId) {
+      return { conversations: loadConversationList(), activeConversationId: "" };
+    }
+
+    // Suppression for a different (older) conversation – discard it.
+    if (suppressedId) {
       clearHistorySuppression();
     }
 
     const now = new Date().toISOString();
-    const currentConversationId = loadActiveConversationId() || createConversationId();
     const previousConversations = loadConversationList();
     const existingConversation = previousConversations.find((item) => item.id === currentConversationId);
     const nextConversation = {

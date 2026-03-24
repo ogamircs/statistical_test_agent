@@ -9,6 +9,7 @@ An intelligent agent that can:
 - Generate interactive visualizations
 """
 
+import asyncio
 import logging
 from typing import List, Any, Dict, Tuple
 from dotenv import load_dotenv
@@ -301,6 +302,14 @@ Be efficient - minimize steps to get users their results."""
                 default_code="AGENT_EXECUTION_FAILED",
                 default_message="Unable to process your request right now.",
             )
+
+    async def arun(self, message: str) -> str:
+        """Run the agent asynchronously.
+
+        Thin wrapper kept for backward compatibility with notebooks, async
+        tests, and background workers that call ``await agent.arun(...)``.
+        """
+        return await asyncio.to_thread(self.run, message)
 
     def clear_memory(self):
         """Clear conversation memory"""
