@@ -28,9 +28,9 @@ def test_ab_analyzer_end_to_end() -> None:
     summary = analyzer.generate_summary(results)
 
     assert len(results) > 0
-    assert summary["total_segments_analyzed"] == len(results)
-    assert "recommendations" in summary
-    assert isinstance(summary["recommendations"], list)
+    assert summary.total_segments_analyzed == len(results)
+    assert hasattr(summary, "recommendations")
+    assert isinstance(summary.recommendations, list)
 
 
 def test_data_summary_and_distribution() -> None:

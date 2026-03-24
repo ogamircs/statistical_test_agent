@@ -42,6 +42,11 @@ def test_ci_installs_from_project_metadata_and_has_spark_job() -> None:
 def test_gitignore_excludes_generated_output_artifacts() -> None:
     gitignore = _read(".gitignore")
     assert "output/" in gitignore
+    assert "*.md" in gitignore
+    assert "!README.md" in gitignore
+    assert "!docs/architecture.md" in gitignore
+    assert "!docs/development.md" in gitignore
+    assert "!docs/testing.md" in gitignore
 
 
 def test_readme_documents_backend_capabilities_and_modern_install_flow() -> None:
@@ -52,17 +57,18 @@ def test_readme_documents_backend_capabilities_and_modern_install_flow() -> None
     assert "pandas" in readme
 
 
-def test_large_file_support_documents_parity_and_limitations() -> None:
-    doc = _read("LARGE_FILE_SUPPORT.md")
-    assert "## Backend Capability Matrix" in doc
-    assert "best-effort" in doc.lower()
-    assert "unsupported" in doc.lower() or "not supported" in doc.lower()
+def test_curated_docs_cover_architecture_development_and_testing() -> None:
+    architecture = _read("docs/architecture.md")
+    development = _read("docs/development.md")
+    testing = _read("docs/testing.md")
 
-
-def test_test_results_doc_mentions_current_baseline_format() -> None:
-    results_doc = _read("TEST_RESULTS.md")
-    assert "Current baseline" in results_doc
-    assert "pytest -q" in results_doc
+    assert "PySpark" in architecture
+    assert "app.py" in architecture
+    assert "uv sync --extra dev" in development
+    assert "chainlit" in development.lower() or "python app.py" in development
+    assert "pytest -q" in testing
+    assert "tests/test_pyspark_analyzer.py" in testing
+    assert "tests/test_parity_pandas_spark.py" in testing
 
 
 def test_chainlit_config_references_custom_ui_assets() -> None:
@@ -88,7 +94,9 @@ def test_custom_ui_assets_define_conversation_sidebar_hooks() -> None:
     custom_css = _read("public/custom.css")
     assert "ab-testing-agent.conversation-list" in custom_js
     assert "ab-testing-agent.active-conversation" in custom_js
+    assert "ab-testing-agent.clear-history-suppression" in custom_js
     assert "firstUserMessageTitle" in custom_js
+    assert "loadClearHistorySuppression" in custom_js
     assert "conversation-history-title-text" in custom_js
     assert ".conversation-history-title-text" in custom_css
     assert ".conversation-history-item.is-active" in custom_css

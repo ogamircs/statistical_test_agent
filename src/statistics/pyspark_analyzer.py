@@ -19,6 +19,8 @@ Performance Notes:
 """
 
 import logging
+import os
+import sys
 
 from pyspark.sql import SparkSession, DataFrame, Window
 from pyspark.sql import functions as F
@@ -27,7 +29,7 @@ from pyspark.ml.stat import Correlation, ChiSquareTest
 from pyspark.ml.feature import VectorAssembler
 from pyspark.mllib.stat import Statistics
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Mapping, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 import json
 
@@ -724,7 +726,11 @@ class PySparkABTestAnalyzer:
             "total_effect": float(total_effect)
         }
 
-    def run_ab_test(self, segment_filter: Optional[str] = None) -> SparkABTestResult:
+    def run_ab_test(
+        self,
+        segment_filter: Optional[str] = None,
+        sequential_config: Optional[Mapping[str, Any]] = None,
+    ) -> SparkABTestResult:
         """
         Run comprehensive A/B test for a segment using Spark aggregations
 
@@ -893,7 +899,10 @@ class PySparkABTestAnalyzer:
             bayesian_total_effect_per_customer=bayesian_results["total_effect"] / n_t if n_t > 0 else 0.0
         )
 
-    def run_segmented_analysis(self) -> List[SparkABTestResult]:
+    def run_segmented_analysis(
+        self,
+        sequential_config: Optional[Mapping[str, Any]] = None,
+    ) -> List[SparkABTestResult]:
         """
         Run A/B tests for all segments in parallel using Spark
 
@@ -1030,6 +1039,12 @@ def create_spark_session(
         ...     }
         ... )
     """
+    python_executable = os.environ.get("PYSPARK_PYTHON") or sys.executable
+    driver_executable = os.environ.get("PYSPARK_DRIVER_PYTHON") or sys.executable
+
+    os.environ.setdefault("PYSPARK_PYTHON", python_executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", driver_executable)
+
     builder = SparkSession.builder.appName(app_name).master(master)
 
     # Default optimizations for A/B testing workloads
@@ -1038,6 +1053,9 @@ def create_spark_session(
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        "spark.pyspark.python": python_executable,
+        "spark.pyspark.driver.python": driver_executable,
+        "spark.executorEnv.PYSPARK_PYTHON": python_executable,
     }
 
     if config:
@@ -1087,9 +1105,9 @@ if __name__ == "__main__":
     summary = analyzer.generate_summary(results)
     logger.info(
         "Spark example summary: segments=%s significant=%s combined_effect=%.2f",
-        summary["total_segments_analyzed"],
-        summary["t_test_significant_segments"],
-        summary["combined_total_effect"],
+        summary.total_segments_analyzed,
+        summary.t_test_significant_segments,
+        summary.combined_total_effect,
     )
 
     # Save results to Parquet for downstream analysis

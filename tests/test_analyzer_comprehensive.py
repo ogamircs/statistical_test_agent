@@ -683,9 +683,9 @@ class TestSegmentedAnalysis:
         summary = analyzer.generate_summary(results)
 
         assert [result.segment for result in results] == ['Good']
-        assert len(summary['segment_failures']) == 1
-        assert summary['segment_failures'][0]['segment'] == 'Bad'
-        assert 'Skipped 1 segment' in summary['analysis_warnings'][0]
+        assert len(summary.segment_failures) == 1
+        assert summary.segment_failures[0].segment == 'Bad'
+        assert 'Skipped 1 segment' in summary.analysis_warnings[0]
 
 
 class TestSummaryGeneration:
@@ -710,7 +710,7 @@ class TestSummaryGeneration:
         assert summary.bayesian_significant_segments >= 0
         assert isinstance(summary.combined_total_effect, float)
         assert isinstance(summary.recommendations, list)
-        assert summary["total_segments_analyzed"] == summary.total_segments_analyzed
+        assert summary.total_segments_analyzed > 0
 
     def test_generate_recommendations(self, analyzer, sample_data):
         """Test recommendation generation"""
@@ -734,12 +734,12 @@ class TestSummaryGeneration:
         summary = analyzer.generate_summary(results)
 
         detail = summary.detailed_results[0]
-        detail_payload = detail.to_legacy_dict()
-        assert "diagnostics" in detail
-        assert "experiment_quality" in detail["diagnostics"]
-        assert "srm_p_value" in detail_payload
-        assert "assumption_diagnostics" in detail_payload
-        assert "outlier_sensitivity_diagnostics" in detail_payload
+        assert hasattr(detail, "diagnostics")
+        assert "experiment_quality" in detail.diagnostics
+        experiment_quality = detail.diagnostics["experiment_quality"]
+        assert "srm" in experiment_quality
+        assert "assumptions" in experiment_quality
+        assert "outlier_sensitivity" in experiment_quality
 
     def test_summary_exposes_sequential_fields_when_enabled(self, analyzer, sample_data):
         """Summary should include additive sequential decision metadata when configured."""
@@ -756,9 +756,9 @@ class TestSummaryGeneration:
         assert isinstance(summary.sequential_decision_breakdown, dict)
 
         detail = summary.detailed_results[0]
-        assert "sequential_mode_enabled" in detail
-        assert "sequential_decision" in detail
-        assert "sequential_thresholds" in detail
+        assert hasattr(detail, "sequential_mode_enabled")
+        assert hasattr(detail, "sequential_decision")
+        assert hasattr(detail, "sequential_thresholds")
 
     def test_render_full_analysis_accepts_typed_summary(self, analyzer, sample_data):
         """Report renderers should consume the typed summary model directly."""
@@ -1048,7 +1048,7 @@ class TestCompleteWorkflow:
 
         # Generate summary
         summary = analyzer.generate_summary(results)
-        assert 'total_segments_analyzed' in summary
+        assert hasattr(summary, 'total_segments_analyzed')
 
         # Check all statistical tests ran
         for result in results:
@@ -1075,5 +1075,5 @@ class TestCompleteWorkflow:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        assert summary['total_segments_analyzed'] == 3
-        assert 'recommendations' in summary
+        assert summary.total_segments_analyzed == 3
+        assert hasattr(summary, 'recommendations')

@@ -74,3 +74,12 @@ data/sample_ab_data_large.csv
 
 # Generated analysis output
 output/
+
+# Markdown docs
+*.md
+!README.md
+!docs/
+!docs/architecture.md
+!docs/development.md
+!docs/testing.md
+docs/plans/

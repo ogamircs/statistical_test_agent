@@ -10,10 +10,12 @@ Tests distributed statistical analysis using PySpark including:
 - Result persistence (Parquet, Delta)
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 import pandas as pd
 import numpy as np
-from pathlib import Path
 
 pytest.importorskip("pyspark", reason="PySpark not installed; skipping PySpark analyzer tests.")
 
@@ -109,6 +111,8 @@ class TestSparkSessionCreation:
         spark = _create_spark_or_skip()
         assert spark is not None
         assert spark.sparkContext.appName == "ABTestingAnalyzer"
+        assert Path(spark.conf.get("spark.pyspark.python")).resolve() == Path(sys.executable).resolve()
+        assert Path(spark.conf.get("spark.pyspark.driver.python")).resolve() == Path(sys.executable).resolve()
         spark.stop()
 
     def test_create_spark_session_custom_config(self):
@@ -443,8 +447,9 @@ class TestSchemaParity:
         pandas_analyzer.auto_configure()
         pandas_summary = pandas_analyzer.generate_summary(pandas_analyzer.run_segmented_analysis())
 
-        spark_detail_keys = set(spark_summary["detailed_results"][0].keys())
-        pandas_detail_keys = set(pandas_summary["detailed_results"][0].keys())
+        from dataclasses import asdict
+        spark_detail_keys = set(asdict(spark_summary.detailed_results[0]).keys())
+        pandas_detail_keys = set(asdict(pandas_summary.detailed_results[0]).keys())
 
         assert spark_detail_keys == pandas_detail_keys
 
@@ -500,14 +505,14 @@ class TestSummaryGeneration:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        assert 'total_segments_analyzed' in summary
-        assert 't_test_significant_segments' in summary
-        assert 'prop_test_significant_segments' in summary
-        assert 'bayesian_significant_segments' in summary
-        assert 'combined_total_effect' in summary
-        assert 'recommendations' in summary
+        assert hasattr(summary, 'total_segments_analyzed')
+        assert hasattr(summary, 't_test_significant_segments')
+        assert hasattr(summary, 'prop_test_significant_segments')
+        assert hasattr(summary, 'bayesian_significant_segments')
+        assert hasattr(summary, 'combined_total_effect')
+        assert hasattr(summary, 'recommendations')
 
-        assert summary['total_segments_analyzed'] == 3
+        assert summary.total_segments_analyzed == 3
 
     def test_summary_aggregations(self, analyzer, sample_spark_df):
         """Test summary aggregation calculations"""
@@ -521,8 +526,8 @@ class TestSummaryGeneration:
         total_t = sum(r.treatment_size for r in results)
         total_c = sum(r.control_size for r in results)
 
-        assert summary['total_treatment_customers'] == total_t
-        assert summary['total_control_customers'] == total_c
+        assert summary.total_treatment_customers == total_t
+        assert summary.total_control_customers == total_c
 
     def test_generate_recommendations(self, analyzer, sample_spark_df):
         """Test recommendation generation"""
@@ -532,7 +537,7 @@ class TestSummaryGeneration:
         results = analyzer.run_segmented_analysis()
         summary = analyzer.generate_summary(results)
 
-        recommendations = summary['recommendations']
+        recommendations = summary.recommendations
 
         assert isinstance(recommendations, list)
         assert len(recommendations) > 0
@@ -674,7 +679,7 @@ class TestCompleteWorkflow:
 
         # Generate summary
         summary = analyzer.generate_summary(results)
-        assert 'total_segments_analyzed' in summary
+        assert hasattr(summary, 'total_segments_analyzed')
 
     def test_complete_workflow_with_persistence(self, analyzer, sample_spark_df, tmp_path):
         """Test workflow with result persistence"""
@@ -693,4 +698,4 @@ class TestCompleteWorkflow:
 
         # Generate summary
         summary = analyzer.generate_summary(results)
-        assert summary['total_segments_analyzed'] == 3
+        assert summary.total_segments_analyzed == 3

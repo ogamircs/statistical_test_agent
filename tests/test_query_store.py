@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import pytest
+from pandas.errors import DatabaseError
 
 from src.query_store import SQLiteQueryStore
 from src.statistics.models import ABTestResult, ABTestSummary
@@ -81,3 +83,25 @@ def test_query_store_exposes_schema_context(tmp_path: Path) -> None:
     assert "raw_data" in schema
     assert "segment" in schema
     assert "metric" in schema
+
+
+def test_execute_query_blocks_mutations(tmp_path: Path) -> None:
+    store = SQLiteQueryStore(tmp_path / "readonly.sqlite")
+    store.save_raw_dataframe(
+        pd.DataFrame({"segment": ["Premium"], "metric": [1.5]})
+    )
+
+    with pytest.raises((sqlite3.OperationalError, DatabaseError), match="readonly"):
+        store.execute_query("DROP TABLE raw_data")
+
+
+def test_execute_query_allows_select(tmp_path: Path) -> None:
+    store = SQLiteQueryStore(tmp_path / "readonly.sqlite")
+    store.save_raw_dataframe(
+        pd.DataFrame({"segment": ["Premium", "Basic"], "metric": [1.5, 2.0]})
+    )
+
+    result = store.execute_query("SELECT count(*) AS cnt FROM raw_data")
+
+    assert isinstance(result, pd.DataFrame)
+    assert result.iloc[0]["cnt"] == 2

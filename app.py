@@ -10,6 +10,8 @@ Provides a web-based chat interface for:
 """
 
 import logging
+from pathlib import Path
+
 import chainlit as cl
 from dotenv import load_dotenv
 
@@ -17,6 +19,11 @@ from src import ABTestingAgent
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def _ensure_chainlit_files_root() -> None:
+    """Ensure Chainlit has a root directory for persisted element files."""
+    Path(".files").mkdir(exist_ok=True)
 
 
 def get_or_create_agent() -> ABTestingAgent:
@@ -39,6 +46,7 @@ async def display_charts(agent):
     charts = agent.get_charts()
 
     if charts:
+        _ensure_chainlit_files_root()
         elements = []
         for name, fig in charts.items():
             # Create a Plotly element for each chart
@@ -72,9 +80,8 @@ async def main(message: cl.Message):
                     cl.user_session.set("uploaded_file", file_path)
                     logger.info("Processing uploaded CSV (name=%s)", element.name)
 
-                    await cl.Message(
-                        content=f"Received file: **{element.name}**\n\nProcessing..."
-                    ).send()
+                    status_message = cl.Message(content="Processing...")
+                    await status_message.send()
 
                     user_text = message.content.strip() if message.content else ""
                     if user_text:
@@ -83,7 +90,8 @@ async def main(message: cl.Message):
                         agent_message = f"Load the CSV file at path: {file_path}"
 
                     response = await cl.make_async(agent.run)(agent_message)
-                    await cl.Message(content=response).send()
+                    status_message.content = response
+                    await status_message.update()
 
                     await display_charts(agent)
                     return

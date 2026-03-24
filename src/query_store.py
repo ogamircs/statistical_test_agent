@@ -68,7 +68,7 @@ class SQLiteQueryStore:
 
     def save_summary(self, summary: Any) -> None:
         normalized = to_ab_test_summary(summary)
-        summary_payload = normalized.to_legacy_dict()
+        summary_payload = asdict(normalized)
         summary_payload.pop("detailed_results", None)
         summary_payload.pop("segment_failures", None)
 
@@ -82,7 +82,7 @@ class SQLiteQueryStore:
 
     def save_segment_failures(self, failures: Iterable[Any]) -> None:
         rows = [
-            _normalize_record(to_segment_analysis_failure(failure).to_legacy_dict())
+            _normalize_record(asdict(to_segment_analysis_failure(failure)))
             for failure in failures
         ]
         with sqlite3.connect(self.db_path) as connection:
@@ -110,5 +110,9 @@ class SQLiteQueryStore:
         return "\n".join(lines)
 
     def execute_query(self, sql: str) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path) as connection:
+        connection = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        try:
+            connection.execute("PRAGMA busy_timeout = 5000")
             return pd.read_sql_query(sql, connection)
+        finally:
+            connection.close()

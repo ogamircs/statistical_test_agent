@@ -172,7 +172,7 @@ class ABTestResult(LegacyMappingMixin):
     bayesian_total_effect_per_customer: float = 0.0
 
     def to_legacy_dict(self) -> Dict[str, Any]:
-        """Expose the summary detail payload used by reports and charts."""
+        """Expose the legacy mapping payload used by reports and external callers."""
         experiment_quality = self.diagnostics.get("experiment_quality", {})
         srm = experiment_quality.get("srm", {})
         assumptions = experiment_quality.get("assumptions", {})
@@ -261,6 +261,8 @@ class ABTestResult(LegacyMappingMixin):
             "bayesian_total_effect": self.bayesian_total_effect,
             "bayesian_total_effect_per_customer": self.bayesian_total_effect_per_customer,
         }
+
+
 @dataclass(frozen=True)
 class SegmentAnalysisFailure(LegacyMappingMixin):
     """Structured record for a segment skipped during analysis."""

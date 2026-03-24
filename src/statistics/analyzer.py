@@ -5,20 +5,26 @@ Facade orchestrating A/B analysis with a modular architecture:
 - data_manager: dataframe lifecycle and schema inference
 - statsmodels_engine: inferential statistics and effect estimation
 - summary_builder: report aggregation and recommendations
+- segment_preparer: group splitting, pre-period alignment, AA/bootstrap
+- covariate_resolver: covariate parsing, alignment, adjusted models
+- sequential_config: sequential testing configuration and decisions
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import pandas as pd
 from statsmodels.stats.multitest import multipletests
 
+from .covariate_resolver import CovariateResolver
 from .data_manager import ABTestDataManager
 from .models import AATestResult, ABTestResult
+from .segment_preparer import SegmentPreparer, _PreparedSegmentData
+from .sequential_config import evaluate_sequential_decision
 from .statsmodels_engine import StatsmodelsABTestEngine
 from .summary_builder import ABTestSummaryBuilder
 
@@ -41,30 +47,6 @@ class _AnalysisSelection:
     heavy_tail_strategy_option: str
 
 
-@dataclass
-class _PreparedSegmentData:
-    """Aligned treatment/control inputs for the downstream statistical stages."""
-
-    segment_name: str
-    treatment_df: pd.DataFrame
-    control_df: pd.DataFrame
-    treatment_analysis_df: pd.DataFrame
-    control_analysis_df: pd.DataFrame
-    treatment_post_series: pd.Series
-    control_post_series: pd.Series
-    treatment_post_aligned: np.ndarray
-    control_post_aligned: np.ndarray
-    treatment_pre_aligned: Optional[np.ndarray]
-    control_pre_aligned: Optional[np.ndarray]
-    treatment_pre_mean: float
-    control_pre_mean: float
-    aa_test_passed: bool
-    aa_p_value: float
-    bootstrapping_applied: bool
-    original_control_size: int
-    has_pre_effect: bool
-
-
 class ABTestAnalyzer:
     """
     Comprehensive A/B Test Analyzer.
@@ -83,6 +65,11 @@ class ABTestAnalyzer:
             power_threshold=power_threshold,
         )
         self.summary_builder = ABTestSummaryBuilder()
+        self.segment_preparer = SegmentPreparer(
+            stats_engine=self.stats_engine,
+            significance_level=significance_level,
+        )
+        self.covariate_resolver = CovariateResolver(stats_engine=self.stats_engine)
         self.segment_failures: List[Dict[str, str]] = []
 
     # ---------------------------------------------------------------------
@@ -208,158 +195,63 @@ class ABTestAnalyzer:
             n_samples=n_samples,
         )
 
+    # ---------------------------------------------------------------------
+    # Backward-compatible static helpers (delegated)
+    # ---------------------------------------------------------------------
     @staticmethod
     def _parse_covariate_columns(raw_covariates: Any) -> List[str]:
-        """Normalize optional covariate mapping to a deduplicated list of column names."""
-        if raw_covariates is None:
-            return []
-        if isinstance(raw_covariates, str):
-            candidates = [part.strip() for part in raw_covariates.split(",") if part.strip()]
-        elif isinstance(raw_covariates, Sequence):
-            candidates = [str(value).strip() for value in raw_covariates if str(value).strip()]
-        else:
-            return []
+        return CovariateResolver.parse_covariate_columns(raw_covariates)
 
-        deduped: List[str] = []
-        for candidate in candidates:
-            if candidate not in deduped:
-                deduped.append(candidate)
-        return deduped
+    # ---------------------------------------------------------------------
+    # Backward-compatible internal shims (tests may call these directly)
+    # ---------------------------------------------------------------------
+    def _prepare_segment_data(self, selection: _AnalysisSelection) -> _PreparedSegmentData:
+        """Shim: delegates to segment_preparer.prepare()."""
+        return self.segment_preparer.prepare(
+            segment_name=selection.segment_name,
+            df_filtered=selection.df_filtered,
+            group_col=selection.group_col,
+            pre_effect_col=selection.pre_effect_col,
+            post_effect_col=selection.post_effect_col,
+            treatment_label=self.treatment_label,
+            control_label=self.control_label,
+        )
 
-    def _resolve_covariate_columns(
+    def _apply_covariate_alignment(
         self,
-        *,
-        df: pd.DataFrame,
-        group_col: str,
-        post_effect_col: str,
-        pre_effect_col: Optional[str],
-    ) -> List[str]:
-        """Collect numeric covariates from mapping and pre-period metrics when available."""
-        covariates = self._parse_covariate_columns(self.column_mapping.get("covariates"))
-        if pre_effect_col is not None and pre_effect_col in df.columns and pre_effect_col not in covariates:
-            covariates.append(pre_effect_col)
-
-        excluded = {group_col, post_effect_col}
-        segment_col = self.column_mapping.get("segment")
-        if segment_col:
-            excluded.add(segment_col)
-
-        resolved: List[str] = []
-        for column in covariates:
-            if column in excluded:
-                continue
-            if column not in df.columns:
-                continue
-            if not pd.api.types.is_numeric_dtype(df[column]):
-                continue
-            if column not in resolved:
-                resolved.append(column)
-        return resolved
-
-    @staticmethod
-    def _coerce_int(value: Any, *, default: int, minimum: int = 1) -> int:
-        """Best-effort integer coercion with lower-bound clamping."""
-        try:
-            numeric = int(value)
-        except (TypeError, ValueError):
-            numeric = default
-        return max(numeric, minimum)
-
-    @staticmethod
-    def _coerce_float(
-        value: Any,
-        *,
-        default: float,
-        minimum: float = 0.0,
-        maximum: float = 1.0,
-    ) -> float:
-        """Best-effort float coercion with bounded range."""
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            numeric = default
-        return float(min(max(numeric, minimum), maximum))
-
-    def _resolve_sequential_config(
-        self,
-        sequential_config: Optional[Mapping[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Resolve optional sequential testing configuration.
-
-        Sequential mode is opt-in through either:
-        - run_ab_test(..., sequential_config={...})
-        - self.column_mapping["sequential"] = {...}
-        """
-        raw_config: Any = (
-            sequential_config
-            if sequential_config is not None
-            else self.column_mapping.get("sequential")
+        selection: _AnalysisSelection,
+        prepared: _PreparedSegmentData,
+    ) -> tuple[List[str], pd.DataFrame, pd.DataFrame]:
+        """Shim: delegates to covariate_resolver for resolution and alignment."""
+        covariate_columns = self.covariate_resolver.resolve_covariate_columns(
+            df=selection.df_filtered,
+            group_col=selection.group_col,
+            post_effect_col=selection.post_effect_col,
+            pre_effect_col=selection.pre_effect_col,
+            column_mapping=self.column_mapping,
         )
-
-        if raw_config in (None, False):
-            return {"enabled": False}
-
-        if raw_config is True:
-            raw_dict: Dict[str, Any] = {}
-        elif isinstance(raw_config, Mapping):
-            raw_dict = dict(raw_config)
-        else:
-            return {"enabled": False}
-
-        enabled = bool(raw_dict.get("enabled", True))
-        if not enabled:
-            return {"enabled": False}
-
-        look_index = self._coerce_int(
-            raw_dict.get(
-                "look_index",
-                raw_dict.get("current_look", raw_dict.get("interim_look", 1)),
-            ),
-            default=1,
-            minimum=1,
+        (
+            treatment_model_df,
+            control_model_df,
+            prepared.treatment_post_aligned,
+            prepared.control_post_aligned,
+            prepared.treatment_pre_aligned,
+            prepared.control_pre_aligned,
+            prepared.treatment_pre_mean,
+            prepared.control_pre_mean,
+        ) = self.covariate_resolver.apply_covariate_alignment(
+            covariate_columns=covariate_columns,
+            post_effect_col=selection.post_effect_col,
+            pre_effect_col=selection.pre_effect_col,
+            has_pre_effect=prepared.has_pre_effect,
+            treatment_analysis_df=prepared.treatment_analysis_df,
+            control_analysis_df=prepared.control_analysis_df,
+            treatment_post_aligned=prepared.treatment_post_aligned,
+            control_post_aligned=prepared.control_post_aligned,
+            treatment_pre_aligned=prepared.treatment_pre_aligned,
+            control_pre_aligned=prepared.control_pre_aligned,
         )
-        max_looks = self._coerce_int(
-            raw_dict.get(
-                "max_looks",
-                raw_dict.get("total_looks", raw_dict.get("planned_looks", look_index)),
-            ),
-            default=look_index,
-            minimum=1,
-        )
-        look_index = min(look_index, max_looks)
-
-        method = str(
-            raw_dict.get(
-                "spending_method",
-                raw_dict.get("method", self.stats_engine.DEFAULT_SEQUENTIAL_METHOD),
-            )
-        ).strip().lower()
-
-        return {
-            "enabled": True,
-            "look_index": look_index,
-            "max_looks": max_looks,
-            "spending_method": method,
-            "futility_min_information_fraction": self._coerce_float(
-                raw_dict.get(
-                    "futility_min_information_fraction",
-                    self.stats_engine.DEFAULT_FUTILITY_MIN_INFORMATION_FRACTION,
-                ),
-                default=self.stats_engine.DEFAULT_FUTILITY_MIN_INFORMATION_FRACTION,
-                minimum=0.0,
-                maximum=1.0,
-            ),
-            "futility_p_value_threshold": self._coerce_float(
-                raw_dict.get(
-                    "futility_p_value_threshold",
-                    self.stats_engine.DEFAULT_FUTILITY_P_VALUE_THRESHOLD,
-                ),
-                default=self.stats_engine.DEFAULT_FUTILITY_P_VALUE_THRESHOLD,
-                minimum=0.0,
-                maximum=1.0,
-            ),
-        }
+        return covariate_columns, treatment_model_df, control_model_df
 
     # ---------------------------------------------------------------------
     # Core analysis orchestration
@@ -407,251 +299,6 @@ class ABTestAnalyzer:
             ),
         )
 
-    def _split_groups(
-        self,
-        selection: _AnalysisSelection,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Split the filtered frame into treatment and control groups."""
-        treatment_df = selection.df_filtered[
-            selection.df_filtered[selection.group_col] == self.treatment_label
-        ]
-        control_df = selection.df_filtered[
-            selection.df_filtered[selection.group_col] == self.control_label
-        ]
-        return treatment_df, control_df
-
-    def _build_post_only_segment_data(
-        self,
-        *,
-        selection: _AnalysisSelection,
-        treatment_df: pd.DataFrame,
-        control_df: pd.DataFrame,
-    ) -> _PreparedSegmentData:
-        """Construct the baseline post-only analysis payload before pre-period alignment."""
-        treatment_post_series = treatment_df[selection.post_effect_col].dropna()
-        control_post_series = control_df[selection.post_effect_col].dropna()
-
-        if len(treatment_post_series) < 2 or len(control_post_series) < 2:
-            raise ValueError(
-                f"Insufficient data for segment '{selection.segment_name}': "
-                f"Treatment n={len(treatment_post_series)}, Control n={len(control_post_series)}"
-            )
-
-        return _PreparedSegmentData(
-            segment_name=selection.segment_name,
-            treatment_df=treatment_df,
-            control_df=control_df,
-            treatment_analysis_df=treatment_df.dropna(subset=[selection.post_effect_col]).copy(),
-            control_analysis_df=control_df.dropna(subset=[selection.post_effect_col]).copy(),
-            treatment_post_series=treatment_post_series,
-            control_post_series=control_post_series,
-            treatment_post_aligned=treatment_post_series.to_numpy(),
-            control_post_aligned=control_post_series.to_numpy(),
-            treatment_pre_aligned=None,
-            control_pre_aligned=None,
-            treatment_pre_mean=0.0,
-            control_pre_mean=0.0,
-            aa_test_passed=True,
-            aa_p_value=1.0,
-            bootstrapping_applied=False,
-            original_control_size=len(control_post_series),
-            has_pre_effect=(
-                selection.pre_effect_col is not None
-                and selection.pre_effect_col in selection.df_filtered.columns
-            ),
-        )
-
-    def _align_pre_period_data(
-        self,
-        selection: _AnalysisSelection,
-        prepared: _PreparedSegmentData,
-    ) -> None:
-        """Align pre/post data, run AA checks, and bootstrap control when needed."""
-        if not prepared.has_pre_effect or selection.pre_effect_col is None:
-            return
-
-        treatment_aligned_df = prepared.treatment_df.dropna(
-            subset=[selection.pre_effect_col, selection.post_effect_col]
-        )
-        control_aligned_df = prepared.control_df.dropna(
-            subset=[selection.pre_effect_col, selection.post_effect_col]
-        )
-
-        treatment_pre = treatment_aligned_df[selection.pre_effect_col].to_numpy()
-        control_pre = control_aligned_df[selection.pre_effect_col].to_numpy()
-        if len(treatment_pre) < 2 or len(control_pre) < 2:
-            prepared.has_pre_effect = False
-            return
-
-        aa_result = self.run_aa_test(treatment_pre, control_pre, selection.segment_name)
-        prepared.aa_test_passed = aa_result.is_balanced
-        prepared.aa_p_value = aa_result.aa_p_value
-        prepared.treatment_pre_mean = aa_result.treatment_pre_mean
-        prepared.control_pre_mean = aa_result.control_pre_mean
-
-        control_df_for_analysis = control_aligned_df
-        if not prepared.aa_test_passed and len(control_aligned_df) > 0:
-            control_df_for_analysis, aa_result = self.bootstrap_balanced_control(
-                treatment_pre=treatment_pre,
-                control_df=control_aligned_df,
-                pre_col=selection.pre_effect_col,
-            )
-            prepared.aa_test_passed = aa_result.is_balanced
-            prepared.aa_p_value = aa_result.aa_p_value
-            prepared.bootstrapping_applied = aa_result.bootstrapping_applied
-            prepared.original_control_size = aa_result.original_control_size
-            prepared.control_pre_mean = aa_result.control_pre_mean
-
-        prepared.treatment_pre_aligned = treatment_aligned_df[selection.pre_effect_col].to_numpy()
-        prepared.treatment_post_aligned = treatment_aligned_df[selection.post_effect_col].to_numpy()
-        prepared.control_pre_aligned = control_df_for_analysis[selection.pre_effect_col].to_numpy()
-        prepared.control_post_aligned = control_df_for_analysis[selection.post_effect_col].to_numpy()
-        prepared.treatment_analysis_df = treatment_aligned_df.copy()
-        prepared.control_analysis_df = control_df_for_analysis.copy()
-
-        if len(prepared.treatment_pre_aligned) > 0:
-            prepared.treatment_pre_mean = float(np.mean(prepared.treatment_pre_aligned))
-        if len(prepared.control_pre_aligned) > 0:
-            prepared.control_pre_mean = float(np.mean(prepared.control_pre_aligned))
-
-    def _ensure_post_only_fallback(
-        self,
-        selection: _AnalysisSelection,
-        prepared: _PreparedSegmentData,
-    ) -> None:
-        """Fallback to post-only arrays when pre/post alignment removes too much data."""
-        if len(prepared.treatment_post_aligned) >= 2 and len(prepared.control_post_aligned) >= 2:
-            return
-
-        prepared.treatment_post_aligned = prepared.treatment_post_series.to_numpy()
-        prepared.control_post_aligned = prepared.control_post_series.to_numpy()
-        prepared.treatment_pre_aligned = None
-        prepared.control_pre_aligned = None
-        prepared.has_pre_effect = False
-        prepared.treatment_analysis_df = prepared.treatment_df.dropna(
-            subset=[selection.post_effect_col]
-        ).copy()
-        prepared.control_analysis_df = prepared.control_df.dropna(
-            subset=[selection.post_effect_col]
-        ).copy()
-
-    def _prepare_segment_data(self, selection: _AnalysisSelection) -> _PreparedSegmentData:
-        """Resolve group slices, pre/post alignment, and AA metadata for a segment."""
-        treatment_df, control_df = self._split_groups(selection)
-        prepared = self._build_post_only_segment_data(
-            selection=selection,
-            treatment_df=treatment_df,
-            control_df=control_df,
-        )
-        self._align_pre_period_data(selection, prepared)
-        self._ensure_post_only_fallback(selection, prepared)
-        return prepared
-
-    def _apply_covariate_alignment(
-        self,
-        selection: _AnalysisSelection,
-        prepared: _PreparedSegmentData,
-    ) -> tuple[List[str], pd.DataFrame, pd.DataFrame]:
-        """Restrict analysis inputs to rows that support covariate-adjusted inference."""
-        covariate_columns = self._resolve_covariate_columns(
-            df=selection.df_filtered,
-            group_col=selection.group_col,
-            post_effect_col=selection.post_effect_col,
-            pre_effect_col=selection.pre_effect_col,
-        )
-        treatment_model_df = prepared.treatment_analysis_df.copy()
-        control_model_df = prepared.control_analysis_df.copy()
-
-        if not covariate_columns:
-            return covariate_columns, treatment_model_df, control_model_df
-
-        required_model_columns = [selection.post_effect_col, *covariate_columns]
-        treatment_model_df = treatment_model_df.dropna(subset=required_model_columns)
-        control_model_df = control_model_df.dropna(subset=required_model_columns)
-
-        if len(treatment_model_df) >= 2 and len(control_model_df) >= 2:
-            prepared.treatment_post_aligned = treatment_model_df[selection.post_effect_col].to_numpy()
-            prepared.control_post_aligned = control_model_df[selection.post_effect_col].to_numpy()
-
-            if (
-                prepared.has_pre_effect
-                and selection.pre_effect_col is not None
-                and selection.pre_effect_col in treatment_model_df.columns
-                and selection.pre_effect_col in control_model_df.columns
-            ):
-                prepared.treatment_pre_aligned = treatment_model_df[selection.pre_effect_col].to_numpy()
-                prepared.control_pre_aligned = control_model_df[selection.pre_effect_col].to_numpy()
-                prepared.treatment_pre_mean = float(np.mean(prepared.treatment_pre_aligned))
-                prepared.control_pre_mean = float(np.mean(prepared.control_pre_aligned))
-
-        return covariate_columns, treatment_model_df, control_model_df
-
-    def _run_covariate_adjusted_effect_model(
-        self,
-        *,
-        selection: _AnalysisSelection,
-        covariate_columns: List[str],
-        treatment_model_df: pd.DataFrame,
-        control_model_df: pd.DataFrame,
-        effect_size: float,
-        p_value: float,
-        confidence_interval: tuple[float, float],
-        model_effect_scale: str,
-        model_effect_exponentiated: float,
-    ) -> Dict[str, Any]:
-        """Fit the covariate-adjusted effect model when enough aligned rows remain."""
-        if not covariate_columns or len(treatment_model_df) < 2 or len(control_model_df) < 2:
-            return {
-                "covariate_adjustment_applied": False,
-                "covariates_used": [],
-                "covariate_adjusted_effect": effect_size,
-                "covariate_adjusted_p_value": p_value,
-                "covariate_adjusted_confidence_interval": confidence_interval,
-                "covariate_adjusted_model_type": "none",
-                "covariate_adjusted_effect_scale": model_effect_scale,
-                "covariate_adjusted_effect_exponentiated": model_effect_exponentiated,
-                "covariate_adjusted_diagnostics": {},
-            }
-
-        adjusted_effect_metrics = self.stats_engine.estimate_treatment_effect(
-            treatment_data=treatment_model_df[selection.post_effect_col].to_numpy(),
-            control_data=control_model_df[selection.post_effect_col].to_numpy(),
-            metric_type=selection.metric_type_option,
-            treatment_covariates=treatment_model_df[covariate_columns],
-            control_covariates=control_model_df[covariate_columns],
-            covariate_names=covariate_columns,
-            count_model=selection.count_model_option,
-            heavy_tail_strategy=selection.heavy_tail_strategy_option,
-        )
-
-        return {
-            "covariate_adjustment_applied": bool(
-                adjusted_effect_metrics.get("covariate_adjusted", False)
-            ),
-            "covariates_used": list(
-                adjusted_effect_metrics.get("covariates_used", covariate_columns)
-            ),
-            "covariate_adjusted_effect": adjusted_effect_metrics.get(
-                "model_effect",
-                adjusted_effect_metrics.get("effect_size", effect_size),
-            ),
-            "covariate_adjusted_p_value": adjusted_effect_metrics.get("p_value", p_value),
-            "covariate_adjusted_confidence_interval": adjusted_effect_metrics.get(
-                "model_confidence_interval",
-                adjusted_effect_metrics.get("confidence_interval", confidence_interval),
-            ),
-            "covariate_adjusted_model_type": adjusted_effect_metrics.get("model_type", "none"),
-            "covariate_adjusted_effect_scale": adjusted_effect_metrics.get(
-                "model_effect_scale",
-                model_effect_scale,
-            ),
-            "covariate_adjusted_effect_exponentiated": adjusted_effect_metrics.get(
-                "model_effect_exponentiated",
-                1.0,
-            ),
-            "covariate_adjusted_diagnostics": adjusted_effect_metrics.get("diagnostics", {}),
-        }
-
     @staticmethod
     def _build_experiment_diagnostics(
         *,
@@ -696,43 +343,6 @@ class ABTestAnalyzer:
             },
         }
 
-    def _resolve_sequential_results(
-        self,
-        *,
-        sequential_config: Optional[Mapping[str, Any]],
-        p_value: float,
-        effect_size: float,
-        confidence_interval: tuple[float, float],
-    ) -> Dict[str, Any]:
-        """Evaluate opt-in sequential stopping logic for the current result."""
-        sequential_settings = self._resolve_sequential_config(sequential_config)
-        if sequential_settings.get("enabled", False):
-            return self.stats_engine.evaluate_sequential_decision(
-                p_value=p_value,
-                effect_size=effect_size,
-                confidence_interval=confidence_interval,
-                look_index=sequential_settings["look_index"],
-                max_looks=sequential_settings["max_looks"],
-                method=sequential_settings["spending_method"],
-                futility_min_information_fraction=sequential_settings[
-                    "futility_min_information_fraction"
-                ],
-                futility_p_value_threshold=sequential_settings["futility_p_value_threshold"],
-            )
-
-        return {
-            "enabled": False,
-            "method": "none",
-            "look_index": 0,
-            "max_looks": 0,
-            "information_fraction": 0.0,
-            "alpha_spent": 0.0,
-            "stop_recommended": False,
-            "decision": "not_requested",
-            "rationale": "",
-            "thresholds": {},
-        }
-
     def run_ab_test(
         self,
         segment_filter: Optional[str] = None,
@@ -743,12 +353,49 @@ class ABTestAnalyzer:
         """
         self._validate_analysis_state()
         selection = self._resolve_analysis_selection(segment_filter)
-        prepared = self._prepare_segment_data(selection)
-        covariate_columns, treatment_model_df, control_model_df = self._apply_covariate_alignment(
-            selection,
-            prepared,
+
+        # --- Segment preparation (delegated) ---
+        prepared = self.segment_preparer.prepare(
+            segment_name=selection.segment_name,
+            df_filtered=selection.df_filtered,
+            group_col=selection.group_col,
+            pre_effect_col=selection.pre_effect_col,
+            post_effect_col=selection.post_effect_col,
+            treatment_label=self.treatment_label,
+            control_label=self.control_label,
         )
 
+        # --- Covariate alignment (delegated) ---
+        covariate_columns = self.covariate_resolver.resolve_covariate_columns(
+            df=selection.df_filtered,
+            group_col=selection.group_col,
+            post_effect_col=selection.post_effect_col,
+            pre_effect_col=selection.pre_effect_col,
+            column_mapping=self.column_mapping,
+        )
+        (
+            treatment_model_df,
+            control_model_df,
+            prepared.treatment_post_aligned,
+            prepared.control_post_aligned,
+            prepared.treatment_pre_aligned,
+            prepared.control_pre_aligned,
+            prepared.treatment_pre_mean,
+            prepared.control_pre_mean,
+        ) = self.covariate_resolver.apply_covariate_alignment(
+            covariate_columns=covariate_columns,
+            post_effect_col=selection.post_effect_col,
+            pre_effect_col=selection.pre_effect_col,
+            has_pre_effect=prepared.has_pre_effect,
+            treatment_analysis_df=prepared.treatment_analysis_df,
+            control_analysis_df=prepared.control_analysis_df,
+            treatment_post_aligned=prepared.treatment_post_aligned,
+            control_post_aligned=prepared.control_post_aligned,
+            treatment_pre_aligned=prepared.treatment_pre_aligned,
+            control_pre_aligned=prepared.control_pre_aligned,
+        )
+
+        # --- Primary effect estimation ---
         effect_metrics = self.stats_engine.estimate_treatment_effect(
             treatment_data=prepared.treatment_post_aligned,
             control_data=prepared.control_post_aligned,
@@ -776,8 +423,12 @@ class ABTestAnalyzer:
         inference_guardrail_triggered = bool(t_test_diagnostics.get("guardrail_triggered", False))
         inference_blocks_significance = bool(t_test_diagnostics.get("blocks_significance", False))
 
-        covariate_effects = self._run_covariate_adjusted_effect_model(
-            selection=selection,
+        # --- Covariate-adjusted model (delegated) ---
+        covariate_effects = self.covariate_resolver.run_covariate_adjusted_effect_model(
+            post_effect_col=selection.post_effect_col,
+            metric_type_option=selection.metric_type_option,
+            count_model_option=selection.count_model_option,
+            heavy_tail_strategy_option=selection.heavy_tail_strategy_option,
             covariate_columns=covariate_columns,
             treatment_model_df=treatment_model_df,
             control_model_df=control_model_df,
@@ -902,8 +553,11 @@ class ABTestAnalyzer:
             or bayesian_results["prob_treatment_better"] < 0.05
         )
 
-        sequential_results = self._resolve_sequential_results(
+        # --- Sequential testing (delegated) ---
+        sequential_results = evaluate_sequential_decision(
             sequential_config=sequential_config,
+            column_mapping=self.column_mapping,
+            stats_engine=self.stats_engine,
             p_value=p_value,
             effect_size=effect_size,
             confidence_interval=confidence_interval,
