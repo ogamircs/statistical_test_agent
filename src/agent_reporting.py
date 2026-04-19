@@ -458,7 +458,19 @@ def render_run_ab_test_output(result: Any) -> str:
     output += "Statistical Test:\n"
     output += f"  t-statistic: {result.t_statistic:.4f}\n"
     output += f"  p-value: {result.p_value:.6f}\n"
-    output += f"  Significant (p < 0.05): {'YES' if result.is_significant else 'NO'}\n\n"
+    output += f"  Significant (p < 0.05): {'YES' if result.is_significant else 'NO'}\n"
+    if getattr(result, "inference_guardrail_triggered", False):
+        srm_meta = (result.diagnostics or {}).get("experiment_quality", {}).get("srm", {})
+        if srm_meta.get("is_sample_ratio_mismatch"):
+            srm_p = srm_meta.get("p_value")
+            srm_p_str = f"{srm_p:.4f}" if isinstance(srm_p, (int, float)) else "n/a"
+            output += (
+                f"  GUARDRAIL: significance suppressed due to sample-ratio mismatch "
+                f"(SRM p={srm_p_str}). Validate randomization and traffic filters before trusting results.\n"
+            )
+        else:
+            output += "  GUARDRAIL: inference guardrail triggered; significance suppressed.\n"
+    output += "\n"
 
     output += "Bayesian Test:\n"
     output += f"  P(Treatment > Control): {result.bayesian_prob_treatment_better:.1%}\n"

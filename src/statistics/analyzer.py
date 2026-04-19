@@ -507,6 +507,13 @@ class ABTestAnalyzer:
             treatment_size=len(prepared.treatment_post_aligned),
             control_size=len(prepared.control_post_aligned),
         )
+        srm_mismatch = bool(srm_diagnostics.get("is_sample_ratio_mismatch", False))
+        if srm_mismatch:
+            inference_guardrail_triggered = True
+            inference_blocks_significance = True
+            is_significant = False
+            proportion_blocks_significance = True
+            proportion_is_significant = False
         assumption_diagnostics = self.stats_engine.run_assumption_diagnostics(
             treatment_data=prepared.treatment_post_aligned,
             control_data=prepared.control_post_aligned,
