@@ -614,30 +614,100 @@ class ABTestAnalyzer:
             )
             is_significant = sequential_significant and not inference_blocks_significance
 
+        return self._assemble_ab_test_result(
+            selection=selection,
+            prepared=prepared,
+            effect_metrics=effect_metrics,
+            covariate_effects=covariate_effects,
+            prop_results=prop_results,
+            bayesian_results=bayesian_results,
+            sequential_results=sequential_results,
+            diagnostics=diagnostics,
+            cuped_result=cuped_result,
+            treatment_post_mean=treatment_post_mean,
+            control_post_mean=control_post_mean,
+            cohens_d=cohens_d,
+            is_significant=is_significant,
+            inference_guardrail_triggered=inference_guardrail_triggered,
+            proportion_is_significant=proportion_is_significant,
+            proportion_guardrail_triggered=proportion_guardrail_triggered,
+            proportion_diff=proportion_diff,
+            proportion_effect=proportion_effect,
+            proportion_effect_per_customer=proportion_effect_per_customer,
+            total_effect=total_effect,
+            total_effect_per_customer=total_effect_per_customer,
+            bayesian_is_significant=bayesian_is_significant,
+            did_treatment_change=did_treatment_change,
+            did_control_change=did_control_change,
+            did_effect=did_effect,
+            power=power,
+            required_n=required_n,
+        )
+
+    def _assemble_ab_test_result(
+        self,
+        *,
+        selection: _AnalysisSelection,
+        prepared: _PreparedSegmentData,
+        effect_metrics: Dict[str, Any],
+        covariate_effects: Dict[str, Any],
+        prop_results: Dict[str, Any],
+        bayesian_results: Dict[str, Any],
+        sequential_results: Dict[str, Any],
+        diagnostics: Dict[str, Any],
+        cuped_result: Any,
+        treatment_post_mean: float,
+        control_post_mean: float,
+        cohens_d: float,
+        is_significant: bool,
+        inference_guardrail_triggered: bool,
+        proportion_is_significant: bool,
+        proportion_guardrail_triggered: bool,
+        proportion_diff: float,
+        proportion_effect: float,
+        proportion_effect_per_customer: float,
+        total_effect: float,
+        total_effect_per_customer: float,
+        bayesian_is_significant: bool,
+        did_treatment_change: float,
+        did_control_change: float,
+        did_effect: float,
+        power: float,
+        required_n: int,
+    ) -> ABTestResult:
+        """Pack the result of one segment-level analysis into ABTestResult.
+
+        Pure code-motion: no logic lives here that did not previously
+        live inline at the bottom of run_ab_test.
+        """
+        treatment_n = len(prepared.treatment_post_aligned)
+        control_n = len(prepared.control_post_aligned)
         return ABTestResult(
             segment=selection.segment_name,
-            treatment_size=len(prepared.treatment_post_aligned),
-            control_size=len(prepared.control_post_aligned),
+            treatment_size=treatment_n,
+            control_size=control_n,
             treatment_pre_mean=prepared.treatment_pre_mean,
             treatment_post_mean=treatment_post_mean,
             control_pre_mean=prepared.control_pre_mean,
             control_post_mean=control_post_mean,
-            treatment_mean=treatment_mean,
-            control_mean=control_mean,
-            effect_size=effect_size,
+            treatment_mean=effect_metrics["treatment_mean"],
+            control_mean=effect_metrics["control_mean"],
+            effect_size=effect_metrics["effect_size"],
             cohens_d=cohens_d,
-            t_statistic=t_stat,
-            p_value=p_value,
+            t_statistic=effect_metrics["t_statistic"],
+            p_value=effect_metrics["p_value"],
             is_significant=is_significant,
-            p_value_adjusted=p_value,
+            p_value_adjusted=effect_metrics["p_value"],
             is_significant_adjusted=is_significant,
-            confidence_interval=confidence_interval,
-            metric_type=metric_type_selected,
-            model_type=model_type,
-            model_effect=model_effect,
-            model_confidence_interval=model_confidence_interval,
-            model_effect_scale=model_effect_scale,
-            model_effect_exponentiated=model_effect_exponentiated,
+            confidence_interval=effect_metrics["confidence_interval"],
+            metric_type=effect_metrics.get("metric_type", "continuous"),
+            model_type=effect_metrics.get("model_type", "ols_hc3"),
+            model_effect=effect_metrics.get("model_effect", effect_metrics["effect_size"]),
+            model_confidence_interval=effect_metrics.get(
+                "model_confidence_interval", effect_metrics["confidence_interval"]
+            ),
+            model_effect_scale=effect_metrics.get("model_effect_scale", "mean_difference"),
+            model_effect_exponentiated=effect_metrics.get("model_effect_exponentiated", 1.0),
             covariate_adjustment_applied=covariate_effects["covariate_adjustment_applied"],
             covariates_used=covariate_effects["covariates_used"],
             covariate_adjusted_effect=covariate_effects["covariate_adjusted_effect"],
@@ -645,12 +715,8 @@ class ABTestAnalyzer:
             covariate_adjusted_confidence_interval=covariate_effects[
                 "covariate_adjusted_confidence_interval"
             ],
-            covariate_adjusted_model_type=covariate_effects[
-                "covariate_adjusted_model_type"
-            ],
-            covariate_adjusted_effect_scale=covariate_effects[
-                "covariate_adjusted_effect_scale"
-            ],
+            covariate_adjusted_model_type=covariate_effects["covariate_adjusted_model_type"],
+            covariate_adjusted_effect_scale=covariate_effects["covariate_adjusted_effect_scale"],
             covariate_adjusted_effect_exponentiated=covariate_effects[
                 "covariate_adjusted_effect_exponentiated"
             ],
@@ -681,9 +747,7 @@ class ABTestAnalyzer:
             sequential_method=str(sequential_results["method"]),
             sequential_look_index=int(sequential_results["look_index"]),
             sequential_max_looks=int(sequential_results["max_looks"]),
-            sequential_information_fraction=float(
-                sequential_results["information_fraction"]
-            ),
+            sequential_information_fraction=float(sequential_results["information_fraction"]),
             sequential_alpha_spent=float(sequential_results["alpha_spent"]),
             sequential_stop_recommended=bool(sequential_results["stop_recommended"]),
             sequential_decision=str(sequential_results["decision"]),
@@ -701,14 +765,12 @@ class ABTestAnalyzer:
             bayesian_is_significant=bayesian_is_significant,
             bayesian_total_effect=bayesian_results["total_effect"],
             bayesian_total_effect_per_customer=(
-                bayesian_results["total_effect"] / len(prepared.treatment_post_aligned)
-                if len(prepared.treatment_post_aligned) > 0
-                else 0.0
+                bayesian_results["total_effect"] / treatment_n if treatment_n > 0 else 0.0
             ),
             rows_dropped=prepared.rows_dropped,
             achieved_mde=calculate_minimum_detectable_effect(
-                n_treatment=len(prepared.treatment_post_aligned),
-                n_control=len(prepared.control_post_aligned),
+                n_treatment=treatment_n,
+                n_control=control_n,
                 significance_level=self.significance_level,
                 power_threshold=self.power_threshold,
             ),
