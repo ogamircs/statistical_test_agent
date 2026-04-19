@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from src.statistics.models import ABTestSummary, to_ab_test_summary
+from src.statistics.models import to_ab_test_summary
 
 
 @dataclass(frozen=True)
@@ -261,6 +262,21 @@ def _render_ab_results_section(summary: Any) -> str:
 
     output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
+    diagnostic_rows = []
+    for result in normalized.detailed_results:
+        findings = _format_segment_diagnostics(result)
+        if findings:
+            diagnostic_rows.append((result.segment, findings))
+
+    if diagnostic_rows:
+        output += "\n### Diagnostics\n\n"
+        output += "Failed assumption checks per segment. Consider robust or non-parametric methods when these fire.\n\n"
+        output += "| Segment | Findings |\n"
+        output += "|---------|----------|\n"
+        for segment, findings in diagnostic_rows:
+            output += f"| {segment} | {' '.join(findings)} |\n"
+        output += "\n"
+
     output += "\n### Recommendations\n\n"
     for i, rec in enumerate(normalized.recommendations, 1):
         output += f"{i}. {rec}\n"
@@ -373,6 +389,51 @@ def render_set_column_mapping_success(
     return result
 
 
+def _format_segment_diagnostics(result: Any) -> List[str]:
+    """Return one human-readable line per failed assumption check.
+
+    Pulls from result.diagnostics["experiment_quality"]["assumptions"] and
+    ["outlier_sensitivity"]. Returns an empty list when no checks fired or
+    none failed — callers can use that to skip rendering.
+    """
+    findings: List[str] = []
+    diagnostics = getattr(result, "diagnostics", None) or {}
+    quality = diagnostics.get("experiment_quality", {}) if isinstance(diagnostics, dict) else {}
+    assumptions = quality.get("assumptions", {}) if isinstance(quality, dict) else {}
+    outlier = quality.get("outlier_sensitivity", {}) if isinstance(quality, dict) else {}
+
+    if assumptions:
+        treat_norm = assumptions.get("treatment_normality_passed")
+        ctrl_norm = assumptions.get("control_normality_passed")
+        if treat_norm is False or ctrl_norm is False:
+            sides = []
+            if treat_norm is False:
+                sides.append("treatment")
+            if ctrl_norm is False:
+                sides.append("control")
+            findings.append(
+                f"Normality violated for {' and '.join(sides)}; "
+                "prefer non-parametric or robust tests."
+            )
+
+        eq_var = assumptions.get("equal_variance_passed")
+        if eq_var is False:
+            findings.append(
+                "Equal-variance assumption rejected (Levene); "
+                "Welch's t-test is recommended (already used by default)."
+            )
+
+    if outlier and outlier.get("is_sensitive"):
+        sens = outlier.get("sensitivity_score")
+        sens_str = f"{sens:.2%}" if isinstance(sens, (int, float)) else "high"
+        findings.append(
+            f"Effect is sensitive to outliers (sensitivity={sens_str}); "
+            "consider winsorized or trimmed estimates."
+        )
+
+    return findings
+
+
 def render_run_ab_test_output(result: Any) -> str:
     """Render run_ab_test output."""
     output = f"\n{'=' * 60}\n"
@@ -397,10 +458,28 @@ def render_run_ab_test_output(result: Any) -> str:
     output += f"  p-value: {result.p_value:.6f}\n"
     output += f"  Significant (p < 0.05): {'YES' if result.is_significant else 'NO'}\n\n"
 
+    output += "Bayesian Test:\n"
+    output += f"  P(Treatment > Control): {result.bayesian_prob_treatment_better:.1%}\n"
+    output += (
+        f"  95% Credible Interval: "
+        f"[{result.bayesian_credible_interval[0]:.4f}, "
+        f"{result.bayesian_credible_interval[1]:.4f}]\n"
+    )
+    output += (
+        f"  Bayesian Significant (P > 95% or P < 5%): "
+        f"{'YES' if result.bayesian_is_significant else 'NO'}\n\n"
+    )
+
     output += "Power Analysis:\n"
     output += f"  Statistical Power: {result.power:.2%}\n"
     output += f"  Required Sample Size (per group): {result.required_sample_size}\n"
     output += f"  Sample Adequate: {'YES' if result.is_sample_adequate else 'NO'}\n"
+
+    diagnostics_lines = _format_segment_diagnostics(result)
+    if diagnostics_lines:
+        output += "\nDiagnostics:\n"
+        for line in diagnostics_lines:
+            output += f"  - {line}\n"
 
     return output
 
@@ -454,6 +533,22 @@ def render_full_analysis_output(summary: Any) -> str:
         )
 
     output += "-" * 100 + "\n\n"
+
+    diagnostic_rows = []
+    for result in normalized.detailed_results:
+        findings = _format_segment_diagnostics(result)
+        if findings:
+            diagnostic_rows.append((result.segment, findings))
+
+    if diagnostic_rows:
+        output += "### Diagnostics\n"
+        output += (
+            "Failed assumption checks per segment. Consider robust or "
+            "non-parametric methods when these fire.\n"
+        )
+        for segment, findings in diagnostic_rows:
+            output += f"  - {segment}: {' '.join(findings)}\n"
+        output += "\n"
 
     output += "RECOMMENDATIONS:\n"
     for i, rec in enumerate(normalized.recommendations, 1):
