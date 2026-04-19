@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol, Tuple
 
 from ..agent_reporting import AgentUserFacingError, render_tool_error
+from ..output_truncation import (
+    DEFAULT_LLM_ROW_LIMIT,
+    truncate_dataframe_for_llm,
+    truncate_iterable_for_llm,
+)
 
 logger = logging.getLogger(__name__)
 

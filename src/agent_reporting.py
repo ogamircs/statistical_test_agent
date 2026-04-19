@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from .output_truncation import DEFAULT_LLM_ROW_LIMIT, truncate_dataframe_for_llm
+
 import pandas as pd
 
 from src.statistics.models import to_ab_test_summary
@@ -559,7 +561,11 @@ def render_full_analysis_output(summary: Any) -> str:
 
 def render_query_data_output(result: Any) -> str:
     """Render query_data output."""
-    return f"Query result ({len(result)} rows):\n{result.head(20).to_string()}\n\n(Showing first 20 rows)"
+    head, suffix = truncate_dataframe_for_llm(result)
+    body = f"Query result ({len(result)} rows):\n{head.to_string()}"
+    if suffix:
+        body += f"\n\n{suffix}"
+    return body
 
 
 def render_data_question_output(answer: Any) -> str:
@@ -583,7 +589,10 @@ def render_data_question_output(answer: Any) -> str:
 
     if isinstance(data, pd.DataFrame) and not data.empty:
         output += "### Results\n\n"
-        output += data.head(20).to_markdown(index=False)
+        head, suffix = truncate_dataframe_for_llm(data)
+        output += head.to_markdown(index=False)
+        if suffix:
+            output += f"\n\n{suffix}"
         output += "\n\n"
     elif isinstance(data, pd.DataFrame):
         output += "_No matching rows returned._\n\n"
@@ -650,11 +659,12 @@ def render_segment_distribution_output(dist: Dict[str, Any]) -> str:
 def render_column_values_output(column_name: str, values: Sequence[Any], value_counts: Any) -> str:
     """Render get_column_values output."""
     output = f"Unique values in '{column_name}' ({len(values)} unique):\n"
-    for val, count in value_counts.head(20).items():
+    head, _ = truncate_dataframe_for_llm(value_counts.to_frame("count"))
+    for val, count in head["count"].items():
         output += f"  - {val}: {count}\n"
 
-    if len(values) > 20:
-        output += f"  ... and {len(values) - 20} more values"
+    if len(values) > DEFAULT_LLM_ROW_LIMIT:
+        output += f"  ... and {len(values) - DEFAULT_LLM_ROW_LIMIT} more values"
 
     return output
 
