@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 from statsmodels.stats.multitest import multipletests
 
-from .covariate_resolver import CovariateResolver
+from .covariate_resolver import CovariateResolver, apply_cuped
 from .data_manager import ABTestDataManager
 from .diagnostics import detect_duplicate_units
 from .models import AATestResult, ABTestResult
@@ -408,6 +408,19 @@ class ABTestAnalyzer:
             control_pre_aligned=prepared.control_pre_aligned,
         )
 
+        # --- CUPED variance reduction (opt-in via column_mapping["cuped"]) ---
+        cuped_result = None
+        if bool(self.column_mapping.get("cuped", False)):
+            cuped_result = apply_cuped(
+                treatment_post=prepared.treatment_post_aligned,
+                control_post=prepared.control_post_aligned,
+                treatment_pre=prepared.treatment_pre_aligned,
+                control_pre=prepared.control_pre_aligned,
+            )
+            if cuped_result.applied:
+                prepared.treatment_post_aligned = cuped_result.treatment_adjusted
+                prepared.control_post_aligned = cuped_result.control_adjusted
+
         # --- Primary effect estimation ---
         effect_metrics = self.stats_engine.estimate_treatment_effect(
             treatment_data=prepared.treatment_post_aligned,
@@ -698,6 +711,11 @@ class ABTestAnalyzer:
                 n_control=len(prepared.control_post_aligned),
                 significance_level=self.significance_level,
                 power_threshold=self.power_threshold,
+            ),
+            cuped_applied=bool(cuped_result and cuped_result.applied),
+            cuped_theta=float(cuped_result.theta) if cuped_result else 0.0,
+            cuped_variance_reduction=(
+                float(cuped_result.variance_reduction) if cuped_result else 0.0
             ),
         )
 

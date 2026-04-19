@@ -176,6 +176,11 @@ class ABTestResult(LegacyMappingMixin):
     rows_dropped: int = 0  # rows removed by NaN filtering during preparation
     achieved_mde: float = 0.0  # smallest detectable effect at current sample + alpha + power
 
+    # CUPED variance reduction (Wave 4 #3)
+    cuped_applied: bool = False
+    cuped_theta: float = 0.0
+    cuped_variance_reduction: float = 0.0  # 0.0–1.0 fraction of variance removed
+
     def to_legacy_dict(self) -> Dict[str, Any]:
         """Expose the legacy mapping payload used by reports and external callers."""
         experiment_quality = self.diagnostics.get("experiment_quality", {})
