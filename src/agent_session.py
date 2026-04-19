@@ -8,21 +8,23 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import pandas as pd
+import plotly.graph_objects as go
+from langchain_core.messages import BaseMessage
 
 from .query_store import SQLiteQueryStore
 from .query_store_gc import run_startup_gc
 from .sql_query_service import OpenAISQLPlanner, SQLQueryService
-from .statistics.models import to_ab_test_summary
+from .statistics.models import ABTestResult, ABTestSummary, to_ab_test_summary
 
 
 @dataclass
 class AgentSessionState:
     """Mutable in-memory state for one chat session."""
 
-    chat_history: List[Any] = field(default_factory=list)
-    last_charts: Dict[str, Any] = field(default_factory=dict)
-    last_results: Any = None
-    last_summary: Any = None
+    chat_history: List[BaseMessage] = field(default_factory=list)
+    last_charts: Dict[str, go.Figure] = field(default_factory=dict)
+    last_results: Optional[List[ABTestResult]] = None
+    last_summary: Optional[ABTestSummary] = None
 
     def clear_analysis_state(self) -> None:
         self.last_results = None

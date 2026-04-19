@@ -11,11 +11,11 @@ An intelligent agent that can:
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import plotly.graph_objects as go
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
@@ -26,7 +26,10 @@ from .agent_tools import create_agent_tools
 from .config import Config
 from .observability import TokenUsageCallback
 from .prompts import PROMPT_VERSION, load_system_prompt
+from .query_store import SQLiteQueryStore
 from .statistics import ABTestAnalyzer, ABTestVisualizer
+from .statistics.analyzer_protocol import ABAnalyzerProtocol
+from .statistics.models import ABTestResult, ABTestSummary
 
 # Try to import PySpark analyzer (optional dependency)
 try:
@@ -119,19 +122,19 @@ class ABTestingAgent:
                 self.session.state.chat_history.append(AIMessage(content=content))
 
     @property
-    def analyzer(self) -> Any:
+    def analyzer(self) -> ABAnalyzerProtocol:
         return self.runtime.analyzer
 
     @analyzer.setter
-    def analyzer(self, value: Any) -> None:
+    def analyzer(self, value: ABAnalyzerProtocol) -> None:
         self.runtime.analyzer = value
 
     @property
-    def spark_analyzer(self) -> Any:
+    def spark_analyzer(self) -> Optional[ABAnalyzerProtocol]:
         return self.runtime.spark_analyzer
 
     @spark_analyzer.setter
-    def spark_analyzer(self, value: Any) -> None:
+    def spark_analyzer(self, value: Optional[ABAnalyzerProtocol]) -> None:
         self.runtime.spark_analyzer = value
 
     @property
@@ -151,11 +154,11 @@ class ABTestingAgent:
         self.runtime.file_size_threshold_mb = value
 
     @property
-    def chat_history(self) -> List[Any]:
+    def chat_history(self) -> List[BaseMessage]:
         return self.session.state.chat_history
 
     @chat_history.setter
-    def chat_history(self, value: List[Any]) -> None:
+    def chat_history(self, value: List[BaseMessage]) -> None:
         self.session.state.chat_history = value
 
     @property
@@ -167,37 +170,37 @@ class ABTestingAgent:
         self.session.state.last_charts = value
 
     @property
-    def _last_results(self) -> Any:
+    def _last_results(self) -> Optional[List[ABTestResult]]:
         return self.session.state.last_results
 
     @_last_results.setter
-    def _last_results(self, value: Any) -> None:
+    def _last_results(self, value: Optional[List[ABTestResult]]) -> None:
         self.session.state.last_results = value
 
     @property
-    def _last_summary(self) -> Any:
+    def _last_summary(self) -> Optional[ABTestSummary]:
         return self.session.state.last_summary
 
     @_last_summary.setter
-    def _last_summary(self, value: Any) -> None:
+    def _last_summary(self, value: Optional[ABTestSummary]) -> None:
         self.session.state.last_summary = value
 
     @property
-    def query_store(self) -> Any:
+    def query_store(self) -> SQLiteQueryStore:
         return self.session.query_store
 
     @query_store.setter
-    def query_store(self, value: Any) -> None:
+    def query_store(self, value: SQLiteQueryStore) -> None:
         self.session.query_store = value
         if getattr(self.session.data_question_service, "query_store", None) is not None:
             self.session.data_question_service.query_store = value
 
     @property
-    def data_question_service(self) -> Any:
+    def data_question_service(self) -> Optional[Any]:
         return self.session.data_question_service
 
     @data_question_service.setter
-    def data_question_service(self, value: Any) -> None:
+    def data_question_service(self, value: Optional[Any]) -> None:
         self.session.data_question_service = value
 
     def persist_loaded_data(self, analyzer: Any) -> bool:
