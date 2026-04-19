@@ -591,6 +591,16 @@ class ABTestAnalyzer:
             confidence_interval=confidence_interval,
         )
 
+        # When sequential mode is active, the alpha-spending boundary
+        # (encoded in sequential_results["decision"]) is the canonical
+        # significance call — not the fixed-sample alpha.
+        if sequential_results["enabled"]:
+            sequential_significant = sequential_results["decision"] in (
+                "stop_efficacy",
+                "final_accept",
+            )
+            is_significant = sequential_significant and not inference_blocks_significance
+
         return ABTestResult(
             segment=selection.segment_name,
             treatment_size=len(prepared.treatment_post_aligned),
