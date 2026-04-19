@@ -857,6 +857,108 @@ class PySparkABTestAnalyzer:
             },
         }
 
+    def _compute_covariate_adjustment(
+        self,
+        *,
+        segment_filter: Optional[str],
+        post_col: str,
+        effect_size: float,
+        p_value: float,
+        confidence_interval: Tuple[float, float],
+    ) -> Dict[str, Any]:
+        """Driver-side covariate-adjusted OLS for the Spark backend.
+
+        Reuses the pandas StatsmodelsABTestEngine via lazy import — covariate
+        adjustment requires raw row-level access, which the agg-only Spark
+        path does not preserve. We collect the affected arms (treatment +
+        control rows for the active segment) to pandas with only the
+        (post + covariates) columns selected, then delegate to the same
+        engine the pandas analyzer uses. Suitable for small-K covariate
+        sets; for large-K + huge data prefer Spark MLlib (future work).
+        """
+        from .covariate_resolver import CovariateResolver
+        from .statsmodels_engine import StatsmodelsABTestEngine
+
+        unchanged: Dict[str, Any] = {
+            "covariate_adjustment_applied": False,
+            "covariates_used": [],
+            "covariate_adjusted_effect": effect_size,
+            "covariate_adjusted_p_value": p_value,
+            "covariate_adjusted_confidence_interval": confidence_interval,
+            "covariate_adjusted_model_type": "none",
+            "covariate_adjusted_effect_scale": "mean_difference",
+            "covariate_adjusted_effect_exponentiated": 1.0,
+            "covariate_adjusted_diagnostics": {},
+        }
+
+        if self.df is None:
+            return unchanged
+
+        engine = StatsmodelsABTestEngine(
+            significance_level=self.significance_level,
+            power_threshold=self.power_threshold,
+            seed=self.seed,
+        )
+        resolver = CovariateResolver(stats_engine=engine)
+
+        group_col = self.column_mapping.get("group")
+        segment_col = self.column_mapping.get("segment")
+        pre_col = self.column_mapping.get("pre_effect")
+        if group_col is None or post_col is None:
+            return unchanged
+
+        candidate_cols = resolver.parse_covariate_columns(
+            self.column_mapping.get("covariates")
+        )
+        if pre_col and pre_col in self.df.columns and pre_col not in candidate_cols:
+            candidate_cols.append(pre_col)
+        if not candidate_cols:
+            return unchanged
+
+        existing_cols = set(self.df.columns)
+        covariate_columns = [c for c in candidate_cols if c in existing_cols]
+        if not covariate_columns:
+            return unchanged
+
+        selected = [post_col, group_col, *covariate_columns]
+        if segment_col and segment_col in existing_cols and segment_col not in selected:
+            selected.append(segment_col)
+
+        scoped = self.df.select(*selected)
+        if segment_filter and segment_col:
+            scoped = scoped.filter(F.col(segment_col) == segment_filter)
+
+        treatment_pdf = (
+            scoped.filter(F.col(group_col) == self.treatment_label)
+            .select(post_col, *covariate_columns)
+            .dropna()
+            .toPandas()
+        )
+        control_pdf = (
+            scoped.filter(F.col(group_col) == self.control_label)
+            .select(post_col, *covariate_columns)
+            .dropna()
+            .toPandas()
+        )
+
+        if len(treatment_pdf) < 2 or len(control_pdf) < 2:
+            return unchanged
+
+        return resolver.run_covariate_adjusted_effect_model(
+            post_effect_col=post_col,
+            metric_type_option="auto",
+            count_model_option="auto",
+            heavy_tail_strategy_option="auto",
+            covariate_columns=covariate_columns,
+            treatment_model_df=treatment_pdf,
+            control_model_df=control_pdf,
+            effect_size=effect_size,
+            p_value=p_value,
+            confidence_interval=confidence_interval,
+            model_effect_scale="mean_difference",
+            model_effect_exponentiated=1.0,
+        )
+
     def run_ab_test(
         self,
         segment_filter: Optional[str] = None,
@@ -990,6 +1092,17 @@ class PySparkABTestAnalyzer:
             is_significant = False
             prop_is_significant = False
 
+        post_col = self.column_mapping.get(
+            "post_effect", self.column_mapping.get("effect_value")
+        )
+        covariate_effects = self._compute_covariate_adjustment(
+            segment_filter=segment_filter,
+            post_col=post_col,
+            effect_size=effect_size,
+            p_value=p_value,
+            confidence_interval=(ci_lower, ci_upper),
+        )
+
         return SparkABTestResult(
             segment=segment_name,
             treatment_size=n_t,
@@ -1040,6 +1153,18 @@ class PySparkABTestAnalyzer:
             bayesian_total_effect_per_customer=bayesian_results["total_effect"] / n_t if n_t > 0 else 0.0,
             inference_guardrail_triggered=srm_mismatch,
             diagnostics=diagnostics_payload,
+            covariate_adjustment_applied=covariate_effects["covariate_adjustment_applied"],
+            covariates_used=covariate_effects["covariates_used"],
+            covariate_adjusted_effect=covariate_effects["covariate_adjusted_effect"],
+            covariate_adjusted_p_value=covariate_effects["covariate_adjusted_p_value"],
+            covariate_adjusted_confidence_interval=covariate_effects[
+                "covariate_adjusted_confidence_interval"
+            ],
+            covariate_adjusted_model_type=covariate_effects["covariate_adjusted_model_type"],
+            covariate_adjusted_effect_scale=covariate_effects["covariate_adjusted_effect_scale"],
+            covariate_adjusted_effect_exponentiated=covariate_effects[
+                "covariate_adjusted_effect_exponentiated"
+            ],
         )
 
     def run_segmented_analysis(
