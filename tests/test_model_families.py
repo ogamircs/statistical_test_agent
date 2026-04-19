@@ -11,7 +11,6 @@ from src.statistics.model_families import (
     is_heavy_tail_metric,
 )
 
-
 VARIANCE_EPSILON = 1e-12
 
 

@@ -16,7 +16,6 @@ from typing import Any, Dict, Optional
 
 from langchain_core.callbacks.base import BaseCallbackHandler
 
-
 logger = logging.getLogger(__name__)
 
 

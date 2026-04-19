@@ -31,8 +31,8 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from ..agent_reporting import AgentUserFacingError
-from .label_inference import infer_group_labels
 from .diagnostics import run_srm_diagnostics
+from .label_inference import infer_group_labels
 from .models import ABTestResult
 from .summary_builder import ABTestSummaryBuilder
 
