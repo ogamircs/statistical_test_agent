@@ -38,6 +38,7 @@ class _PreparedSegmentData:
     bootstrapping_applied: bool
     original_control_size: int
     has_pre_effect: bool
+    rows_dropped: int = 0
 
 
 class SegmentPreparer:
@@ -127,6 +128,11 @@ class SegmentPreparer:
         treatment_post_series = treatment_df[post_effect_col].dropna()
         control_post_series = control_df[post_effect_col].dropna()
 
+        rows_dropped = (
+            (len(treatment_df) - len(treatment_post_series))
+            + (len(control_df) - len(control_post_series))
+        )
+
         if len(treatment_post_series) < 2 or len(control_post_series) < 2:
             raise ValueError(
                 f"Insufficient data for segment '{segment_name}': "
@@ -155,6 +161,7 @@ class SegmentPreparer:
                 pre_effect_col is not None
                 and pre_effect_col in df_filtered.columns
             ),
+            rows_dropped=rows_dropped,
         )
 
     def _align_pre_period_data(

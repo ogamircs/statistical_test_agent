@@ -57,6 +57,37 @@ def calculate_power(
         return 0.0
 
 
+def calculate_minimum_detectable_effect(
+    *,
+    n_treatment: int,
+    n_control: int,
+    significance_level: float,
+    power_threshold: float,
+) -> float:
+    """Solve for the smallest standardized effect size detectable at current N.
+
+    Returns 0.0 if the underlying solver fails or sample sizes are too small.
+    """
+    if n_treatment <= 1 or n_control <= 1:
+        return 0.0
+
+    power_analysis = TTestIndPower()
+    ratio = n_control / n_treatment if n_treatment > 0 else 1.0
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            mde = power_analysis.solve_power(
+                effect_size=None,
+                nobs1=n_treatment,
+                ratio=ratio,
+                alpha=significance_level,
+                power=power_threshold,
+            )
+        return float(np.atleast_1d(mde)[0])
+    except Exception:
+        return 0.0
+
+
 def calculate_required_sample_size(
     *,
     effect_size: float,

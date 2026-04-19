@@ -4,9 +4,10 @@ Data Models for A/B Testing Results
 Contains dataclasses and type definitions for statistical analysis results.
 """
 
+from collections.abc import Iterable, Mapping
 from collections.abc import Mapping as MappingABC
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class LegacyMappingMixin(MappingABC):
@@ -170,6 +171,10 @@ class ABTestResult(LegacyMappingMixin):
     # Bayesian total effect (using pre/post difference)
     bayesian_total_effect: float = 0.0  # Expected total effect from Bayesian DiD
     bayesian_total_effect_per_customer: float = 0.0
+
+    # Data-quality and sample-planning fields (Wave 2 #7, #9)
+    rows_dropped: int = 0  # rows removed by NaN filtering during preparation
+    achieved_mde: float = 0.0  # smallest detectable effect at current sample + alpha + power
 
     def to_legacy_dict(self) -> Dict[str, Any]:
         """Expose the legacy mapping payload used by reports and external callers."""

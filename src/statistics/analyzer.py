@@ -12,9 +12,10 @@ Facade orchestrating A/B analysis with a modular architecture:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
-from typing import Any, Dict, List, Mapping, Optional
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -23,11 +24,11 @@ from statsmodels.stats.multitest import multipletests
 from .covariate_resolver import CovariateResolver
 from .data_manager import ABTestDataManager
 from .models import AATestResult, ABTestResult
+from .power_analysis import calculate_minimum_detectable_effect
 from .segment_preparer import SegmentPreparer, _PreparedSegmentData
 from .sequential_config import evaluate_sequential_decision
 from .statsmodels_engine import StatsmodelsABTestEngine
 from .summary_builder import ABTestSummaryBuilder
-
 
 logger = logging.getLogger(__name__)
 
@@ -653,6 +654,13 @@ class ABTestAnalyzer:
                 bayesian_results["total_effect"] / len(prepared.treatment_post_aligned)
                 if len(prepared.treatment_post_aligned) > 0
                 else 0.0
+            ),
+            rows_dropped=prepared.rows_dropped,
+            achieved_mde=calculate_minimum_detectable_effect(
+                n_treatment=len(prepared.treatment_post_aligned),
+                n_control=len(prepared.control_post_aligned),
+                significance_level=self.significance_level,
+                power_threshold=self.power_threshold,
             ),
         )
 
