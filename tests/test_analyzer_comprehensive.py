@@ -13,13 +13,14 @@ Tests all statistical functions including:
 - Summary generation
 """
 
-import pytest
-import pandas as pd
-import numpy as np
 import warnings
 
-from src.statistics.analyzer import ABTestAnalyzer
+import numpy as np
+import pandas as pd
+import pytest
+
 from src.agent_reporting import render_full_analysis_output
+from src.statistics.analyzer import ABTestAnalyzer
 from src.statistics.models import AATestResult, ABTestResult, ABTestSummary
 
 
@@ -181,7 +182,7 @@ class TestAATest:
         result = analyzer.run_aa_test(treatment_pre, control_pre, "Test")
 
         assert isinstance(result, AATestResult)
-        assert result.is_balanced == True  # Should be balanced
+        assert result.is_balanced is True  # Should be balanced
         assert result.aa_p_value > 0.05
 
     def test_run_aa_test_imbalanced(self, analyzer):
@@ -193,7 +194,7 @@ class TestAATest:
         result = analyzer.run_aa_test(treatment_pre, control_pre, "Test")
 
         assert isinstance(result, AATestResult)
-        assert result.is_balanced == False  # Should be imbalanced
+        assert result.is_balanced is False  # Should be imbalanced
         assert result.aa_p_value < 0.05
 
 

@@ -18,26 +18,22 @@ Performance Notes:
 - Cache intermediate results for iterative operations
 """
 
+import json
 import logging
 import os
 import sys
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
-from pyspark.sql import SparkSession, DataFrame, Window
-from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType, ArrayType
-from pyspark.ml.stat import Correlation, ChiSquareTest
-from pyspark.ml.feature import VectorAssembler
-from pyspark.mllib.stat import Statistics
 import numpy as np
-from typing import Dict, List, Mapping, Optional, Tuple, Any
-from dataclasses import dataclass, asdict
-import json
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 from ..agent_reporting import AgentUserFacingError
 from .label_inference import infer_group_labels
 from .models import ABTestResult
 from .summary_builder import ABTestSummaryBuilder
-
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +249,6 @@ class PySparkABTestAnalyzer:
                     suggestions["pre_effect"].append(columns[i])
 
         # Post-effect patterns
-        post_patterns = ['post_effect', 'post_value', 'effect_value', 'revenue', 'amount', 'score']
         for i, col in enumerate(columns_lower):
             if 'post_' in col or col == 'post_effect':
                 if columns[i] in numeric_columns:

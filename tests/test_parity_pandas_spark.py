@@ -24,8 +24,10 @@ pyspark = pytest.importorskip(
     reason="PySpark not installed; skipping pandas-vs-Spark parity tests.",
 )
 
-from src.statistics.pyspark_analyzer import PySparkABTestAnalyzer, create_spark_session
-
+from src.statistics.pyspark_analyzer import (  # noqa: E402
+    PySparkABTestAnalyzer,
+    create_spark_session,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 DATA_DIR = REPO_ROOT / "data"

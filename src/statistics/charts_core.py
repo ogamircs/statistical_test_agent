@@ -338,7 +338,7 @@ class CoreChartsMixin:
         )
 
         # Add reference bands
-        for y_val, label in [(0.8, 'Large'), (0.5, 'Medium'), (0.2, 'Small')]:
+        for y_val, _label in [(0.8, 'Large'), (0.5, 'Medium'), (0.2, 'Small')]:
             fig.add_hline(y=y_val, line_dash="dot", line_color=self.colors['grid'], line_width=1)
             fig.add_hline(y=-y_val, line_dash="dot", line_color=self.colors['grid'], line_width=1)
 

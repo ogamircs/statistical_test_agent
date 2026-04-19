@@ -32,6 +32,15 @@ jobs:
         run: |
           python -m compileall -q src tests app.py
 
+      - name: Ruff
+        run: |
+          ruff check src tests app.py
+
+      - name: Mypy (non-blocking)
+        continue-on-error: true
+        run: |
+          mypy src
+
       - name: Smoke test (core analyzer path)
         run: |
           python - <<'PY'
