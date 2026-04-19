@@ -87,3 +87,7 @@ output/
 !src/prompts/
 !src/prompts/*.md
 docs/plans/
+
+# Playwright smoke artifacts
+.playwright-mcp/
+*.png
