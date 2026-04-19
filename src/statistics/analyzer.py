@@ -56,14 +56,21 @@ class ABTestAnalyzer:
     while internals are split into dedicated components.
     """
 
-    def __init__(self, significance_level: float = 0.05, power_threshold: float = 0.8):
+    def __init__(
+        self,
+        significance_level: float = 0.05,
+        power_threshold: float = 0.8,
+        seed: int = 42,
+    ):
         self.significance_level = significance_level
         self.power_threshold = power_threshold
+        self.seed = seed
 
         self.data_manager = ABTestDataManager()
         self.stats_engine = StatsmodelsABTestEngine(
             significance_level=significance_level,
             power_threshold=power_threshold,
+            seed=seed,
         )
         self.summary_builder = ABTestSummaryBuilder()
         self.segment_preparer = SegmentPreparer(

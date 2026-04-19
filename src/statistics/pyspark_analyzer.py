@@ -140,7 +140,8 @@ class PySparkABTestAnalyzer:
         self,
         spark: Optional[SparkSession] = None,
         significance_level: float = 0.05,
-        power_threshold: float = 0.8
+        power_threshold: float = 0.8,
+        seed: int = 42,
     ):
         """
         Initialize the PySpark analyzer
@@ -149,10 +150,12 @@ class PySparkABTestAnalyzer:
             spark: Active SparkSession (optional, auto-created when omitted)
             significance_level: Alpha for hypothesis tests (default: 0.05)
             power_threshold: Minimum statistical power (default: 0.8)
+            seed: Driver-side RNG seed for the Monte Carlo Bayesian sampler.
         """
         self.spark = spark or SparkSession.builder.appName("ABTestingAnalyzer").getOrCreate()
         self.significance_level = significance_level
         self.power_threshold = power_threshold
+        self.seed = seed
         self.df: Optional[DataFrame] = None
         self.column_mapping: Dict[str, str] = {}
         self.treatment_label: Optional[str] = None
@@ -686,15 +689,15 @@ class PySparkABTestAnalyzer:
         se_t = np.sqrt(var_t / n_t)
         se_c = np.sqrt(var_c / n_c)
 
-        np.random.seed(42)
+        rng = np.random.default_rng(self.seed)
 
         # Draw samples from posterior
         if n_t > 30 and n_c > 30:
-            treatment_samples = np.random.normal(mean_t, se_t, n_samples)
-            control_samples = np.random.normal(mean_c, se_c, n_samples)
+            treatment_samples = rng.normal(mean_t, se_t, n_samples)
+            control_samples = rng.normal(mean_c, se_c, n_samples)
         else:
-            treatment_samples = mean_t + se_t * np.random.standard_t(n_t - 1, n_samples)
-            control_samples = mean_c + se_c * np.random.standard_t(n_c - 1, n_samples)
+            treatment_samples = mean_t + se_t * rng.standard_t(n_t - 1, n_samples)
+            control_samples = mean_c + se_c * rng.standard_t(n_c - 1, n_samples)
 
         diff_samples = treatment_samples - control_samples
 
