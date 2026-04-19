@@ -20,6 +20,7 @@ from .statistics.models import (
 )
 
 _AUDIT_TABLE = "_query_audit"
+_CHAT_HISTORY_TABLE = "_chat_history"
 _DEFAULT_QUERY_TIMEOUT_SECONDS = 5.0
 _PROGRESS_HANDLER_INTERVAL = 1000
 
@@ -68,6 +69,43 @@ class SQLiteQueryStore:
                 )
                 """
             )
+            connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {_CHAT_HISTORY_TABLE} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL
+                )
+                """
+            )
+
+    def save_chat_message(self, role: str, content: str) -> None:
+        """Append one chat message to the persisted history."""
+        try:
+            with sqlite3.connect(self.db_path) as connection:
+                connection.execute(
+                    f"INSERT INTO {_CHAT_HISTORY_TABLE} (created_at, role, content) VALUES (?, ?, ?)",
+                    (
+                        datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                        role,
+                        content,
+                    ),
+                )
+        except sqlite3.Error:
+            # Persistence must not break the conversation.
+            pass
+
+    def load_chat_messages(self) -> List[Dict[str, str]]:
+        """Return persisted chat history in insertion order."""
+        try:
+            with sqlite3.connect(self.db_path) as connection:
+                rows = connection.execute(
+                    f"SELECT role, content FROM {_CHAT_HISTORY_TABLE} ORDER BY id ASC"
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [{"role": row[0], "content": row[1]} for row in rows]
 
     def _record_audit(
         self,
@@ -150,7 +188,8 @@ class SQLiteQueryStore:
             rows = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
             ).fetchall()
-        return [row[0] for row in rows if row[0] != _AUDIT_TABLE]
+        hidden = {_AUDIT_TABLE, _CHAT_HISTORY_TABLE}
+        return [row[0] for row in rows if row[0] not in hidden]
 
     def describe_schema(self) -> str:
         lines: List[str] = []

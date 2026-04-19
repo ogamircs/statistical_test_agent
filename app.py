@@ -59,6 +59,20 @@ def _ensure_chainlit_files_root() -> None:
     Path(".files").mkdir(exist_ok=True)
 
 
+def _session_query_store_path() -> str:
+    """Derive a stable per-Chainlit-session SQLite path so reconnects can
+    rehydrate persisted chat history. Falls back to the legacy random
+    UUID path when no session id is available.
+    """
+    session_id = cl.user_session.get("id")
+    if session_id is None:
+        from uuid import uuid4
+
+        session_id = uuid4().hex
+        cl.user_session.set("id", session_id)
+    return str(Path("output") / "query_store" / f"session-{session_id}.sqlite")
+
+
 def get_or_create_agent() -> ABTestingAgent:
     """
     Return the session agent, creating it lazily when missing.
@@ -67,10 +81,13 @@ def get_or_create_agent() -> ABTestingAgent:
     """
     agent = cl.user_session.get("agent")
     if agent is None:
-        agent = ABTestingAgent()
+        agent = ABTestingAgent(query_store_path=_session_query_store_path())
         cl.user_session.set("agent", agent)
         cl.user_session.set("uploaded_file", None)
-        logger.info("Created session agent")
+        logger.info(
+            "Created session agent (restored_history=%d)",
+            len(agent.session.state.chat_history),
+        )
     return agent
 
 
@@ -213,9 +230,13 @@ async def on_action_clear(action):
 # Enable file upload
 @cl.on_chat_resume
 async def on_chat_resume():
-    """Handle chat resume"""
-    agent = ABTestingAgent()
+    """Handle chat resume — rehydrate the agent from the persisted SQLite."""
+    agent = ABTestingAgent(query_store_path=_session_query_store_path())
     cl.user_session.set("agent", agent)
+    logger.info(
+        "Resumed chat session (restored_history=%d)",
+        len(agent.session.state.chat_history),
+    )
 
 
 # Configure Chainlit settings

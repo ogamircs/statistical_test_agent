@@ -65,6 +65,7 @@ class ABTestingAgent:
         model_name: str | None = None,
         temperature: float | None = None,
         config: Config | None = None,
+        query_store_path: str | None = None,
     ):
         self.config = config or Config.from_env()
         resolved_model = model_name if model_name is not None else self.config.llm_model
@@ -80,17 +81,36 @@ class ABTestingAgent:
             file_size_threshold_mb=self.config.file_size_threshold_mb,
         )
         self.visualizer = ABTestVisualizer()
-        self.session = AgentAnalysisSession(llm=self.llm)
+        session_kwargs: dict[str, Any] = {"llm": self.llm}
+        if query_store_path is not None:
+            session_kwargs["query_store_path"] = query_store_path
+        self.session = AgentAnalysisSession(**session_kwargs)
+        self._restore_chat_history_from_store()
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
             "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s, "
-            "file_size_threshold_mb=%.2f)",
+            "file_size_threshold_mb=%.2f, restored_history=%d)",
             resolved_model,
             resolved_temperature,
             PYSPARK_AVAILABLE,
             self.config.file_size_threshold_mb,
+            len(self.session.state.chat_history),
         )
+
+    def _restore_chat_history_from_store(self) -> None:
+        try:
+            persisted = self.session.query_store.load_chat_messages()
+        except Exception:
+            logger.exception("Failed to load persisted chat history; starting fresh")
+            return
+        for entry in persisted:
+            role = entry.get("role")
+            content = entry.get("content", "")
+            if role == "human":
+                self.session.state.chat_history.append(HumanMessage(content=content))
+            elif role == "ai":
+                self.session.state.chat_history.append(AIMessage(content=content))
 
     @property
     def analyzer(self) -> Any:
@@ -256,9 +276,11 @@ class ABTestingAgent:
         try:
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
+            self.session.query_store.save_chat_message("human", message)
             result = self.agent.invoke({"messages": self.chat_history})
             response = result["messages"][-1].content
             self.chat_history.append(AIMessage(content=response))
+            self.session.query_store.save_chat_message("ai", str(response))
             logger.info("Agent run completed (response_chars=%d)", len(str(response)))
             return response
         except Exception as e:
