@@ -255,6 +255,7 @@ If the user uploads a file WITHOUT mentioning auto/best guess:
 2. **Manual Configuration** - `load_csv` then `configure_and_analyze`: For users who want control
 3. **Generate visualizations** - Interactive charts after analysis
 4. **Answer questions about loaded data and computed results** - Use `answer_data_question` for questions like counts, segment totals, effect sizes, or other lookups after data has been loaded
+5. **Plan sample sizes BEFORE data exists** - Use `plan_sample_size` for "how many users do I need to detect a 5% lift at 80% power?" style questions. Pass JSON with `metric_type`, `mde`, and either `baseline_rate` (proportion) or `baseline_mean`+`baseline_std` (continuous).
 
 ## Workflow Decision Tree:
 1. User uploads file with "best guess"/"auto" keywords => `load_and_auto_analyze`
