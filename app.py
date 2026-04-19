@@ -16,12 +16,26 @@ import chainlit as cl
 from dotenv import load_dotenv
 
 from src import ABTestingAgent
+from src.auth import is_auth_enabled, verify_credentials
 from src.query_store_gc import run_startup_gc
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 run_startup_gc(Path("output") / "query_store")
+
+
+if is_auth_enabled():
+    @cl.password_auth_callback
+    def _auth(username: str, password: str):
+        identity = verify_credentials(username, password)
+        if identity is None:
+            return None
+        return cl.User(identifier=identity, metadata={"role": "user"})
+
+    logger.info("Chainlit password auth ENABLED via STATAGENT_AUTH_* env vars")
+else:
+    logger.info("Chainlit password auth disabled (set STATAGENT_AUTH_USERNAME and STATAGENT_AUTH_PASSWORD to enable)")
 
 
 def _ensure_chainlit_files_root() -> None:
