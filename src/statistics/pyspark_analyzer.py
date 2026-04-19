@@ -71,41 +71,43 @@ class SparkABTestResult(ABTestResult):
 
     @property
     def confidence_interval_lower(self) -> float:
-        return float(self.confidence_interval[0])
+        """Lower bound of ``confidence_interval`` (read-only).
 
-    @confidence_interval_lower.setter
-    def confidence_interval_lower(self, value: float) -> None:
-        self.confidence_interval = (float(value), float(self.confidence_interval[1]))
+        Derived from ``self.confidence_interval[0]``. The canonical
+        tuple field ``confidence_interval`` is the single source of
+        truth; mutate it directly to change this value.
+        """
+        return float(self.confidence_interval[0])
 
     @property
     def confidence_interval_upper(self) -> float:
-        return float(self.confidence_interval[1])
+        """Upper bound of ``confidence_interval`` (read-only).
 
-    @confidence_interval_upper.setter
-    def confidence_interval_upper(self, value: float) -> None:
-        self.confidence_interval = (float(self.confidence_interval[0]), float(value))
+        Derived from ``self.confidence_interval[1]``. The canonical
+        tuple field ``confidence_interval`` is the single source of
+        truth; mutate it directly to change this value.
+        """
+        return float(self.confidence_interval[1])
 
     @property
     def bayesian_credible_interval_lower(self) -> float:
-        return float(self.bayesian_credible_interval[0])
+        """Lower bound of ``bayesian_credible_interval`` (read-only).
 
-    @bayesian_credible_interval_lower.setter
-    def bayesian_credible_interval_lower(self, value: float) -> None:
-        self.bayesian_credible_interval = (
-            float(value),
-            float(self.bayesian_credible_interval[1]),
-        )
+        Derived from ``self.bayesian_credible_interval[0]``. The
+        canonical tuple field ``bayesian_credible_interval`` is the
+        single source of truth; mutate it directly to change this value.
+        """
+        return float(self.bayesian_credible_interval[0])
 
     @property
     def bayesian_credible_interval_upper(self) -> float:
-        return float(self.bayesian_credible_interval[1])
+        """Upper bound of ``bayesian_credible_interval`` (read-only).
 
-    @bayesian_credible_interval_upper.setter
-    def bayesian_credible_interval_upper(self, value: float) -> None:
-        self.bayesian_credible_interval = (
-            float(self.bayesian_credible_interval[0]),
-            float(value),
-        )
+        Derived from ``self.bayesian_credible_interval[1]``. The
+        canonical tuple field ``bayesian_credible_interval`` is the
+        single source of truth; mutate it directly to change this value.
+        """
+        return float(self.bayesian_credible_interval[1])
 
     def to_serializable_dict(self, include_legacy_aliases: bool = True) -> Dict[str, Any]:
         """Serialize result for persistence layers."""
