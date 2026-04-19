@@ -11,13 +11,13 @@ An intelligent agent that can:
 
 import asyncio
 import logging
-from typing import List, Any, Dict, Tuple
-from dotenv import load_dotenv
+from typing import Any, Dict, List, Tuple
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.prebuilt import create_react_agent
 import plotly.graph_objects as go
+from dotenv import load_dotenv
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
 
 from .agent_reporting import render_tool_error
 from .agent_runtime import AgentRuntime
@@ -328,4 +328,4 @@ if __name__ == "__main__":
             break
 
         response = agent.run(user_input)
-        print(f"\nAgent: {response}")
+        logger.info("Agent: %s", response)
