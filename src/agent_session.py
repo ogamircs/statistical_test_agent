@@ -10,6 +10,7 @@ from uuid import uuid4
 import pandas as pd
 
 from .query_store import SQLiteQueryStore
+from .query_store_gc import run_startup_gc
 from .sql_query_service import OpenAISQLPlanner, SQLQueryService
 from .statistics.models import to_ab_test_summary
 
@@ -51,6 +52,7 @@ class AgentAnalysisSession:
             if query_store_path is not None
             else Path("output") / "query_store" / f"session-{uuid4().hex}.sqlite"
         )
+        run_startup_gc(self.query_store_path.parent)
         self.query_store = query_store or SQLiteQueryStore(self.query_store_path)
 
         planner = sql_planner

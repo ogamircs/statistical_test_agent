@@ -16,9 +16,12 @@ import chainlit as cl
 from dotenv import load_dotenv
 
 from src import ABTestingAgent
+from src.query_store_gc import run_startup_gc
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+run_startup_gc(Path("output") / "query_store")
 
 
 def _ensure_chainlit_files_root() -> None:
