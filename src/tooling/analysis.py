@@ -22,9 +22,106 @@ from ..agent_reporting import (
     render_tool_error,
 )
 from ..statistics.power_analysis import calculate_required_sample_size
+from ..statistics.ratio_metric import delta_method_ratio_test
 from .common import ToolContext
 
 logger = logging.getLogger(__name__)
+
+
+_RATIO_METRIC_DESCRIPTION = (
+    "Run a delta-method significance test for a RATIO metric (revenue per user, "
+    "sessions per user, CTR-as-ratio-of-sums). Use this when each row has a "
+    "numerator and a denominator that vary by user — the standard t-test on the "
+    "user-level ratio is biased; this tool computes sum(num)/sum(denom) per arm "
+    "and the variance via the delta method.\n\n"
+    "Input: JSON object with `numerator` (column name), `denominator` (column "
+    "name), and optional `segment` (filter to one segment). Requires data to be "
+    "loaded with the standard group column already mapped."
+)
+
+
+def _ratio_metric_impl(context: ToolContext, payload: str) -> str:
+    try:
+        try:
+            params = json.loads(payload) if isinstance(payload, str) else dict(payload)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                f"compute_ratio_metric input must be a JSON object: {exc}",
+            ) from exc
+
+        numerator_col = params.get("numerator")
+        denominator_col = params.get("denominator")
+        if not numerator_col or not denominator_col:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                "compute_ratio_metric requires `numerator` and `denominator` columns.",
+            )
+
+        analyzer = context.active_analyzer()
+        df = context.require_pandas_dataframe(analyzer, "compute_ratio_metric")
+        mapping = getattr(analyzer, "column_mapping", {}) or {}
+        group_col = mapping.get("group")
+        treatment_label = getattr(analyzer, "treatment_label", None)
+        control_label = getattr(analyzer, "control_label", None)
+        if not group_col or treatment_label is None or control_label is None:
+            raise AgentUserFacingError(
+                "GROUP_LABELS_NOT_SET",
+                "Configure the group column and treatment/control labels first.",
+            )
+        for col in (numerator_col, denominator_col, group_col):
+            if col not in df.columns:
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    f"Column `{col}` not found in the loaded dataframe.",
+                )
+
+        segment = params.get("segment")
+        scoped = df
+        if segment:
+            segment_col = mapping.get("segment")
+            if not segment_col or segment_col not in df.columns:
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    "Cannot filter by segment: no segment column configured.",
+                )
+            scoped = df[df[segment_col] == segment]
+
+        treatment = scoped[scoped[group_col] == treatment_label]
+        control = scoped[scoped[group_col] == control_label]
+
+        result = delta_method_ratio_test(
+            treatment_numerator=treatment[numerator_col].dropna().to_numpy(),
+            treatment_denominator=treatment[denominator_col].dropna().to_numpy(),
+            control_numerator=control[numerator_col].dropna().to_numpy(),
+            control_denominator=control[denominator_col].dropna().to_numpy(),
+            significance_level=getattr(analyzer, "significance_level", 0.05),
+        )
+
+        ci_lo, ci_hi = result.confidence_interval
+        scope_str = f"segment={segment}" if segment else "overall"
+        lines = [
+            f"## Ratio Metric: {numerator_col} / {denominator_col} ({scope_str})",
+            "",
+            f"- Treatment ratio: **{result.treatment_ratio:.6f}** (n={result.treatment_n:,})",
+            f"- Control ratio:   **{result.control_ratio:.6f}** (n={result.control_n:,})",
+            f"- Absolute diff:   **{result.absolute_diff:+.6f}**",
+            f"- Relative diff:   **{result.relative_diff:+.2%}**",
+            f"- 95% CI on diff:  [{ci_lo:+.6f}, {ci_hi:+.6f}]",
+            f"- z = {result.z_statistic:.4f}, p = {result.p_value:.6f}, SE = {result.standard_error:.6f}",
+            f"- Significant (p < 0.05): {'YES' if result.is_significant else 'NO'}",
+        ]
+        if result.reason:
+            lines.append(f"- Note: {result.reason}")
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.exception("compute_ratio_metric failed")
+        return render_tool_error(
+            "Error computing ratio metric",
+            exc,
+            default_code="RATIO_METRIC_FAILED",
+            default_message="Unable to compute the ratio metric.",
+        )
 
 
 _PLAN_SAMPLE_SIZE_DESCRIPTION = (
@@ -361,5 +458,10 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
             name="plan_sample_size",
             func=_plan_sample_size_impl,
             description=_PLAN_SAMPLE_SIZE_DESCRIPTION,
+        ),
+        Tool(
+            name="compute_ratio_metric",
+            func=lambda payload: _ratio_metric_impl(context, payload),
+            description=_RATIO_METRIC_DESCRIPTION,
         ),
     ]

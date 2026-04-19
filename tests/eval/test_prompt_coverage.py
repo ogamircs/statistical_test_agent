@@ -19,6 +19,7 @@ KNOWN_AGENT_TOOLS = {
     "auto_configure_and_analyze",
     "generate_charts",
     "show_distribution_chart",
+    "compute_ratio_metric",
 }
 
 
