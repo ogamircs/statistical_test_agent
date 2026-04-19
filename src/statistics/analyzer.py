@@ -433,16 +433,11 @@ class ABTestAnalyzer:
         treatment_mean = effect_metrics["treatment_mean"]
         control_mean = effect_metrics["control_mean"]
         effect_size = effect_metrics["effect_size"]
-        t_stat = effect_metrics["t_statistic"]
         p_value = effect_metrics["p_value"]
         confidence_interval = effect_metrics["confidence_interval"]
         metric_type_selected = effect_metrics.get("metric_type", "continuous")
         model_type = effect_metrics.get("model_type", "ols_hc3")
         model_effect = effect_metrics.get("model_effect", effect_size)
-        model_confidence_interval = effect_metrics.get(
-            "model_confidence_interval",
-            confidence_interval,
-        )
         model_effect_scale = effect_metrics.get("model_effect_scale", "mean_difference")
         model_effect_exponentiated = effect_metrics.get("model_effect_exponentiated", 1.0)
         t_test_diagnostics = effect_metrics.get("diagnostics", {})

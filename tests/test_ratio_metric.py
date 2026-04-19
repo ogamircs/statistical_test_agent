@@ -6,7 +6,6 @@ import json
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from src.statistics.ratio_metric import delta_method_ratio_test
 
@@ -78,8 +77,6 @@ def test_zero_denominator_returns_zero_ratio_safely() -> None:
 
 
 def test_compute_ratio_metric_tool_returns_markdown() -> None:
-    monkeypatch_kept_clean = False  # noqa: F841
-    monkeypatch_kept_clean = True  # silence ruff
     import os
 
     os.environ.setdefault("OPENAI_API_KEY", "test-key-not-real")
