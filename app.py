@@ -18,9 +18,11 @@ from dotenv import load_dotenv
 from src import ABTestingAgent
 from src.auth import is_auth_enabled, verify_credentials
 from src.config import Config
+from src.observability import configure_json_logging
 from src.query_store_gc import run_startup_gc
 
 load_dotenv()
+configure_json_logging()
 logger = logging.getLogger(__name__)
 
 _STARTUP_CONFIG = Config.from_env()

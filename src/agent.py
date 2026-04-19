@@ -24,6 +24,7 @@ from .agent_runtime import AgentRuntime
 from .agent_session import AgentAnalysisSession
 from .agent_tools import create_agent_tools
 from .config import Config
+from .observability import TokenUsageCallback
 from .prompts import PROMPT_VERSION, load_system_prompt
 from .statistics import ABTestAnalyzer, ABTestVisualizer
 
@@ -73,7 +74,12 @@ class ABTestingAgent:
             temperature if temperature is not None else self.config.llm_temperature
         )
 
-        self.llm = ChatOpenAI(model=resolved_model, temperature=resolved_temperature)
+        self.token_usage = TokenUsageCallback()
+        self.llm = ChatOpenAI(
+            model=resolved_model,
+            temperature=resolved_temperature,
+            callbacks=[self.token_usage],
+        )
         self.runtime = AgentRuntime(
             analyzer=ABTestAnalyzer(),
             spark_factory=self._create_spark_backend,
@@ -274,6 +280,7 @@ class ABTestingAgent:
         Chainlit wraps this with ``cl.make_async(agent.run)`` for async dispatch.
         """
         try:
+            self.token_usage.reset()
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
             self.session.query_store.save_chat_message("human", message)
@@ -281,7 +288,16 @@ class ABTestingAgent:
             response = result["messages"][-1].content
             self.chat_history.append(AIMessage(content=response))
             self.session.query_store.save_chat_message("ai", str(response))
-            logger.info("Agent run completed (response_chars=%d)", len(str(response)))
+            usage = self.token_usage.snapshot()
+            logger.info(
+                "Agent run completed (response_chars=%d, llm_calls=%d, "
+                "prompt_tokens=%d, completion_tokens=%d, total_tokens=%d)",
+                len(str(response)),
+                usage["calls"],
+                usage["prompt_tokens"],
+                usage["completion_tokens"],
+                usage["total_tokens"],
+            )
             return response
         except Exception as e:
             logger.exception("Agent run failed")
