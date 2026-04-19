@@ -433,6 +433,10 @@ def _format_segment_diagnostics(result: Any) -> List[str]:
             "consider winsorized or trimmed estimates."
         )
 
+    duplicates = quality.get("duplicate_units", {}) if isinstance(quality, dict) else {}
+    if duplicates and duplicates.get("has_duplicates") and duplicates.get("warning"):
+        findings.append(duplicates["warning"])
+
     return findings
 
 

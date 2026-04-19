@@ -23,6 +23,7 @@ from statsmodels.stats.multitest import multipletests
 
 from .covariate_resolver import CovariateResolver
 from .data_manager import ABTestDataManager
+from .diagnostics import detect_duplicate_units
 from .models import AATestResult, ABTestResult
 from .power_analysis import calculate_minimum_detectable_effect
 from .segment_preparer import SegmentPreparer, _PreparedSegmentData
@@ -325,8 +326,16 @@ class ABTestAnalyzer:
         srm_diagnostics: Dict[str, Any],
         assumption_diagnostics: Dict[str, Any],
         outlier_sensitivity: Dict[str, Any],
+        duplicate_units: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Assemble the nested diagnostics payload returned on each segment result."""
+        experiment_quality: Dict[str, Any] = {
+            "srm": srm_diagnostics,
+            "assumptions": assumption_diagnostics,
+            "outlier_sensitivity": outlier_sensitivity,
+        }
+        if duplicate_units is not None:
+            experiment_quality["duplicate_units"] = duplicate_units
         return {
             "frequentist": {
                 "t_test": t_test_diagnostics,
@@ -344,11 +353,7 @@ class ABTestAnalyzer:
                 },
                 "covariate_adjusted": covariate_adjusted_diagnostics,
             },
-            "experiment_quality": {
-                "srm": srm_diagnostics,
-                "assumptions": assumption_diagnostics,
-                "outlier_sensitivity": outlier_sensitivity,
-            },
+            "experiment_quality": experiment_quality,
         }
 
     def run_ab_test(
@@ -524,6 +529,13 @@ class ABTestAnalyzer:
             baseline_effect=effect_size,
         )
 
+        customer_col = self.data_manager.column_mapping.get("customer_id")
+        duplicate_units = detect_duplicate_units(
+            df=selection.df_filtered,
+            customer_col=customer_col,
+            group_col=selection.group_col,
+        )
+
         diagnostics = self._build_experiment_diagnostics(
             metric_type_selected=metric_type_selected,
             model_type=model_type,
@@ -540,6 +552,7 @@ class ABTestAnalyzer:
             srm_diagnostics=srm_diagnostics,
             assumption_diagnostics=assumption_diagnostics,
             outlier_sensitivity=outlier_sensitivity,
+            duplicate_units=duplicate_units,
         )
 
         if proportion_is_significant and proportion_diff > 0:
