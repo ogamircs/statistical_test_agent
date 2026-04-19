@@ -152,6 +152,57 @@ def test_runtime_falls_back_to_pandas_when_spark_load_fails(monkeypatch, tmp_pat
     assert len(pandas_analyzer.load_calls) == 1
 
 
+def test_get_file_size_mb_returns_size_for_existing_file(tmp_path: Path) -> None:
+    runtime = AgentRuntime(
+        analyzer=_FakeAnalyzer(),
+        spark_factory=None,
+        spark_available=lambda: False,
+    )
+    target = tmp_path / "sample.csv"
+    payload = b"x" * (1024 * 1024 + 256)
+    target.write_bytes(payload)
+
+    size_mb = runtime.get_file_size_mb(str(target))
+
+    assert size_mb == pytest.approx(len(payload) / (1024 * 1024))
+
+
+def test_get_file_size_mb_warns_on_missing_file_and_returns_zero(tmp_path, caplog) -> None:
+    runtime = AgentRuntime(
+        analyzer=_FakeAnalyzer(),
+        spark_factory=None,
+        spark_available=lambda: False,
+    )
+    missing = tmp_path / "does_not_exist.csv"
+
+    with caplog.at_level("WARNING", logger="src.agent_runtime"):
+        size_mb = runtime.get_file_size_mb(str(missing))
+
+    assert size_mb == 0.0
+    assert any(
+        "get_file_size_mb failed" in rec.message and str(missing) in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_get_file_size_mb_propagates_unexpected_exception(monkeypatch) -> None:
+    import os as _os
+
+    runtime = AgentRuntime(
+        analyzer=_FakeAnalyzer(),
+        spark_factory=None,
+        spark_available=lambda: False,
+    )
+
+    def _boom(_path):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_os.path, "getsize", _boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        runtime.get_file_size_mb("/anything")
+
+
 def test_runtime_normalizes_shape_from_row_count_and_columns() -> None:
     runtime = AgentRuntime(
         analyzer=_FakeAnalyzer(),
