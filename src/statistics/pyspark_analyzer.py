@@ -32,6 +32,7 @@ from pyspark.sql import functions as F
 
 from ..agent_reporting import AgentUserFacingError
 from .label_inference import infer_group_labels
+from .diagnostics import run_srm_diagnostics
 from .models import ABTestResult
 from .summary_builder import ABTestSummaryBuilder
 
@@ -726,6 +727,63 @@ class PySparkABTestAnalyzer:
             "total_effect": float(total_effect)
         }
 
+    def _build_diagnostics_payload(
+        self,
+        *,
+        n_t: int,
+        n_c: int,
+        var_t: float,
+        var_c: float,
+    ) -> Dict[str, Any]:
+        """Compute scalar-only experiment-quality diagnostics for the Spark backend.
+
+        Surfaces SRM (sample-ratio mismatch) and a variance-ratio heuristic
+        without touching executors. Distributional checks (normality,
+        outlier sensitivity) intentionally remain a TODO for the Spark
+        path — they require driver-side sampling and are not free.
+        """
+        srm = run_srm_diagnostics(
+            treatment_size=int(n_t),
+            control_size=int(n_c),
+            significance_level=float(self.significance_level),
+            expected_treatment_ratio=0.5,
+        )
+
+        var_t_safe = max(float(var_t), 0.0)
+        var_c_safe = max(float(var_c), 0.0)
+        if var_t_safe == 0 or var_c_safe == 0:
+            variance_ratio = 0.0
+            variance_passed: Optional[bool] = None
+        else:
+            variance_ratio = max(var_t_safe, var_c_safe) / min(var_t_safe, var_c_safe)
+            variance_passed = variance_ratio < 4.0  # standard rule-of-thumb gate
+
+        assumptions = {
+            "normality_test": "not_applicable_spark",
+            "treatment_normality_p_value": None,
+            "control_normality_p_value": None,
+            "treatment_normality_passed": None,
+            "control_normality_passed": None,
+            "variance_test": "variance_ratio_heuristic",
+            "equal_variance_p_value": None,
+            "equal_variance_passed": variance_passed,
+            "variance_ratio": variance_ratio,
+            "variance_reason": "scipy.levene requires raw arrays; Spark backend uses scalar variance ratio (rule-of-thumb threshold 4.0)",
+        }
+
+        return {
+            "frequentist": {},
+            "experiment_quality": {
+                "srm": srm,
+                "assumptions": assumptions,
+                "outlier_sensitivity": {
+                    "is_applicable": False,
+                    "is_sensitive": False,
+                    "reason": "spark_outlier_sensitivity_not_implemented",
+                },
+            },
+        }
+
     def run_ab_test(
         self,
         segment_filter: Optional[str] = None,
@@ -849,6 +907,16 @@ class PySparkABTestAnalyzer:
 
         pooled_std = np.sqrt(((n_t - 1) * var_t + (n_c - 1) * var_c) / (n_t + n_c - 2))
 
+        diagnostics_payload = self._build_diagnostics_payload(
+            n_t=n_t, n_c=n_c, var_t=var_t, var_c=var_c
+        )
+        srm_mismatch = bool(
+            diagnostics_payload["experiment_quality"]["srm"].get("is_sample_ratio_mismatch", False)
+        )
+        if srm_mismatch:
+            is_significant = False
+            prop_is_significant = False
+
         return SparkABTestResult(
             segment=segment_name,
             treatment_size=n_t,
@@ -896,7 +964,9 @@ class PySparkABTestAnalyzer:
             bayesian_relative_uplift=bayesian_results["relative_uplift"],
             bayesian_is_significant=bayesian_is_significant,
             bayesian_total_effect=bayesian_results["total_effect"],
-            bayesian_total_effect_per_customer=bayesian_results["total_effect"] / n_t if n_t > 0 else 0.0
+            bayesian_total_effect_per_customer=bayesian_results["total_effect"] / n_t if n_t > 0 else 0.0,
+            inference_guardrail_triggered=srm_mismatch,
+            diagnostics=diagnostics_payload,
         )
 
     def run_segmented_analysis(
