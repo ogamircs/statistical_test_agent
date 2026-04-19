@@ -126,6 +126,92 @@ class SparkABTestResult(ABTestResult):
         return payload
 
 
+@dataclass
+class SparkColumnDetector:
+    """Schema-only role detector for the Spark backend.
+
+    Pure-Python pattern matching over column names; no SparkSession or
+    DataFrame access required. The owning analyzer hands in the column
+    list and the names that resolve to numeric types so this class stays
+    independently testable.
+    """
+
+    columns: List[str]
+    numeric_columns: List[str]
+
+    _ID_PATTERNS = (
+        "customer_id", "customerid", "user_id", "userid", "id", "customer",
+    )
+    _GROUP_PATTERNS = (
+        "group", "treatment", "control", "variant", "test_group",
+        "experiment_group", "ab_group",
+    )
+    _PRE_EFFECT_PATTERNS = (
+        "pre_effect", "pre_value", "pre_revenue", "baseline", "before",
+    )
+    _EFFECT_PATTERNS = (
+        "effect", "value", "metric", "outcome", "result",
+        "conversion", "revenue", "amount", "score",
+    )
+    _SEGMENT_PATTERNS = (
+        "segment", "category", "tier", "type", "cohort", "cluster", "group_name",
+    )
+    _DURATION_PATTERNS = (
+        "duration", "days", "period", "time", "length", "exposure",
+    )
+
+    def detect(self) -> Dict[str, List[str]]:
+        suggestions: Dict[str, List[str]] = {
+            "customer_id": [],
+            "group": [],
+            "pre_effect": [],
+            "post_effect": [],
+            "effect_value": [],
+            "segment": [],
+            "duration": [],
+        }
+        columns_lower = [col.lower() for col in self.columns]
+        numeric_set = set(self.numeric_columns)
+
+        for original, lower in zip(self.columns, columns_lower):
+            if any(pat in lower for pat in self._ID_PATTERNS):
+                suggestions["customer_id"].append(original)
+            if any(pat in lower for pat in self._GROUP_PATTERNS):
+                suggestions["group"].append(original)
+            if (
+                any(pat in lower for pat in self._PRE_EFFECT_PATTERNS)
+                and original in numeric_set
+            ):
+                suggestions["pre_effect"].append(original)
+            if ("post_" in lower or lower == "post_effect") and original in numeric_set:
+                suggestions["post_effect"].append(original)
+            if (
+                any(pat in lower for pat in self._EFFECT_PATTERNS)
+                and original in numeric_set
+                and original not in suggestions["pre_effect"]
+            ):
+                suggestions["effect_value"].append(original)
+            if any(pat in lower for pat in self._SEGMENT_PATTERNS):
+                if lower not in {c.lower() for c in suggestions["group"]}:
+                    suggestions["segment"].append(original)
+            if any(pat in lower for pat in self._DURATION_PATTERNS):
+                suggestions["duration"].append(original)
+
+        if not suggestions["post_effect"] and not suggestions["effect_value"]:
+            excluded = set(
+                suggestions["customer_id"]
+                + suggestions["group"]
+                + suggestions["pre_effect"]
+                + suggestions["segment"]
+                + suggestions["duration"]
+            )
+            for column in self.numeric_columns:
+                if column not in excluded:
+                    suggestions["effect_value"].append(column)
+
+        return suggestions
+
+
 class PySparkABTestAnalyzer:
     """
     Distributed A/B Test Analyzer using PySpark
@@ -205,92 +291,24 @@ class PySparkABTestAnalyzer:
         self.df.cache()
 
     def detect_columns(self) -> Dict[str, List[str]]:
-        """
-        Auto-detect column types based on naming patterns
-        Uses Spark native operations for schema inspection
+        """Auto-detect column roles based on naming patterns.
+
+        Delegates to ``SparkColumnDetector``; this method only handles
+        the loaded-data check and the Spark-schema → primitives shim.
         """
         if self.df is None:
             raise ValueError("No data loaded. Call load_data() first.")
 
-        columns = self.df.columns
-        columns_lower = [col.lower() for col in columns]
-        schema = self.df.schema
-
-        suggestions = {
-            "customer_id": [],
-            "group": [],
-            "pre_effect": [],
-            "post_effect": [],
-            "effect_value": [],
-            "segment": [],
-            "duration": []
-        }
-
-        # Get numeric columns
-        numeric_types = ["int", "bigint", "long", "double", "float", "decimal"]
+        numeric_types = ("int", "bigint", "long", "double", "float", "decimal")
         numeric_columns = [
-            field.name for field in schema.fields
+            field.name
+            for field in self.df.schema.fields
             if any(t in str(field.dataType).lower() for t in numeric_types)
         ]
-
-        # Customer ID patterns
-        id_patterns = ['customer_id', 'customerid', 'user_id', 'userid', 'id', 'customer']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in id_patterns):
-                suggestions["customer_id"].append(columns[i])
-
-        # Group patterns
-        group_patterns = ['group', 'treatment', 'control', 'variant', 'test_group', 'experiment_group', 'ab_group']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in group_patterns):
-                suggestions["group"].append(columns[i])
-
-        # Pre-effect patterns
-        pre_patterns = ['pre_effect', 'pre_value', 'pre_revenue', 'baseline', 'before']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in pre_patterns):
-                if columns[i] in numeric_columns:
-                    suggestions["pre_effect"].append(columns[i])
-
-        # Post-effect patterns
-        for i, col in enumerate(columns_lower):
-            if 'post_' in col or col == 'post_effect':
-                if columns[i] in numeric_columns:
-                    suggestions["post_effect"].append(columns[i])
-
-        # Legacy effect patterns
-        effect_patterns = ['effect', 'value', 'metric', 'outcome', 'result', 'conversion', 'revenue', 'amount', 'score']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in effect_patterns):
-                if columns[i] in numeric_columns and columns[i] not in suggestions["pre_effect"]:
-                    suggestions["effect_value"].append(columns[i])
-
-        # Segment patterns
-        segment_patterns = ['segment', 'category', 'tier', 'type', 'cohort', 'cluster', 'group_name']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in segment_patterns):
-                if col not in [c.lower() for c in suggestions["group"]]:
-                    suggestions["segment"].append(columns[i])
-
-        # Duration patterns
-        duration_patterns = ['duration', 'days', 'period', 'time', 'length', 'exposure']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in duration_patterns):
-                suggestions["duration"].append(columns[i])
-
-        if not suggestions["post_effect"] and not suggestions["effect_value"]:
-            excluded = set(
-                suggestions["customer_id"]
-                + suggestions["group"]
-                + suggestions["pre_effect"]
-                + suggestions["segment"]
-                + suggestions["duration"]
-            )
-            for column in numeric_columns:
-                if column not in excluded:
-                    suggestions["effect_value"].append(column)
-
-        return suggestions
+        return SparkColumnDetector(
+            columns=list(self.df.columns),
+            numeric_columns=numeric_columns,
+        ).detect()
 
     def set_column_mapping(self, mapping: Dict[str, str]) -> None:
         """Set column mapping for analysis"""
