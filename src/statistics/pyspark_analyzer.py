@@ -21,6 +21,7 @@ Performance Notes:
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -37,6 +38,14 @@ from .models import ABTestResult
 from .summary_builder import ABTestSummaryBuilder
 
 logger = logging.getLogger(__name__)
+
+
+_SPARK_QUERY_VIEW = "ab_test_data"
+_SPARK_QUERY_DEFAULT_LIMIT = 1000
+_SPARK_QUERY_FORBIDDEN = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalize_spark_result_value(value: Any) -> Any:
@@ -328,12 +337,58 @@ class PySparkABTestAnalyzer:
         values = [row[0] for row in self.df.select(group_col).distinct().collect()]
         return {"group_column": group_col, "unique_values": values}
 
-    def query_data(self, query: str):
-        """Spark backend does not support pandas-query semantics."""
-        raise AgentUserFacingError(
-            "BACKEND_OPERATION_UNSUPPORTED",
-            "Querying data is not supported for the active backend (spark).",
-        )
+    def query_data(self, query: str, *, max_rows: int | None = None):
+        """Run a read-only Spark SQL filter against the loaded DataFrame.
+
+        Two input shapes are accepted:
+          * a bare WHERE clause (e.g. ``experiment_group = 'treatment' AND post_effect > 50``)
+            is wrapped as ``SELECT * FROM ab_test_data WHERE {clause}``.
+          * a full ``SELECT ... FROM ab_test_data ...`` query is run as-is.
+
+        DML and DDL keywords are blocked. Result is capped at ``max_rows``
+        (default 1000) and returned as a pandas DataFrame so existing
+        callers don't have to learn Spark types.
+        """
+        if self.df is None:
+            raise AgentUserFacingError(
+                "DATA_NOT_LOADED",
+                "Load a CSV before running queries.",
+            )
+
+        cleaned = (query or "").strip()
+        if not cleaned:
+            raise AgentUserFacingError(
+                "INVALID_QUERY",
+                "Query string is empty.",
+            )
+        if _SPARK_QUERY_FORBIDDEN.search(cleaned):
+            raise AgentUserFacingError(
+                "INVALID_QUERY",
+                "Spark query rejected: only read-only SELECT/WHERE expressions are allowed.",
+            )
+
+        cleaned = cleaned.rstrip(";").strip()
+
+        if not re.match(r"(?i)^\s*select\b", cleaned):
+            sql = f"SELECT * FROM {_SPARK_QUERY_VIEW} WHERE {cleaned}"
+        else:
+            sql = cleaned
+
+        limit = int(max_rows) if max_rows is not None else _SPARK_QUERY_DEFAULT_LIMIT
+        if limit <= 0:
+            raise AgentUserFacingError("INVALID_QUERY", "max_rows must be > 0.")
+
+        try:
+            self.df.createOrReplaceTempView(_SPARK_QUERY_VIEW)
+            spark_result = self.spark.sql(sql).limit(limit)
+            return spark_result.toPandas()
+        except AgentUserFacingError:
+            raise
+        except Exception as exc:
+            raise AgentUserFacingError(
+                "INVALID_QUERY",
+                f"Spark SQL execution failed: {exc}",
+            ) from exc
 
     def get_data_summary(self) -> Dict[str, Any]:
         """Return high-level profiling summary for the active Spark DataFrame."""
