@@ -84,4 +84,6 @@ output/
 !docs/testing.md
 !docs/TODO.md
 !docs/deployment.md
+!src/prompts/
+!src/prompts/*.md
 docs/plans/

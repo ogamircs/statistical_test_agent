@@ -61,6 +61,10 @@ jobs:
         run: |
           pytest -q -ra
 
+      - name: Golden-task prompt coverage
+        run: |
+          pytest -q tests/eval/test_prompt_coverage.py
+
   spark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
