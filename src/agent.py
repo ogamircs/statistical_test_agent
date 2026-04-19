@@ -23,6 +23,7 @@ from .agent_reporting import render_tool_error
 from .agent_runtime import AgentRuntime
 from .agent_session import AgentAnalysisSession
 from .agent_tools import create_agent_tools
+from .config import Config
 from .statistics import ABTestAnalyzer, ABTestVisualizer
 
 # Try to import PySpark analyzer (optional dependency)
@@ -58,23 +59,36 @@ class ABTestingAgent:
             raise RuntimeError("PySpark is not available in this environment")
         return PySparkABTestAnalyzer()
 
-    def __init__(self, model_name: str = "gpt-5.2", temperature: float = 0):
-        self.llm = ChatOpenAI(model=model_name, temperature=temperature)
+    def __init__(
+        self,
+        model_name: str | None = None,
+        temperature: float | None = None,
+        config: Config | None = None,
+    ):
+        self.config = config or Config.from_env()
+        resolved_model = model_name if model_name is not None else self.config.llm_model
+        resolved_temperature = (
+            temperature if temperature is not None else self.config.llm_temperature
+        )
+
+        self.llm = ChatOpenAI(model=resolved_model, temperature=resolved_temperature)
         self.runtime = AgentRuntime(
             analyzer=ABTestAnalyzer(),
             spark_factory=self._create_spark_backend,
             spark_available=lambda: PYSPARK_AVAILABLE,
-            file_size_threshold_mb=2.0,
+            file_size_threshold_mb=self.config.file_size_threshold_mb,
         )
         self.visualizer = ABTestVisualizer()
         self.session = AgentAnalysisSession(llm=self.llm)
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
-            "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s)",
-            model_name,
-            temperature,
+            "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s, "
+            "file_size_threshold_mb=%.2f)",
+            resolved_model,
+            resolved_temperature,
             PYSPARK_AVAILABLE,
+            self.config.file_size_threshold_mb,
         )
 
     @property

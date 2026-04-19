@@ -17,10 +17,26 @@ from dotenv import load_dotenv
 
 from src import ABTestingAgent
 from src.auth import is_auth_enabled, verify_credentials
+from src.config import Config
 from src.query_store_gc import run_startup_gc
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+_STARTUP_CONFIG = Config.from_env()
+try:
+    _STARTUP_CONFIG.validate()
+    logger.info(
+        "Startup config: model=%s temperature=%s file_size_threshold_mb=%.2f "
+        "sql_row_limit=%d query_timeout_s=%.1f",
+        _STARTUP_CONFIG.llm_model,
+        _STARTUP_CONFIG.llm_temperature,
+        _STARTUP_CONFIG.file_size_threshold_mb,
+        _STARTUP_CONFIG.sql_default_row_limit,
+        _STARTUP_CONFIG.query_timeout_seconds,
+    )
+except ValueError:
+    logger.exception("Startup Config validation failed; continuing with defaults")
 
 run_startup_gc(Path("output") / "query_store")
 
