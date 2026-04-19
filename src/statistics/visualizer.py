@@ -9,7 +9,7 @@ Creates clean, interactive Plotly charts for A/B test results:
 - Confidence intervals
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import plotly.graph_objects as go

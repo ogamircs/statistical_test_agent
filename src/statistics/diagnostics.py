@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 import numpy as np
-from scipy.stats import chisquare, kurtosis, levene, normaltest, shapiro, skew, trim_mean
+from scipy.stats import chisquare, levene, normaltest, shapiro, trim_mean
 from scipy.stats.mstats import winsorize
 
 from .engine_helpers import sanitize_numeric, sanitize_p_value

@@ -11,7 +11,6 @@ import hmac
 import os
 from typing import Optional
 
-
 _USERNAME_ENV = "STATAGENT_AUTH_USERNAME"
 _PASSWORD_ENV = "STATAGENT_AUTH_PASSWORD"
 

@@ -1,7 +1,8 @@
 """Verify both analyzer backends satisfy the shared protocol."""
 import pytest
-from src.statistics.analyzer_protocol import ABAnalyzerProtocol
+
 from src.statistics.analyzer import ABTestAnalyzer
+from src.statistics.analyzer_protocol import ABAnalyzerProtocol
 
 
 def test_pandas_analyzer_satisfies_protocol():

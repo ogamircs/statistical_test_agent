@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, List, Protocol, Sequence
+from typing import Any, List, Protocol
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage

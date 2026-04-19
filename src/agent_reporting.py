@@ -6,11 +6,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from .output_truncation import DEFAULT_LLM_ROW_LIMIT, truncate_dataframe_for_llm
-
 import pandas as pd
 
 from src.statistics.models import to_ab_test_summary
+
+from .output_truncation import DEFAULT_LLM_ROW_LIMIT, truncate_dataframe_for_llm
 
 
 @dataclass(frozen=True)

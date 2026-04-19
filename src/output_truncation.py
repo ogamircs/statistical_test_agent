@@ -10,7 +10,6 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
-
 DEFAULT_LLM_ROW_LIMIT = 20
 
 

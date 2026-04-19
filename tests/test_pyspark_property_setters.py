@@ -26,7 +26,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Property names to verify — confirmed by reading
 # src/statistics/pyspark_analyzer.py.
 PROPERTY_NAMES = (

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -17,7 +18,6 @@ from .statistics.models import (
     to_ab_test_summary,
     to_segment_analysis_failure,
 )
-
 
 _AUDIT_TABLE = "_query_audit"
 _DEFAULT_QUERY_TIMEOUT_SECONDS = 5.0

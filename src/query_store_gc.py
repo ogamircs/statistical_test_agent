@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from typing import Dict, List
 
-
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_AGE_DAYS = 7
