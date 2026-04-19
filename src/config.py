@@ -12,7 +12,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-
 _DEFAULT_LLM_MODEL = "gpt-5.2"
 _DEFAULT_LLM_TEMPERATURE = 0.0
 _DEFAULT_FILE_SIZE_THRESHOLD_MB = 2.0

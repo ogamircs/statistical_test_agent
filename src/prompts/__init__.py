@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from importlib import resources
 
-
 PROMPT_VERSION = "2026-04-19.2"
 
 
