@@ -28,8 +28,17 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import functions as F
+
+try:  # PySpark is an optional extra; driver-only helpers must stay importable
+    from pyspark.sql import DataFrame, SparkSession
+    from pyspark.sql import functions as F
+
+    PYSPARK_RUNTIME_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised only in non-Spark CI envs
+    DataFrame = Any  # type: ignore[assignment,misc]
+    SparkSession = Any  # type: ignore[assignment,misc]
+    F = None  # type: ignore[assignment]
+    PYSPARK_RUNTIME_AVAILABLE = False
 
 from ..agent_reporting import AgentUserFacingError
 from .diagnostics import run_srm_diagnostics
@@ -248,6 +257,11 @@ class PySparkABTestAnalyzer:
             power_threshold: Minimum statistical power (default: 0.8)
             seed: Driver-side RNG seed for the Monte Carlo Bayesian sampler.
         """
+        if not PYSPARK_RUNTIME_AVAILABLE:
+            raise RuntimeError(
+                "PySpark is not installed. Install the `spark` extra to use the "
+                "PySparkABTestAnalyzer backend."
+            )
         self.spark = spark or SparkSession.builder.appName("ABTestingAnalyzer").getOrCreate()
         self.significance_level = significance_level
         self.power_threshold = power_threshold
