@@ -90,7 +90,11 @@ class ABTestingAgent:
             file_size_threshold_mb=self.config.file_size_threshold_mb,
         )
         self.visualizer = ABTestVisualizer()
-        session_kwargs: dict[str, Any] = {"llm": self.llm}
+        session_kwargs: dict[str, Any] = {
+            "llm": self.llm,
+            "query_timeout_seconds": self.config.query_timeout_seconds,
+            "sql_default_row_limit": self.config.sql_default_row_limit,
+        }
         if query_store_path is not None:
             session_kwargs["query_store_path"] = query_store_path
         self.session = AgentAnalysisSession(**session_kwargs)
@@ -320,8 +324,17 @@ class ABTestingAgent:
         return await asyncio.to_thread(self.run, message)
 
     def clear_memory(self):
-        """Clear conversation memory"""
+        """Clear conversation memory (both in-memory and persisted SQLite).
+
+        Without the persisted wipe, a reconnect would re-hydrate the old
+        turns through _restore_chat_history_from_store and resurrect the
+        conversation the user just asked to clear.
+        """
         self.session.state.clear_chat_history()
+        try:
+            self.session.query_store.clear_chat_messages()
+        except Exception:
+            logger.exception("Failed to wipe persisted chat history")
 
 
 if __name__ == "__main__":

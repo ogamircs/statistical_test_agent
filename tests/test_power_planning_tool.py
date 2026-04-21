@@ -30,7 +30,8 @@ def test_plan_sample_size_proportion_returns_markdown() -> None:
         significance_level=0.05,
     )
 
-    assert "Required sample size per arm" in output
+    assert "Treatment arm" in output
+    assert "Control arm" in output
     assert (str(expected) in output) or (f"{expected:,}" in output)
 
 
@@ -53,7 +54,8 @@ def test_plan_sample_size_continuous_returns_markdown() -> None:
         significance_level=0.05,
     )
 
-    assert "Required sample size per arm" in output
+    assert "Treatment arm" in output
+    assert "Control arm" in output
     assert (str(expected) in output) or (f"{expected:,}" in output)
 
 

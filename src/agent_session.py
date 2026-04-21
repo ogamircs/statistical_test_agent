@@ -47,6 +47,8 @@ class AgentAnalysisSession:
         query_store_path: Optional[Path] = None,
         sql_planner: Any = None,
         data_question_service: Any = None,
+        query_timeout_seconds: float = 5.0,
+        sql_default_row_limit: int = 20,
     ) -> None:
         self.state = state or AgentSessionState()
         self.query_store_path = (
@@ -55,7 +57,10 @@ class AgentAnalysisSession:
             else Path("output") / "query_store" / f"session-{uuid4().hex}.sqlite"
         )
         run_startup_gc(self.query_store_path.parent)
-        self.query_store = query_store or SQLiteQueryStore(self.query_store_path)
+        self.query_store = query_store or SQLiteQueryStore(
+            self.query_store_path,
+            query_timeout_seconds=query_timeout_seconds,
+        )
 
         planner = sql_planner
         if planner is None and llm is not None:
@@ -66,6 +71,7 @@ class AgentAnalysisSession:
             self.data_question_service = SQLQueryService(
                 query_store=self.query_store,
                 sql_planner=planner,
+                default_limit=sql_default_row_limit,
             )
 
     def persist_loaded_data(self, analyzer: Any) -> bool:

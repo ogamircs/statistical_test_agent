@@ -87,14 +87,22 @@ def _ratio_metric_impl(context: ToolContext, payload: str) -> str:
                 )
             scoped = df[df[segment_col] == segment]
 
-        treatment = scoped[scoped[group_col] == treatment_label]
-        control = scoped[scoped[group_col] == control_label]
+        # Joint null mask per arm preserves row-level (numerator, denominator)
+        # pairing. Dropping nulls independently would misalign the two vectors
+        # whenever only one of the two fields is null and silently inflate the
+        # delta-method covariance term.
+        treatment = scoped[scoped[group_col] == treatment_label].dropna(
+            subset=[numerator_col, denominator_col]
+        )
+        control = scoped[scoped[group_col] == control_label].dropna(
+            subset=[numerator_col, denominator_col]
+        )
 
         result = delta_method_ratio_test(
-            treatment_numerator=treatment[numerator_col].dropna().to_numpy(),
-            treatment_denominator=treatment[denominator_col].dropna().to_numpy(),
-            control_numerator=control[numerator_col].dropna().to_numpy(),
-            control_denominator=control[denominator_col].dropna().to_numpy(),
+            treatment_numerator=treatment[numerator_col].to_numpy(),
+            treatment_denominator=treatment[denominator_col].to_numpy(),
+            control_numerator=control[numerator_col].to_numpy(),
+            control_denominator=control[denominator_col].to_numpy(),
             significance_level=getattr(analyzer, "significance_level", 0.05),
         )
 
@@ -213,19 +221,24 @@ def _plan_sample_size_impl(payload: str) -> str:
                 f"Cohen's d={effect_size:.4f}"
             )
 
-        n_per_arm = calculate_required_sample_size(
+        # calculate_required_sample_size returns nobs1 (treatment arm N) for
+        # the requested ratio = nobs2 / nobs1. Reporting per_arm confuses the
+        # two arms whenever ratio != 1, so surface each arm separately.
+        treatment_n = calculate_required_sample_size(
             effect_size=effect_size,
             ratio=ratio,
             power_threshold=power,
             significance_level=alpha,
         )
-        total = int(n_per_arm * (1 + ratio))
+        control_n = int(round(treatment_n * ratio))
+        total = treatment_n + control_n
 
         lines = [
             "## Sample Size Plan",
             "",
-            f"- Required sample size per arm: **{n_per_arm:,}**",
-            f"- Total across arms (ratio={ratio:g}): **{total:,}**",
+            f"- Treatment arm: **{treatment_n:,}**",
+            f"- Control arm:   **{control_n:,}**  (ratio={ratio:g})",
+            f"- Total across arms: **{total:,}**",
             f"- Assumptions: {assumption}",
             f"- alpha={alpha:g}, target power={power:g}",
         ]

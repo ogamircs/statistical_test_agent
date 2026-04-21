@@ -56,7 +56,9 @@ def _arm_ratio_and_variance(
     num_mean = float(np.mean(numerator[:n]))
     den_mean = float(np.mean(denominator[:n]))
     if abs(den_mean) < 1e-12:
-        return 0.0, 0.0, n
+        # Undefined ratio — signal with NaN so the outer test can bail
+        # cleanly. Distinct from "zero variance within a well-defined arm".
+        return float("nan"), 0.0, n
 
     ratio = num_mean / den_mean
     cov_matrix = np.cov(numerator[:n], denominator[:n], ddof=1)
@@ -105,23 +107,26 @@ def delta_method_ratio_test(
             reason="insufficient_sample_size",
         )
 
-    if treat_var == 0.0 or control_var == 0.0:
-        diff = treat_ratio - control_ratio
+    if np.isnan(treat_ratio) or np.isnan(control_ratio):
         return RatioMetricResult(
-            treatment_ratio=treat_ratio,
-            control_ratio=control_ratio,
-            absolute_diff=diff,
-            relative_diff=(diff / control_ratio) if control_ratio != 0 else 0.0,
+            treatment_ratio=0.0 if np.isnan(treat_ratio) else treat_ratio,
+            control_ratio=0.0 if np.isnan(control_ratio) else control_ratio,
+            absolute_diff=0.0,
+            relative_diff=0.0,
             standard_error=0.0,
             z_statistic=0.0,
             p_value=1.0,
-            confidence_interval=(diff, diff),
+            confidence_interval=(0.0, 0.0),
             treatment_n=treat_n,
             control_n=control_n,
             is_significant=False,
-            reason="zero_variance_arm",
+            reason="undefined_ratio",
         )
 
+    # Only bail when the COMBINED standard error is zero (both arms fully
+    # degenerate). A single near-constant arm is rare in practice but the
+    # test is still valid via the variance from the other arm — returning
+    # p=1.0 preemptively created false negatives for low-noise denominators.
     diff = treat_ratio - control_ratio
     se = float(np.sqrt(treat_var + control_var))
     if se == 0.0:

@@ -107,6 +107,14 @@ class SQLiteQueryStore:
             return []
         return [{"role": row[0], "content": row[1]} for row in rows]
 
+    def clear_chat_messages(self) -> None:
+        """Wipe persisted chat history so resume starts fresh."""
+        try:
+            with sqlite3.connect(self.db_path) as connection:
+                connection.execute(f"DELETE FROM {_CHAT_HISTORY_TABLE}")
+        except sqlite3.Error:
+            pass
+
     def _record_audit(
         self,
         sql: str,
