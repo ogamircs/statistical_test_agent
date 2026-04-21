@@ -7,8 +7,9 @@ and evaluates stopping decisions via the statistics engine.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional
 
 from .statsmodels_engine import StatsmodelsABTestEngine
 

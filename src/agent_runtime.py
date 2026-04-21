@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from src.statistics.analyzer_protocol import ABAnalyzerProtocol
-
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +30,11 @@ class AgentRuntime:
         self.file_size_threshold_mb = file_size_threshold_mb
 
     def get_file_size_mb(self, filepath: str) -> float:
-        """Get file size in megabytes."""
+        """Get file size in megabytes; warn on OS errors and return 0.0."""
         try:
             return os.path.getsize(filepath) / (1024 * 1024)
-        except Exception:
+        except OSError as exc:
+            logger.warning("get_file_size_mb failed for %s: %s", filepath, exc)
             return 0.0
 
     def should_use_spark(self, filepath: str) -> bool:

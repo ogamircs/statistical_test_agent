@@ -14,6 +14,7 @@ def run_bayesian_test(
     treatment_pre: np.ndarray | None = None,
     control_pre: np.ndarray | None = None,
     n_samples: int,
+    seed: int = 42,
 ) -> Dict[str, Any]:
     """Estimate treatment-vs-control uncertainty with a Monte Carlo posterior."""
     n_treatment = len(treatment_post)
@@ -76,13 +77,13 @@ def run_bayesian_test(
     se_t = np.sqrt(max(var_t, 1e-10) / n_treatment)
     se_c = np.sqrt(max(var_c, 1e-10) / n_control)
 
-    np.random.seed(42)
+    rng = np.random.default_rng(seed)
     if n_treatment > 30 and n_control > 30:
-        treatment_samples = np.random.normal(mean_t, se_t, n_samples)
-        control_samples = np.random.normal(mean_c, se_c, n_samples)
+        treatment_samples = rng.normal(mean_t, se_t, n_samples)
+        control_samples = rng.normal(mean_c, se_c, n_samples)
     else:
-        treatment_samples = mean_t + se_t * np.random.standard_t(max(n_treatment - 1, 1), n_samples)
-        control_samples = mean_c + se_c * np.random.standard_t(max(n_control - 1, 1), n_samples)
+        treatment_samples = mean_t + se_t * rng.standard_t(max(n_treatment - 1, 1), n_samples)
+        control_samples = mean_c + se_c * rng.standard_t(max(n_control - 1, 1), n_samples)
 
     diff_samples = treatment_samples - control_samples
     prob_treatment_better = float(np.mean(diff_samples > 0))

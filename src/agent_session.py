@@ -8,20 +8,23 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import pandas as pd
+import plotly.graph_objects as go
+from langchain_core.messages import BaseMessage
 
 from .query_store import SQLiteQueryStore
+from .query_store_gc import run_startup_gc
 from .sql_query_service import OpenAISQLPlanner, SQLQueryService
-from .statistics.models import to_ab_test_summary
+from .statistics.models import ABTestResult, ABTestSummary, to_ab_test_summary
 
 
 @dataclass
 class AgentSessionState:
     """Mutable in-memory state for one chat session."""
 
-    chat_history: List[Any] = field(default_factory=list)
-    last_charts: Dict[str, Any] = field(default_factory=dict)
-    last_results: Any = None
-    last_summary: Any = None
+    chat_history: List[BaseMessage] = field(default_factory=list)
+    last_charts: Dict[str, go.Figure] = field(default_factory=dict)
+    last_results: Optional[List[ABTestResult]] = None
+    last_summary: Optional[ABTestSummary] = None
 
     def clear_analysis_state(self) -> None:
         self.last_results = None
@@ -44,6 +47,8 @@ class AgentAnalysisSession:
         query_store_path: Optional[Path] = None,
         sql_planner: Any = None,
         data_question_service: Any = None,
+        query_timeout_seconds: float = 5.0,
+        sql_default_row_limit: int = 20,
     ) -> None:
         self.state = state or AgentSessionState()
         self.query_store_path = (
@@ -51,7 +56,11 @@ class AgentAnalysisSession:
             if query_store_path is not None
             else Path("output") / "query_store" / f"session-{uuid4().hex}.sqlite"
         )
-        self.query_store = query_store or SQLiteQueryStore(self.query_store_path)
+        run_startup_gc(self.query_store_path.parent)
+        self.query_store = query_store or SQLiteQueryStore(
+            self.query_store_path,
+            query_timeout_seconds=query_timeout_seconds,
+        )
 
         planner = sql_planner
         if planner is None and llm is not None:
@@ -62,6 +71,7 @@ class AgentAnalysisSession:
             self.data_question_service = SQLQueryService(
                 query_store=self.query_store,
                 sql_planner=planner,
+                default_limit=sql_default_row_limit,
             )
 
     def persist_loaded_data(self, analyzer: Any) -> bool:

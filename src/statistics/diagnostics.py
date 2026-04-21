@@ -2,13 +2,93 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
-from scipy.stats import chisquare, kurtosis, levene, normaltest, shapiro, skew, trim_mean
+import pandas as pd
+from scipy.stats import chisquare, levene, normaltest, shapiro, trim_mean
 from scipy.stats.mstats import winsorize
 
 from .engine_helpers import sanitize_numeric, sanitize_p_value
+
+
+def detect_duplicate_units(
+    *,
+    df: pd.DataFrame,
+    customer_col: Optional[str],
+    group_col: Optional[str],
+) -> Dict[str, Any]:
+    """Detect repeated-measures and cross-arm contamination in the unit ID column.
+
+    Returns a dict with::
+
+        is_applicable        — True only when customer_col is set and present
+        unique_units         — number of distinct customer IDs
+        total_rows           — number of rows scanned
+        within_arm_repeats   — rows where the same customer appears more than once
+                               within a single arm (independence violation)
+        cross_arm_units      — distinct customers appearing in both treatment and
+                               control arms (assignment violation)
+        has_duplicates       — convenience flag (any of the above non-zero)
+        warning              — human-readable summary or empty string
+    """
+    result: Dict[str, Any] = {
+        "is_applicable": False,
+        "unique_units": 0,
+        "total_rows": int(len(df)) if df is not None else 0,
+        "within_arm_repeats": 0,
+        "cross_arm_units": 0,
+        "has_duplicates": False,
+        "warning": "",
+    }
+
+    if (
+        df is None
+        or customer_col is None
+        or customer_col not in df.columns
+    ):
+        return result
+
+    valid = df.dropna(subset=[customer_col])
+    if valid.empty:
+        return result
+
+    result["is_applicable"] = True
+    result["unique_units"] = int(valid[customer_col].nunique())
+
+    if group_col and group_col in valid.columns:
+        per_arm_counts = valid.groupby(group_col)[customer_col].apply(
+            lambda s: int((s.value_counts() > 1).sum())
+        )
+        result["within_arm_repeats"] = int(per_arm_counts.sum())
+
+        units_per_arm = valid.groupby(customer_col)[group_col].nunique()
+        result["cross_arm_units"] = int((units_per_arm > 1).sum())
+    else:
+        result["within_arm_repeats"] = int(
+            (valid[customer_col].value_counts() > 1).sum()
+        )
+
+    result["has_duplicates"] = bool(
+        result["within_arm_repeats"] or result["cross_arm_units"]
+    )
+
+    if result["has_duplicates"]:
+        bits = []
+        if result["within_arm_repeats"]:
+            bits.append(
+                f"{result['within_arm_repeats']} unit(s) appear more than once "
+                "within an arm — independence assumption is violated; consider "
+                "pre-aggregating to one row per customer"
+            )
+        if result["cross_arm_units"]:
+            bits.append(
+                f"{result['cross_arm_units']} unit(s) appear in BOTH arms — "
+                "assignment is contaminated; investigate randomization and traffic filters"
+            )
+        result["warning"] = "; ".join(bits)
+
+    return result
 
 
 def run_srm_diagnostics(

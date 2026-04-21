@@ -7,12 +7,109 @@ aligning analysis inputs, and running covariate-adjusted effect models.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from .statsmodels_engine import StatsmodelsABTestEngine
+
+
+@dataclass(frozen=True)
+class CupedResult:
+    """Outcome of applying CUPED variance reduction to one segment.
+
+    ``theta`` is the regression coefficient on the pre-period metric pooled
+    across both arms. ``variance_reduction`` is the relative drop in the
+    outcome variance contributed by the adjustment (>=0 when CUPED helped;
+    can be 0 if the covariate had no signal).
+    """
+
+    applied: bool
+    theta: float
+    variance_reduction: float
+    treatment_adjusted: np.ndarray
+    control_adjusted: np.ndarray
+    reason: Optional[str] = None
+
+
+def apply_cuped(
+    *,
+    treatment_post: np.ndarray,
+    control_post: np.ndarray,
+    treatment_pre: Optional[np.ndarray],
+    control_pre: Optional[np.ndarray],
+) -> CupedResult:
+    """Standard CUPED (Controlled-experiment Using Pre-Experiment Data).
+
+    Adjusted_i = Y_i - theta * (X_i - mean(X)), with theta computed pooled
+    across both arms (treatment + control). Returns the original arrays
+    unchanged with ``applied=False`` when there is no usable pre-period
+    metric, when sizes mismatch, when var(X) is ~0, or when correlation
+    cannot be estimated.
+    """
+    if treatment_pre is None or control_pre is None:
+        return CupedResult(
+            applied=False,
+            theta=0.0,
+            variance_reduction=0.0,
+            treatment_adjusted=np.asarray(treatment_post, dtype=float),
+            control_adjusted=np.asarray(control_post, dtype=float),
+            reason="no_pre_period_metric",
+        )
+
+    treatment_post = np.asarray(treatment_post, dtype=float)
+    control_post = np.asarray(control_post, dtype=float)
+    treatment_pre = np.asarray(treatment_pre, dtype=float)
+    control_pre = np.asarray(control_pre, dtype=float)
+
+    if (
+        treatment_pre.shape != treatment_post.shape
+        or control_pre.shape != control_post.shape
+    ):
+        return CupedResult(
+            applied=False,
+            theta=0.0,
+            variance_reduction=0.0,
+            treatment_adjusted=treatment_post,
+            control_adjusted=control_post,
+            reason="pre_post_length_mismatch",
+        )
+
+    pooled_pre = np.concatenate([treatment_pre, control_pre])
+    pooled_post = np.concatenate([treatment_post, control_post])
+    pre_var = float(np.var(pooled_pre, ddof=1)) if len(pooled_pre) > 1 else 0.0
+    post_var = float(np.var(pooled_post, ddof=1)) if len(pooled_post) > 1 else 0.0
+    if pre_var <= 1e-12 or post_var <= 1e-12:
+        return CupedResult(
+            applied=False,
+            theta=0.0,
+            variance_reduction=0.0,
+            treatment_adjusted=treatment_post,
+            control_adjusted=control_post,
+            reason="zero_variance",
+        )
+
+    cov = float(np.cov(pooled_pre, pooled_post, ddof=1)[0, 1])
+    theta = cov / pre_var
+    pre_mean = float(np.mean(pooled_pre))
+
+    treatment_adjusted = treatment_post - theta * (treatment_pre - pre_mean)
+    control_adjusted = control_post - theta * (control_pre - pre_mean)
+
+    adjusted_pooled = np.concatenate([treatment_adjusted, control_adjusted])
+    adjusted_var = float(np.var(adjusted_pooled, ddof=1)) if len(adjusted_pooled) > 1 else post_var
+    variance_reduction = max(0.0, 1.0 - adjusted_var / post_var)
+
+    return CupedResult(
+        applied=True,
+        theta=theta,
+        variance_reduction=variance_reduction,
+        treatment_adjusted=treatment_adjusted,
+        control_adjusted=control_adjusted,
+    )
 
 
 class CovariateResolver:

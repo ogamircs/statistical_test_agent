@@ -11,19 +11,25 @@ An intelligent agent that can:
 
 import asyncio
 import logging
-from typing import List, Any, Dict, Tuple
-from dotenv import load_dotenv
+from typing import Any, Dict, List, Optional, Tuple
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.prebuilt import create_react_agent
 import plotly.graph_objects as go
+from dotenv import load_dotenv
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
 
 from .agent_reporting import render_tool_error
 from .agent_runtime import AgentRuntime
 from .agent_session import AgentAnalysisSession
 from .agent_tools import create_agent_tools
+from .config import Config
+from .observability import TokenUsageCallback
+from .prompts import PROMPT_VERSION, load_system_prompt
+from .query_store import SQLiteQueryStore
 from .statistics import ABTestAnalyzer, ABTestVisualizer
+from .statistics.analyzer_protocol import ABAnalyzerProtocol
+from .statistics.models import ABTestResult, ABTestSummary
 
 # Try to import PySpark analyzer (optional dependency)
 try:
@@ -58,39 +64,81 @@ class ABTestingAgent:
             raise RuntimeError("PySpark is not available in this environment")
         return PySparkABTestAnalyzer()
 
-    def __init__(self, model_name: str = "gpt-5.2", temperature: float = 0):
-        self.llm = ChatOpenAI(model=model_name, temperature=temperature)
+    def __init__(
+        self,
+        model_name: str | None = None,
+        temperature: float | None = None,
+        config: Config | None = None,
+        query_store_path: str | None = None,
+    ):
+        self.config = config or Config.from_env()
+        resolved_model = model_name if model_name is not None else self.config.llm_model
+        resolved_temperature = (
+            temperature if temperature is not None else self.config.llm_temperature
+        )
+
+        self.token_usage = TokenUsageCallback()
+        self.llm = ChatOpenAI(
+            model=resolved_model,
+            temperature=resolved_temperature,
+            callbacks=[self.token_usage],
+        )
         self.runtime = AgentRuntime(
             analyzer=ABTestAnalyzer(),
             spark_factory=self._create_spark_backend,
             spark_available=lambda: PYSPARK_AVAILABLE,
-            file_size_threshold_mb=2.0,
+            file_size_threshold_mb=self.config.file_size_threshold_mb,
         )
         self.visualizer = ABTestVisualizer()
-        self.session = AgentAnalysisSession(llm=self.llm)
+        session_kwargs: dict[str, Any] = {
+            "llm": self.llm,
+            "query_timeout_seconds": self.config.query_timeout_seconds,
+            "sql_default_row_limit": self.config.sql_default_row_limit,
+        }
+        if query_store_path is not None:
+            session_kwargs["query_store_path"] = query_store_path
+        self.session = AgentAnalysisSession(**session_kwargs)
+        self._restore_chat_history_from_store()
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
-            "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s)",
-            model_name,
-            temperature,
+            "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s, "
+            "file_size_threshold_mb=%.2f, restored_history=%d)",
+            resolved_model,
+            resolved_temperature,
             PYSPARK_AVAILABLE,
+            self.config.file_size_threshold_mb,
+            len(self.session.state.chat_history),
         )
 
+    def _restore_chat_history_from_store(self) -> None:
+        try:
+            persisted = self.session.query_store.load_chat_messages()
+        except Exception:
+            logger.exception("Failed to load persisted chat history; starting fresh")
+            return
+        for entry in persisted:
+            role = entry.get("role")
+            content = entry.get("content", "")
+            if role == "human":
+                self.session.state.chat_history.append(HumanMessage(content=content))
+            elif role == "ai":
+                self.session.state.chat_history.append(AIMessage(content=content))
+
     @property
-    def analyzer(self) -> Any:
+    def analyzer(self) -> ABAnalyzerProtocol:
         return self.runtime.analyzer
 
     @analyzer.setter
-    def analyzer(self, value: Any) -> None:
+    def analyzer(self, value: ABAnalyzerProtocol) -> None:
         self.runtime.analyzer = value
 
     @property
-    def spark_analyzer(self) -> Any:
+    def spark_analyzer(self) -> Optional[ABAnalyzerProtocol]:
         return self.runtime.spark_analyzer
 
     @spark_analyzer.setter
-    def spark_analyzer(self, value: Any) -> None:
+    def spark_analyzer(self, value: Optional[ABAnalyzerProtocol]) -> None:
         self.runtime.spark_analyzer = value
 
     @property
@@ -110,11 +158,11 @@ class ABTestingAgent:
         self.runtime.file_size_threshold_mb = value
 
     @property
-    def chat_history(self) -> List[Any]:
+    def chat_history(self) -> List[BaseMessage]:
         return self.session.state.chat_history
 
     @chat_history.setter
-    def chat_history(self, value: List[Any]) -> None:
+    def chat_history(self, value: List[BaseMessage]) -> None:
         self.session.state.chat_history = value
 
     @property
@@ -126,37 +174,37 @@ class ABTestingAgent:
         self.session.state.last_charts = value
 
     @property
-    def _last_results(self) -> Any:
+    def _last_results(self) -> Optional[List[ABTestResult]]:
         return self.session.state.last_results
 
     @_last_results.setter
-    def _last_results(self, value: Any) -> None:
+    def _last_results(self, value: Optional[List[ABTestResult]]) -> None:
         self.session.state.last_results = value
 
     @property
-    def _last_summary(self) -> Any:
+    def _last_summary(self) -> Optional[ABTestSummary]:
         return self.session.state.last_summary
 
     @_last_summary.setter
-    def _last_summary(self, value: Any) -> None:
+    def _last_summary(self, value: Optional[ABTestSummary]) -> None:
         self.session.state.last_summary = value
 
     @property
-    def query_store(self) -> Any:
+    def query_store(self) -> SQLiteQueryStore:
         return self.session.query_store
 
     @query_store.setter
-    def query_store(self, value: Any) -> None:
+    def query_store(self, value: SQLiteQueryStore) -> None:
         self.session.query_store = value
         if getattr(self.session.data_question_service, "query_store", None) is not None:
             self.session.data_question_service.query_store = value
 
     @property
-    def data_question_service(self) -> Any:
+    def data_question_service(self) -> Optional[Any]:
         return self.session.data_question_service
 
     @data_question_service.setter
-    def data_question_service(self, value: Any) -> None:
+    def data_question_service(self, value: Optional[Any]) -> None:
         self.session.data_question_service = value
 
     def persist_loaded_data(self, analyzer: Any) -> bool:
@@ -229,56 +277,8 @@ class ABTestingAgent:
         """Create the LangGraph agent with tools"""
 
         tools = self._create_tools()
-
-        system_prompt = """You are an expert A/B Testing Analyst AI assistant. Your role is to help users analyze A/B test experiments from CSV data.
-
-## CRITICAL - OUTPUT FORMATTING RULES:
-**ALWAYS display the EXACT markdown tables returned by analysis tools. DO NOT summarize or rephrase the tables.**
-When a tool returns markdown tables (like the Statistical Results Summary table), you MUST include them verbatim in your response.
-The tables contain important statistical data that users need to see in tabular format.
-
-## CRITICAL - Tool Selection Based on User Intent:
-
-### BEST GUESS MODE (User wants automatic analysis):
-If the user mentions ANY of these: "best guess", "auto", "automatic", "figure it out", "just analyze", "quick analysis", or similar:
-=> Use `load_and_auto_analyze` tool with JUST the file path
-=> This loads the file, auto-detects everything, and runs full analysis - NO QUESTIONS ASKED
-=> Do NOT use load_csv, do NOT ask for confirmation
-
-### MANUAL MODE (User wants to review/confirm settings):
-If the user uploads a file WITHOUT mentioning auto/best guess:
-=> Use `load_csv` to show columns
-=> Then use `configure_and_analyze` with their confirmed settings
-
-## Your Capabilities:
-1. **Best Guess Analysis** - `load_and_auto_analyze`: Load file + auto-detect + run analysis in ONE step
-2. **Manual Configuration** - `load_csv` then `configure_and_analyze`: For users who want control
-3. **Generate visualizations** - Interactive charts after analysis
-4. **Answer questions about loaded data and computed results** - Use `answer_data_question` for questions like counts, segment totals, effect sizes, or other lookups after data has been loaded
-
-## Workflow Decision Tree:
-1. User uploads file with "best guess"/"auto" keywords => `load_and_auto_analyze`
-2. User uploads file without keywords => `load_csv`, then ask to confirm, then `configure_and_analyze`
-3. Data already loaded + user wants best guess => `auto_configure_and_analyze`
-4. User asks a factual question about the loaded dataset or computed results => use `answer_data_question`
-
-## Important Guidelines:
-- DEFAULT to full segmented analysis (all segments) unless user specifies otherwise
-- Explain statistical concepts in accessible language
-- Provide actionable recommendations based on results
-- Offer to show charts after analysis completes
-
-## Statistical Measures:
-- Sample sizes, means, effect sizes
-- Cohen's d, p-values, significance
-- 95% confidence intervals
-- Statistical power analysis
-
-## Visualizations:
-Dashboard, Treatment vs Control, Effect Sizes, P-values, Power Analysis, Cohen's d, Sample Sizes, Waterfall
-
-Be efficient - minimize steps to get users their results."""
-
+        system_prompt = load_system_prompt()
+        logger.info("System prompt loaded (version=%s)", PROMPT_VERSION)
         return create_react_agent(self.llm, tools, prompt=system_prompt)
 
     def run(self, message: str) -> str:
@@ -287,12 +287,24 @@ Be efficient - minimize steps to get users their results."""
         Chainlit wraps this with ``cl.make_async(agent.run)`` for async dispatch.
         """
         try:
+            self.token_usage.reset()
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
+            self.session.query_store.save_chat_message("human", message)
             result = self.agent.invoke({"messages": self.chat_history})
             response = result["messages"][-1].content
             self.chat_history.append(AIMessage(content=response))
-            logger.info("Agent run completed (response_chars=%d)", len(str(response)))
+            self.session.query_store.save_chat_message("ai", str(response))
+            usage = self.token_usage.snapshot()
+            logger.info(
+                "Agent run completed (response_chars=%d, llm_calls=%d, "
+                "prompt_tokens=%d, completion_tokens=%d, total_tokens=%d)",
+                len(str(response)),
+                usage["calls"],
+                usage["prompt_tokens"],
+                usage["completion_tokens"],
+                usage["total_tokens"],
+            )
             return response
         except Exception as e:
             logger.exception("Agent run failed")
@@ -312,8 +324,17 @@ Be efficient - minimize steps to get users their results."""
         return await asyncio.to_thread(self.run, message)
 
     def clear_memory(self):
-        """Clear conversation memory"""
+        """Clear conversation memory (both in-memory and persisted SQLite).
+
+        Without the persisted wipe, a reconnect would re-hydrate the old
+        turns through _restore_chat_history_from_store and resurrect the
+        conversation the user just asked to clear.
+        """
         self.session.state.clear_chat_history()
+        try:
+            self.session.query_store.clear_chat_messages()
+        except Exception:
+            logger.exception("Failed to wipe persisted chat history")
 
 
 if __name__ == "__main__":
@@ -327,4 +348,4 @@ if __name__ == "__main__":
             break
 
         response = agent.run(user_input)
-        print(f"\nAgent: {response}")
+        logger.info("Agent: %s", response)

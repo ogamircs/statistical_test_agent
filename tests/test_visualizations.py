@@ -8,7 +8,6 @@ import pytest
 from src.statistics import ABTestAnalyzer, ABTestVisualizer
 from src.statistics.chart_catalog import build_chart_map, core_chart_keys, resolve_chart_keys
 
-
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "sample_ab_data.csv"
 
 

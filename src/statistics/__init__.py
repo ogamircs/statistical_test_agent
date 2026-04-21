@@ -10,9 +10,9 @@ Provides statistical analysis and visualization for A/B testing:
 - visualizer: Chart and dashboard generation
 """
 
-from .models import ABTestResult
 from .analyzer import ABTestAnalyzer
 from .data_manager import ABTestDataManager
+from .models import ABTestResult
 from .statsmodels_engine import StatsmodelsABTestEngine
 from .summary_builder import ABTestSummaryBuilder
 from .visualizer import ABTestVisualizer

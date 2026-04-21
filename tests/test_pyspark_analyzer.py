@@ -13,9 +13,9 @@ Tests distributed statistical analysis using PySpark including:
 import sys
 from pathlib import Path
 
-import pytest
-import pandas as pd
 import numpy as np
+import pandas as pd
+import pytest
 
 pytest.importorskip("pyspark", reason="PySpark not installed; skipping PySpark analyzer tests.")
 

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Sequence
-
+from collections.abc import Sequence
+from typing import Any, Dict, List
 
 _TREATMENT_TOKENS = {
     "treatment",

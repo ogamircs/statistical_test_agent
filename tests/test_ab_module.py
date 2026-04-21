@@ -6,7 +6,6 @@ import pytest
 
 from src.statistics import ABTestAnalyzer
 
-
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "sample_ab_data.csv"
 
 

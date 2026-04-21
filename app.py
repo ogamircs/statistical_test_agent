@@ -16,14 +16,63 @@ import chainlit as cl
 from dotenv import load_dotenv
 
 from src import ABTestingAgent
+from src.auth import is_auth_enabled, verify_credentials
+from src.config import Config
+from src.observability import configure_json_logging
+from src.query_store_gc import run_startup_gc
 
 load_dotenv()
+configure_json_logging()
 logger = logging.getLogger(__name__)
+
+_STARTUP_CONFIG = Config.from_env()
+try:
+    _STARTUP_CONFIG.validate()
+    logger.info(
+        "Startup config: model=%s temperature=%s file_size_threshold_mb=%.2f "
+        "sql_row_limit=%d query_timeout_s=%.1f",
+        _STARTUP_CONFIG.llm_model,
+        _STARTUP_CONFIG.llm_temperature,
+        _STARTUP_CONFIG.file_size_threshold_mb,
+        _STARTUP_CONFIG.sql_default_row_limit,
+        _STARTUP_CONFIG.query_timeout_seconds,
+    )
+except ValueError:
+    logger.exception("Startup Config validation failed; continuing with defaults")
+
+run_startup_gc(Path("output") / "query_store")
+
+
+if is_auth_enabled():
+    @cl.password_auth_callback
+    def _auth(username: str, password: str):
+        identity = verify_credentials(username, password)
+        if identity is None:
+            return None
+        return cl.User(identifier=identity, metadata={"role": "user"})
+
+    logger.info("Chainlit password auth ENABLED via STATAGENT_AUTH_* env vars")
+else:
+    logger.info("Chainlit password auth disabled (set STATAGENT_AUTH_USERNAME and STATAGENT_AUTH_PASSWORD to enable)")
 
 
 def _ensure_chainlit_files_root() -> None:
     """Ensure Chainlit has a root directory for persisted element files."""
     Path(".files").mkdir(exist_ok=True)
+
+
+def _session_query_store_path() -> str:
+    """Derive a stable per-Chainlit-session SQLite path so reconnects can
+    rehydrate persisted chat history. Falls back to the legacy random
+    UUID path when no session id is available.
+    """
+    session_id = cl.user_session.get("id")
+    if session_id is None:
+        from uuid import uuid4
+
+        session_id = uuid4().hex
+        cl.user_session.set("id", session_id)
+    return str(Path("output") / "query_store" / f"session-{session_id}.sqlite")
 
 
 def get_or_create_agent() -> ABTestingAgent:
@@ -34,10 +83,13 @@ def get_or_create_agent() -> ABTestingAgent:
     """
     agent = cl.user_session.get("agent")
     if agent is None:
-        agent = ABTestingAgent()
+        agent = ABTestingAgent(query_store_path=_session_query_store_path())
         cl.user_session.set("agent", agent)
         cl.user_session.set("uploaded_file", None)
-        logger.info("Created session agent")
+        logger.info(
+            "Created session agent (restored_history=%d)",
+            len(agent.session.state.chat_history),
+        )
     return agent
 
 
@@ -180,9 +232,13 @@ async def on_action_clear(action):
 # Enable file upload
 @cl.on_chat_resume
 async def on_chat_resume():
-    """Handle chat resume"""
-    agent = ABTestingAgent()
+    """Handle chat resume — rehydrate the agent from the persisted SQLite."""
+    agent = ABTestingAgent(query_store_path=_session_query_store_path())
     cl.user_session.set("agent", agent)
+    logger.info(
+        "Resumed chat session (restored_history=%d)",
+        len(agent.session.state.chat_history),
+    )
 
 
 # Configure Chainlit settings

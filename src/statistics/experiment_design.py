@@ -65,6 +65,7 @@ def bootstrap_balanced_control(
     max_iterations: int,
     target_p_value: float,
     significance_level: float,
+    seed: int = 42,
 ) -> Tuple[pd.DataFrame, AATestResult]:
     """Subsample control rows to improve pre-period balance when AA fails."""
     original_control_size = len(control_df)
@@ -82,7 +83,7 @@ def bootstrap_balanced_control(
         initial_aa.balanced_control_size = original_control_size
         return control_df, initial_aa
 
-    np.random.seed(42)
+    rng = np.random.default_rng(seed)
     best_control_df = control_df.copy()
     best_p_value = 0.0
     best_aa_result = None
@@ -90,7 +91,7 @@ def bootstrap_balanced_control(
 
     for iteration in range(max_iterations):
         sample_size = min(len(control_df), len(treatment_pre))
-        sample_indices = np.random.choice(len(control_df), size=sample_size, replace=False)
+        sample_indices = rng.choice(len(control_df), size=sample_size, replace=False)
         sampled_control = control_df.iloc[sample_indices]
         sampled_pre = sampled_control[pre_col].to_numpy()
 

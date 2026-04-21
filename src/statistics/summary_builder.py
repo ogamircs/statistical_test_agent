@@ -4,7 +4,8 @@ Summary and recommendation builder for A/B test result sets.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 

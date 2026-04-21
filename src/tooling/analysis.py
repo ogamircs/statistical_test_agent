@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import List, Optional
+import math
+from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import Tool
 
 from ..agent_reporting import (
+    AgentUserFacingError,
     render_calculate_stats_output,
     render_column_values_output,
     render_data_question_output,
@@ -16,10 +19,239 @@ from ..agent_reporting import (
     render_query_data_output,
     render_run_ab_test_output,
     render_segment_distribution_output,
+    render_tool_error,
 )
+from ..statistics.power_analysis import calculate_required_sample_size
+from ..statistics.ratio_metric import delta_method_ratio_test
 from .common import ToolContext
 
 logger = logging.getLogger(__name__)
+
+
+_RATIO_METRIC_DESCRIPTION = (
+    "Run a delta-method significance test for a RATIO metric (revenue per user, "
+    "sessions per user, CTR-as-ratio-of-sums). Use this when each row has a "
+    "numerator and a denominator that vary by user — the standard t-test on the "
+    "user-level ratio is biased; this tool computes sum(num)/sum(denom) per arm "
+    "and the variance via the delta method.\n\n"
+    "Input: JSON object with `numerator` (column name), `denominator` (column "
+    "name), and optional `segment` (filter to one segment). Requires data to be "
+    "loaded with the standard group column already mapped."
+)
+
+
+def _ratio_metric_impl(context: ToolContext, payload: str) -> str:
+    try:
+        try:
+            params = json.loads(payload) if isinstance(payload, str) else dict(payload)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                f"compute_ratio_metric input must be a JSON object: {exc}",
+            ) from exc
+
+        numerator_col = params.get("numerator")
+        denominator_col = params.get("denominator")
+        if not numerator_col or not denominator_col:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                "compute_ratio_metric requires `numerator` and `denominator` columns.",
+            )
+
+        analyzer = context.active_analyzer()
+        df = context.require_pandas_dataframe(analyzer, "compute_ratio_metric")
+        mapping = getattr(analyzer, "column_mapping", {}) or {}
+        group_col = mapping.get("group")
+        treatment_label = getattr(analyzer, "treatment_label", None)
+        control_label = getattr(analyzer, "control_label", None)
+        if not group_col or treatment_label is None or control_label is None:
+            raise AgentUserFacingError(
+                "GROUP_LABELS_NOT_SET",
+                "Configure the group column and treatment/control labels first.",
+            )
+        for col in (numerator_col, denominator_col, group_col):
+            if col not in df.columns:
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    f"Column `{col}` not found in the loaded dataframe.",
+                )
+
+        segment = params.get("segment")
+        scoped = df
+        if segment:
+            segment_col = mapping.get("segment")
+            if not segment_col or segment_col not in df.columns:
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    "Cannot filter by segment: no segment column configured.",
+                )
+            scoped = df[df[segment_col] == segment]
+
+        # Joint null mask per arm preserves row-level (numerator, denominator)
+        # pairing. Dropping nulls independently would misalign the two vectors
+        # whenever only one of the two fields is null and silently inflate the
+        # delta-method covariance term.
+        treatment = scoped[scoped[group_col] == treatment_label].dropna(
+            subset=[numerator_col, denominator_col]
+        )
+        control = scoped[scoped[group_col] == control_label].dropna(
+            subset=[numerator_col, denominator_col]
+        )
+
+        result = delta_method_ratio_test(
+            treatment_numerator=treatment[numerator_col].to_numpy(),
+            treatment_denominator=treatment[denominator_col].to_numpy(),
+            control_numerator=control[numerator_col].to_numpy(),
+            control_denominator=control[denominator_col].to_numpy(),
+            significance_level=getattr(analyzer, "significance_level", 0.05),
+        )
+
+        ci_lo, ci_hi = result.confidence_interval
+        scope_str = f"segment={segment}" if segment else "overall"
+        lines = [
+            f"## Ratio Metric: {numerator_col} / {denominator_col} ({scope_str})",
+            "",
+            f"- Treatment ratio: **{result.treatment_ratio:.6f}** (n={result.treatment_n:,})",
+            f"- Control ratio:   **{result.control_ratio:.6f}** (n={result.control_n:,})",
+            f"- Absolute diff:   **{result.absolute_diff:+.6f}**",
+            f"- Relative diff:   **{result.relative_diff:+.2%}**",
+            f"- 95% CI on diff:  [{ci_lo:+.6f}, {ci_hi:+.6f}]",
+            f"- z = {result.z_statistic:.4f}, p = {result.p_value:.6f}, SE = {result.standard_error:.6f}",
+            f"- Significant (p < 0.05): {'YES' if result.is_significant else 'NO'}",
+        ]
+        if result.reason:
+            lines.append(f"- Note: {result.reason}")
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.exception("compute_ratio_metric failed")
+        return render_tool_error(
+            "Error computing ratio metric",
+            exc,
+            default_code="RATIO_METRIC_FAILED",
+            default_message="Unable to compute the ratio metric.",
+        )
+
+
+_PLAN_SAMPLE_SIZE_DESCRIPTION = (
+    "Plan required sample size per arm BEFORE collecting data. "
+    "Input: a JSON object with these fields: "
+    "`metric_type` (\"proportion\" or \"continuous\", required), "
+    "`mde` (absolute minimum detectable effect, required — for proportion this is the "
+    "absolute lift in rate; for continuous this is the lift in the mean), "
+    "`baseline_rate` (required when metric_type=proportion), "
+    "`baseline_mean` and `baseline_std` (required when metric_type=continuous), "
+    "`alpha` (default 0.05), `power` (default 0.8), `ratio` (control:treatment, default 1.0). "
+    "Returns a markdown report with the required per-arm and total sample sizes, "
+    "the computed standardized effect size, and the assumptions used."
+)
+
+
+def _plan_sample_size_impl(payload: str) -> str:
+    try:
+        try:
+            params: Dict[str, Any] = json.loads(payload) if isinstance(payload, str) else dict(payload)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                f"plan_sample_size input must be a JSON object: {exc}",
+            ) from exc
+
+        metric_type = params.get("metric_type")
+        if metric_type not in {"proportion", "continuous"}:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                "plan_sample_size requires `metric_type` of \"proportion\" or \"continuous\".",
+            )
+
+        if "mde" not in params:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                "plan_sample_size requires `mde` (absolute minimum detectable effect).",
+            )
+        mde = float(params["mde"])
+        if mde <= 0:
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                "plan_sample_size `mde` must be positive.",
+            )
+
+        alpha = float(params.get("alpha", 0.05))
+        power = float(params.get("power", 0.8))
+        ratio = float(params.get("ratio", 1.0))
+        if not (0 < alpha < 1) or not (0 < power < 1):
+            raise AgentUserFacingError(
+                "INVALID_INPUT",
+                "plan_sample_size `alpha` and `power` must be in (0, 1).",
+            )
+
+        if metric_type == "proportion":
+            if "baseline_rate" not in params:
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    "Proportion plans require `baseline_rate`.",
+                )
+            p1 = float(params["baseline_rate"])
+            p2 = p1 + mde
+            if not (0 < p1 < 1) or not (0 < p2 < 1):
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    "Proportion `baseline_rate` and `baseline_rate + mde` must be in (0, 1).",
+                )
+            effect_size = 2 * math.asin(math.sqrt(p1)) - 2 * math.asin(math.sqrt(p2))
+            assumption = (
+                f"baseline_rate={p1:g}, lift={mde:+g} ⇒ treatment_rate={p2:g}, "
+                f"Cohen's h={effect_size:.4f}"
+            )
+        else:
+            if "baseline_mean" not in params or "baseline_std" not in params:
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    "Continuous plans require `baseline_mean` and `baseline_std`.",
+                )
+            mean = float(params["baseline_mean"])
+            std = float(params["baseline_std"])
+            if std <= 0:
+                raise AgentUserFacingError(
+                    "INVALID_INPUT",
+                    "Continuous `baseline_std` must be positive.",
+                )
+            effect_size = mde / std
+            assumption = (
+                f"baseline_mean={mean:g}, baseline_std={std:g}, lift={mde:+g} ⇒ "
+                f"Cohen's d={effect_size:.4f}"
+            )
+
+        # calculate_required_sample_size returns nobs1 (treatment arm N) for
+        # the requested ratio = nobs2 / nobs1. Reporting per_arm confuses the
+        # two arms whenever ratio != 1, so surface each arm separately.
+        treatment_n = calculate_required_sample_size(
+            effect_size=effect_size,
+            ratio=ratio,
+            power_threshold=power,
+            significance_level=alpha,
+        )
+        control_n = int(round(treatment_n * ratio))
+        total = treatment_n + control_n
+
+        lines = [
+            "## Sample Size Plan",
+            "",
+            f"- Treatment arm: **{treatment_n:,}**",
+            f"- Control arm:   **{control_n:,}**  (ratio={ratio:g})",
+            f"- Total across arms: **{total:,}**",
+            f"- Assumptions: {assumption}",
+            f"- alpha={alpha:g}, target power={power:g}",
+        ]
+        return "\n".join(lines)
+
+    except Exception as exc:
+        logger.exception("plan_sample_size failed")
+        return render_tool_error(
+            "Error planning sample size",
+            exc,
+            default_code="PLAN_SAMPLE_SIZE_FAILED",
+            default_message="Unable to plan the sample size.",
+        )
 
 
 def create_analysis_tools(context: ToolContext) -> List[Tool]:
@@ -234,5 +466,15 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
             name="calculate_statistics",
             func=calculate_stats,
             description="Calculate detailed statistics for a numeric column including mean, median, std dev, percentiles.",
+        ),
+        Tool(
+            name="plan_sample_size",
+            func=_plan_sample_size_impl,
+            description=_PLAN_SAMPLE_SIZE_DESCRIPTION,
+        ),
+        Tool(
+            name="compute_ratio_metric",
+            func=lambda payload: _ratio_metric_impl(context, payload),
+            description=_RATIO_METRIC_DESCRIPTION,
         ),
     ]

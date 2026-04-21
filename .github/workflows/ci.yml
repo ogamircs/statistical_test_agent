@@ -32,6 +32,15 @@ jobs:
         run: |
           python -m compileall -q src tests app.py
 
+      - name: Ruff
+        run: |
+          ruff check src tests app.py
+
+      - name: Mypy (non-blocking)
+        continue-on-error: true
+        run: |
+          mypy src
+
       - name: Smoke test (core analyzer path)
         run: |
           python - <<'PY'
@@ -51,6 +60,10 @@ jobs:
       - name: Pytest
         run: |
           pytest -q -ra
+
+      - name: Golden-task prompt coverage
+        run: |
+          pytest -q tests/eval/test_prompt_coverage.py
 
   spark:
     runs-on: ubuntu-latest

@@ -6,10 +6,10 @@ import tempfile
 import plotly.graph_objects as go
 import pytest
 
-from src.statistics.analyzer import ABTestAnalyzer
-from src.statistics.visualizer import ABTestVisualizer
-from src.statistics.models import ABTestResult, ABTestSummary
 from src.query_store import SQLiteQueryStore
+from src.statistics.analyzer import ABTestAnalyzer
+from src.statistics.models import ABTestResult, ABTestSummary
+from src.statistics.visualizer import ABTestVisualizer
 
 SAMPLE_DATA = os.path.join("data", "sample_ab_data.csv")
 

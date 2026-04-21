@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -24,8 +25,10 @@ pyspark = pytest.importorskip(
     reason="PySpark not installed; skipping pandas-vs-Spark parity tests.",
 )
 
-from src.statistics.pyspark_analyzer import PySparkABTestAnalyzer, create_spark_session
-
+from src.statistics.pyspark_analyzer import (  # noqa: E402
+    PySparkABTestAnalyzer,
+    create_spark_session,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -209,3 +212,55 @@ class TestGoldenDatasetParity:
             assert pandas_segmented[segment]["control_size"] == spark_segmented[segment]["control_size"], (
                 f"{dataset_name} segment={segment} control_size mismatch"
             )
+
+    def test_covariate_adjustment_parity(self, spark_session) -> None:
+        """Spark covariate-adjusted effect should match pandas within tolerance.
+
+        Builds a synthetic dataset where the post metric is driven by both a
+        treatment uplift and a numeric covariate. Both backends should report
+        the same covariate_adjusted_effect when the same covariate is mapped.
+        """
+        rng = np.random.default_rng(0)
+        n_per_arm = 600
+        treatment_pre = rng.normal(50.0, 10.0, n_per_arm)
+        control_pre = rng.normal(50.0, 10.0, n_per_arm)
+        treatment_post = 0.7 * treatment_pre + rng.normal(2.5, 1.0, n_per_arm)
+        control_post = 0.7 * control_pre + rng.normal(0.0, 1.0, n_per_arm)
+        df = pd.DataFrame(
+            {
+                "experiment_group": ["treatment"] * n_per_arm + ["control"] * n_per_arm,
+                "pre_effect": np.concatenate([treatment_pre, control_pre]),
+                "post_effect": np.concatenate([treatment_post, control_post]),
+            }
+        )
+        mapping = {
+            "group": "experiment_group",
+            "effect_value": "post_effect",
+            "post_effect": "post_effect",
+            "pre_effect": "pre_effect",
+            "covariates": ["pre_effect"],
+        }
+        labels = {"treatment": "treatment", "control": "control"}
+
+        pandas_analyzer = ABTestAnalyzer(significance_level=0.05, power_threshold=0.8)
+        pandas_analyzer.set_dataframe(df.copy())
+        pandas_analyzer.set_column_mapping(mapping)
+        pandas_analyzer.set_group_labels(labels["treatment"], labels["control"])
+        pandas_result = canonical_result_as_dict(pandas_analyzer.run_ab_test())
+
+        spark_analyzer = PySparkABTestAnalyzer(
+            spark=spark_session, significance_level=0.05, power_threshold=0.8
+        )
+        spark_analyzer.set_dataframe(spark_session.createDataFrame(df))
+        spark_analyzer.set_column_mapping(mapping)
+        spark_analyzer.set_group_labels(labels["treatment"], labels["control"])
+        spark_result = canonical_result_as_dict(spark_analyzer.run_ab_test())
+
+        assert pandas_result["covariate_adjustment_applied"] is True
+        assert spark_result["covariate_adjustment_applied"] is True
+        _assert_numeric_close(
+            float(pandas_result["covariate_adjusted_effect"]),
+            float(spark_result["covariate_adjusted_effect"]),
+            rel=1e-3,
+            abs_=1e-3,
+        )

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, runtime_checkable
-
-from typing import Protocol
+from collections.abc import Mapping
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable

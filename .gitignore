@@ -82,4 +82,12 @@ output/
 !docs/architecture.md
 !docs/development.md
 !docs/testing.md
+!docs/TODO.md
+!docs/deployment.md
+!src/prompts/
+!src/prompts/*.md
 docs/plans/
+
+# Playwright smoke artifacts
+.playwright-mcp/
+*.png

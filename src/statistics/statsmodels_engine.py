@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from scipy.stats import norm
@@ -11,28 +12,42 @@ from statsmodels.stats.proportion import confint_proportions_2indep, test_propor
 from .bayesian import run_bayesian_test as compute_bayesian_test
 from .diagnostics import (
     run_assumption_diagnostics as compute_assumption_diagnostics,
+)
+from .diagnostics import (
     run_outlier_sensitivity as compute_outlier_sensitivity,
+)
+from .diagnostics import (
     run_srm_diagnostics as compute_srm_diagnostics,
 )
 from .engine_helpers import build_diagnostics, sanitize_numeric, sanitize_p_value, zero_if_tiny
 from .experiment_design import (
     bootstrap_balanced_control as compute_bootstrap_balanced_control,
+)
+from .experiment_design import (
     run_aa_test as compute_aa_test,
 )
 from .model_families import (
     coerce_covariate_frame,
-    estimate_did_effect as compute_did_effect,
-    estimate_treatment_effect as compute_treatment_effect,
     extract_term_inference,
     infer_metric_type,
     is_binary_metric,
     is_count_metric,
     is_heavy_tail_metric,
 )
+from .model_families import (
+    estimate_did_effect as compute_did_effect,
+)
+from .model_families import (
+    estimate_treatment_effect as compute_treatment_effect,
+)
 from .models import AATestResult
 from .power_analysis import (
     calculate_cohens_d as compute_cohens_d,
+)
+from .power_analysis import (
     calculate_power as compute_power,
+)
+from .power_analysis import (
     calculate_required_sample_size as compute_required_sample_size,
 )
 
@@ -57,10 +72,12 @@ class StatsmodelsABTestEngine:
         significance_level: float = 0.05,
         power_threshold: float = 0.8,
         bayesian_samples: int = 10_000,
+        seed: int = 42,
     ) -> None:
         self.significance_level = significance_level
         self.power_threshold = power_threshold
         self.bayesian_samples = bayesian_samples
+        self.seed = seed
 
     @staticmethod
     def _zero_if_tiny(value: float, tol: float = 1e-12) -> float:
@@ -331,6 +348,7 @@ class StatsmodelsABTestEngine:
             max_iterations=max_iterations,
             target_p_value=target_p_value,
             significance_level=self.significance_level,
+            seed=self.seed,
         )
 
     def estimate_treatment_effect(
@@ -525,4 +543,5 @@ class StatsmodelsABTestEngine:
             treatment_pre=treatment_pre,
             control_pre=control_pre,
             n_samples=n_samples,
+            seed=self.seed,
         )

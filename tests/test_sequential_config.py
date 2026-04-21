@@ -3,11 +3,10 @@
 import pytest
 
 from src.statistics.sequential_config import (
-    SequentialConfig,
-    resolve_sequential_config,
-    evaluate_sequential_decision,
-    _coerce_int,
     _coerce_float,
+    _coerce_int,
+    evaluate_sequential_decision,
+    resolve_sequential_config,
 )
 from src.statistics.statsmodels_engine import StatsmodelsABTestEngine
 

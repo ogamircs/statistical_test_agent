@@ -18,28 +18,43 @@ Performance Notes:
 - Cache intermediate results for iterative operations
 """
 
+import json
 import logging
 import os
+import re
 import sys
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
-from pyspark.sql import SparkSession, DataFrame, Window
-from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType, ArrayType
-from pyspark.ml.stat import Correlation, ChiSquareTest
-from pyspark.ml.feature import VectorAssembler
-from pyspark.mllib.stat import Statistics
 import numpy as np
-from typing import Dict, List, Mapping, Optional, Tuple, Any
-from dataclasses import dataclass, asdict
-import json
+
+try:  # PySpark is an optional extra; driver-only helpers must stay importable
+    from pyspark.sql import DataFrame, SparkSession
+    from pyspark.sql import functions as F
+
+    PYSPARK_RUNTIME_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised only in non-Spark CI envs
+    DataFrame = Any  # type: ignore[assignment,misc]
+    SparkSession = Any  # type: ignore[assignment,misc]
+    F = None  # type: ignore[assignment]
+    PYSPARK_RUNTIME_AVAILABLE = False
 
 from ..agent_reporting import AgentUserFacingError
+from .diagnostics import run_srm_diagnostics
 from .label_inference import infer_group_labels
 from .models import ABTestResult
 from .summary_builder import ABTestSummaryBuilder
 
-
 logger = logging.getLogger(__name__)
+
+
+_SPARK_QUERY_VIEW = "ab_test_data"
+_SPARK_QUERY_DEFAULT_LIMIT = 1000
+_SPARK_QUERY_FORBIDDEN = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalize_spark_result_value(value: Any) -> Any:
@@ -71,41 +86,43 @@ class SparkABTestResult(ABTestResult):
 
     @property
     def confidence_interval_lower(self) -> float:
-        return float(self.confidence_interval[0])
+        """Lower bound of ``confidence_interval`` (read-only).
 
-    @confidence_interval_lower.setter
-    def confidence_interval_lower(self, value: float) -> None:
-        self.confidence_interval = (float(value), float(self.confidence_interval[1]))
+        Derived from ``self.confidence_interval[0]``. The canonical
+        tuple field ``confidence_interval`` is the single source of
+        truth; mutate it directly to change this value.
+        """
+        return float(self.confidence_interval[0])
 
     @property
     def confidence_interval_upper(self) -> float:
-        return float(self.confidence_interval[1])
+        """Upper bound of ``confidence_interval`` (read-only).
 
-    @confidence_interval_upper.setter
-    def confidence_interval_upper(self, value: float) -> None:
-        self.confidence_interval = (float(self.confidence_interval[0]), float(value))
+        Derived from ``self.confidence_interval[1]``. The canonical
+        tuple field ``confidence_interval`` is the single source of
+        truth; mutate it directly to change this value.
+        """
+        return float(self.confidence_interval[1])
 
     @property
     def bayesian_credible_interval_lower(self) -> float:
-        return float(self.bayesian_credible_interval[0])
+        """Lower bound of ``bayesian_credible_interval`` (read-only).
 
-    @bayesian_credible_interval_lower.setter
-    def bayesian_credible_interval_lower(self, value: float) -> None:
-        self.bayesian_credible_interval = (
-            float(value),
-            float(self.bayesian_credible_interval[1]),
-        )
+        Derived from ``self.bayesian_credible_interval[0]``. The
+        canonical tuple field ``bayesian_credible_interval`` is the
+        single source of truth; mutate it directly to change this value.
+        """
+        return float(self.bayesian_credible_interval[0])
 
     @property
     def bayesian_credible_interval_upper(self) -> float:
-        return float(self.bayesian_credible_interval[1])
+        """Upper bound of ``bayesian_credible_interval`` (read-only).
 
-    @bayesian_credible_interval_upper.setter
-    def bayesian_credible_interval_upper(self, value: float) -> None:
-        self.bayesian_credible_interval = (
-            float(self.bayesian_credible_interval[0]),
-            float(value),
-        )
+        Derived from ``self.bayesian_credible_interval[1]``. The
+        canonical tuple field ``bayesian_credible_interval`` is the
+        single source of truth; mutate it directly to change this value.
+        """
+        return float(self.bayesian_credible_interval[1])
 
     def to_serializable_dict(self, include_legacy_aliases: bool = True) -> Dict[str, Any]:
         """Serialize result for persistence layers."""
@@ -127,6 +144,92 @@ class SparkABTestResult(ABTestResult):
         return payload
 
 
+@dataclass
+class SparkColumnDetector:
+    """Schema-only role detector for the Spark backend.
+
+    Pure-Python pattern matching over column names; no SparkSession or
+    DataFrame access required. The owning analyzer hands in the column
+    list and the names that resolve to numeric types so this class stays
+    independently testable.
+    """
+
+    columns: List[str]
+    numeric_columns: List[str]
+
+    _ID_PATTERNS = (
+        "customer_id", "customerid", "user_id", "userid", "id", "customer",
+    )
+    _GROUP_PATTERNS = (
+        "group", "treatment", "control", "variant", "test_group",
+        "experiment_group", "ab_group",
+    )
+    _PRE_EFFECT_PATTERNS = (
+        "pre_effect", "pre_value", "pre_revenue", "baseline", "before",
+    )
+    _EFFECT_PATTERNS = (
+        "effect", "value", "metric", "outcome", "result",
+        "conversion", "revenue", "amount", "score",
+    )
+    _SEGMENT_PATTERNS = (
+        "segment", "category", "tier", "type", "cohort", "cluster", "group_name",
+    )
+    _DURATION_PATTERNS = (
+        "duration", "days", "period", "time", "length", "exposure",
+    )
+
+    def detect(self) -> Dict[str, List[str]]:
+        suggestions: Dict[str, List[str]] = {
+            "customer_id": [],
+            "group": [],
+            "pre_effect": [],
+            "post_effect": [],
+            "effect_value": [],
+            "segment": [],
+            "duration": [],
+        }
+        columns_lower = [col.lower() for col in self.columns]
+        numeric_set = set(self.numeric_columns)
+
+        for original, lower in zip(self.columns, columns_lower):
+            if any(pat in lower for pat in self._ID_PATTERNS):
+                suggestions["customer_id"].append(original)
+            if any(pat in lower for pat in self._GROUP_PATTERNS):
+                suggestions["group"].append(original)
+            if (
+                any(pat in lower for pat in self._PRE_EFFECT_PATTERNS)
+                and original in numeric_set
+            ):
+                suggestions["pre_effect"].append(original)
+            if ("post_" in lower or lower == "post_effect") and original in numeric_set:
+                suggestions["post_effect"].append(original)
+            if (
+                any(pat in lower for pat in self._EFFECT_PATTERNS)
+                and original in numeric_set
+                and original not in suggestions["pre_effect"]
+            ):
+                suggestions["effect_value"].append(original)
+            if any(pat in lower for pat in self._SEGMENT_PATTERNS):
+                if lower not in {c.lower() for c in suggestions["group"]}:
+                    suggestions["segment"].append(original)
+            if any(pat in lower for pat in self._DURATION_PATTERNS):
+                suggestions["duration"].append(original)
+
+        if not suggestions["post_effect"] and not suggestions["effect_value"]:
+            excluded = set(
+                suggestions["customer_id"]
+                + suggestions["group"]
+                + suggestions["pre_effect"]
+                + suggestions["segment"]
+                + suggestions["duration"]
+            )
+            for column in self.numeric_columns:
+                if column not in excluded:
+                    suggestions["effect_value"].append(column)
+
+        return suggestions
+
+
 class PySparkABTestAnalyzer:
     """
     Distributed A/B Test Analyzer using PySpark
@@ -142,7 +245,8 @@ class PySparkABTestAnalyzer:
         self,
         spark: Optional[SparkSession] = None,
         significance_level: float = 0.05,
-        power_threshold: float = 0.8
+        power_threshold: float = 0.8,
+        seed: int = 42,
     ):
         """
         Initialize the PySpark analyzer
@@ -151,10 +255,17 @@ class PySparkABTestAnalyzer:
             spark: Active SparkSession (optional, auto-created when omitted)
             significance_level: Alpha for hypothesis tests (default: 0.05)
             power_threshold: Minimum statistical power (default: 0.8)
+            seed: Driver-side RNG seed for the Monte Carlo Bayesian sampler.
         """
+        if not PYSPARK_RUNTIME_AVAILABLE:
+            raise RuntimeError(
+                "PySpark is not installed. Install the `spark` extra to use the "
+                "PySparkABTestAnalyzer backend."
+            )
         self.spark = spark or SparkSession.builder.appName("ABTestingAnalyzer").getOrCreate()
         self.significance_level = significance_level
         self.power_threshold = power_threshold
+        self.seed = seed
         self.df: Optional[DataFrame] = None
         self.column_mapping: Dict[str, str] = {}
         self.treatment_label: Optional[str] = None
@@ -203,93 +314,24 @@ class PySparkABTestAnalyzer:
         self.df.cache()
 
     def detect_columns(self) -> Dict[str, List[str]]:
-        """
-        Auto-detect column types based on naming patterns
-        Uses Spark native operations for schema inspection
+        """Auto-detect column roles based on naming patterns.
+
+        Delegates to ``SparkColumnDetector``; this method only handles
+        the loaded-data check and the Spark-schema → primitives shim.
         """
         if self.df is None:
             raise ValueError("No data loaded. Call load_data() first.")
 
-        columns = self.df.columns
-        columns_lower = [col.lower() for col in columns]
-        schema = self.df.schema
-
-        suggestions = {
-            "customer_id": [],
-            "group": [],
-            "pre_effect": [],
-            "post_effect": [],
-            "effect_value": [],
-            "segment": [],
-            "duration": []
-        }
-
-        # Get numeric columns
-        numeric_types = ["int", "bigint", "long", "double", "float", "decimal"]
+        numeric_types = ("int", "bigint", "long", "double", "float", "decimal")
         numeric_columns = [
-            field.name for field in schema.fields
+            field.name
+            for field in self.df.schema.fields
             if any(t in str(field.dataType).lower() for t in numeric_types)
         ]
-
-        # Customer ID patterns
-        id_patterns = ['customer_id', 'customerid', 'user_id', 'userid', 'id', 'customer']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in id_patterns):
-                suggestions["customer_id"].append(columns[i])
-
-        # Group patterns
-        group_patterns = ['group', 'treatment', 'control', 'variant', 'test_group', 'experiment_group', 'ab_group']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in group_patterns):
-                suggestions["group"].append(columns[i])
-
-        # Pre-effect patterns
-        pre_patterns = ['pre_effect', 'pre_value', 'pre_revenue', 'baseline', 'before']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in pre_patterns):
-                if columns[i] in numeric_columns:
-                    suggestions["pre_effect"].append(columns[i])
-
-        # Post-effect patterns
-        post_patterns = ['post_effect', 'post_value', 'effect_value', 'revenue', 'amount', 'score']
-        for i, col in enumerate(columns_lower):
-            if 'post_' in col or col == 'post_effect':
-                if columns[i] in numeric_columns:
-                    suggestions["post_effect"].append(columns[i])
-
-        # Legacy effect patterns
-        effect_patterns = ['effect', 'value', 'metric', 'outcome', 'result', 'conversion', 'revenue', 'amount', 'score']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in effect_patterns):
-                if columns[i] in numeric_columns and columns[i] not in suggestions["pre_effect"]:
-                    suggestions["effect_value"].append(columns[i])
-
-        # Segment patterns
-        segment_patterns = ['segment', 'category', 'tier', 'type', 'cohort', 'cluster', 'group_name']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in segment_patterns):
-                if col not in [c.lower() for c in suggestions["group"]]:
-                    suggestions["segment"].append(columns[i])
-
-        # Duration patterns
-        duration_patterns = ['duration', 'days', 'period', 'time', 'length', 'exposure']
-        for i, col in enumerate(columns_lower):
-            if any(pattern in col for pattern in duration_patterns):
-                suggestions["duration"].append(columns[i])
-
-        if not suggestions["post_effect"] and not suggestions["effect_value"]:
-            excluded = set(
-                suggestions["customer_id"]
-                + suggestions["group"]
-                + suggestions["pre_effect"]
-                + suggestions["segment"]
-                + suggestions["duration"]
-            )
-            for column in numeric_columns:
-                if column not in excluded:
-                    suggestions["effect_value"].append(column)
-
-        return suggestions
+        return SparkColumnDetector(
+            columns=list(self.df.columns),
+            numeric_columns=numeric_columns,
+        ).detect()
 
     def set_column_mapping(self, mapping: Dict[str, str]) -> None:
         """Set column mapping for analysis"""
@@ -309,12 +351,58 @@ class PySparkABTestAnalyzer:
         values = [row[0] for row in self.df.select(group_col).distinct().collect()]
         return {"group_column": group_col, "unique_values": values}
 
-    def query_data(self, query: str):
-        """Spark backend does not support pandas-query semantics."""
-        raise AgentUserFacingError(
-            "BACKEND_OPERATION_UNSUPPORTED",
-            "Querying data is not supported for the active backend (spark).",
-        )
+    def query_data(self, query: str, *, max_rows: int | None = None):
+        """Run a read-only Spark SQL filter against the loaded DataFrame.
+
+        Two input shapes are accepted:
+          * a bare WHERE clause (e.g. ``experiment_group = 'treatment' AND post_effect > 50``)
+            is wrapped as ``SELECT * FROM ab_test_data WHERE {clause}``.
+          * a full ``SELECT ... FROM ab_test_data ...`` query is run as-is.
+
+        DML and DDL keywords are blocked. Result is capped at ``max_rows``
+        (default 1000) and returned as a pandas DataFrame so existing
+        callers don't have to learn Spark types.
+        """
+        if self.df is None:
+            raise AgentUserFacingError(
+                "DATA_NOT_LOADED",
+                "Load a CSV before running queries.",
+            )
+
+        cleaned = (query or "").strip()
+        if not cleaned:
+            raise AgentUserFacingError(
+                "INVALID_QUERY",
+                "Query string is empty.",
+            )
+        if _SPARK_QUERY_FORBIDDEN.search(cleaned):
+            raise AgentUserFacingError(
+                "INVALID_QUERY",
+                "Spark query rejected: only read-only SELECT/WHERE expressions are allowed.",
+            )
+
+        cleaned = cleaned.rstrip(";").strip()
+
+        if not re.match(r"(?i)^\s*select\b", cleaned):
+            sql = f"SELECT * FROM {_SPARK_QUERY_VIEW} WHERE {cleaned}"
+        else:
+            sql = cleaned
+
+        limit = int(max_rows) if max_rows is not None else _SPARK_QUERY_DEFAULT_LIMIT
+        if limit <= 0:
+            raise AgentUserFacingError("INVALID_QUERY", "max_rows must be > 0.")
+
+        try:
+            self.df.createOrReplaceTempView(_SPARK_QUERY_VIEW)
+            spark_result = self.spark.sql(sql).limit(limit)
+            return spark_result.toPandas()
+        except AgentUserFacingError:
+            raise
+        except Exception as exc:
+            raise AgentUserFacingError(
+                "INVALID_QUERY",
+                f"Spark SQL execution failed: {exc}",
+            ) from exc
 
     def get_data_summary(self) -> Dict[str, Any]:
         """Return high-level profiling summary for the active Spark DataFrame."""
@@ -689,15 +777,15 @@ class PySparkABTestAnalyzer:
         se_t = np.sqrt(var_t / n_t)
         se_c = np.sqrt(var_c / n_c)
 
-        np.random.seed(42)
+        rng = np.random.default_rng(self.seed)
 
         # Draw samples from posterior
         if n_t > 30 and n_c > 30:
-            treatment_samples = np.random.normal(mean_t, se_t, n_samples)
-            control_samples = np.random.normal(mean_c, se_c, n_samples)
+            treatment_samples = rng.normal(mean_t, se_t, n_samples)
+            control_samples = rng.normal(mean_c, se_c, n_samples)
         else:
-            treatment_samples = mean_t + se_t * np.random.standard_t(n_t - 1, n_samples)
-            control_samples = mean_c + se_c * np.random.standard_t(n_c - 1, n_samples)
+            treatment_samples = mean_t + se_t * rng.standard_t(n_t - 1, n_samples)
+            control_samples = mean_c + se_c * rng.standard_t(n_c - 1, n_samples)
 
         diff_samples = treatment_samples - control_samples
 
@@ -725,6 +813,165 @@ class PySparkABTestAnalyzer:
             "relative_uplift": float(relative_uplift),
             "total_effect": float(total_effect)
         }
+
+    def _build_diagnostics_payload(
+        self,
+        *,
+        n_t: int,
+        n_c: int,
+        var_t: float,
+        var_c: float,
+    ) -> Dict[str, Any]:
+        """Compute scalar-only experiment-quality diagnostics for the Spark backend.
+
+        Surfaces SRM (sample-ratio mismatch) and a variance-ratio heuristic
+        without touching executors. Distributional checks (normality,
+        outlier sensitivity) intentionally remain a TODO for the Spark
+        path — they require driver-side sampling and are not free.
+        """
+        srm = run_srm_diagnostics(
+            treatment_size=int(n_t),
+            control_size=int(n_c),
+            significance_level=float(self.significance_level),
+            expected_treatment_ratio=0.5,
+        )
+
+        var_t_safe = max(float(var_t), 0.0)
+        var_c_safe = max(float(var_c), 0.0)
+        if var_t_safe == 0 or var_c_safe == 0:
+            variance_ratio = 0.0
+            variance_passed: Optional[bool] = None
+        else:
+            variance_ratio = max(var_t_safe, var_c_safe) / min(var_t_safe, var_c_safe)
+            variance_passed = variance_ratio < 4.0  # standard rule-of-thumb gate
+
+        assumptions = {
+            "normality_test": "not_applicable_spark",
+            "treatment_normality_p_value": None,
+            "control_normality_p_value": None,
+            "treatment_normality_passed": None,
+            "control_normality_passed": None,
+            "variance_test": "variance_ratio_heuristic",
+            "equal_variance_p_value": None,
+            "equal_variance_passed": variance_passed,
+            "variance_ratio": variance_ratio,
+            "variance_reason": "scipy.levene requires raw arrays; Spark backend uses scalar variance ratio (rule-of-thumb threshold 4.0)",
+        }
+
+        return {
+            "frequentist": {},
+            "experiment_quality": {
+                "srm": srm,
+                "assumptions": assumptions,
+                "outlier_sensitivity": {
+                    "is_applicable": False,
+                    "is_sensitive": False,
+                    "reason": "spark_outlier_sensitivity_not_implemented",
+                },
+            },
+        }
+
+    def _compute_covariate_adjustment(
+        self,
+        *,
+        segment_filter: Optional[str],
+        post_col: str,
+        effect_size: float,
+        p_value: float,
+        confidence_interval: Tuple[float, float],
+    ) -> Dict[str, Any]:
+        """Driver-side covariate-adjusted OLS for the Spark backend.
+
+        Reuses the pandas StatsmodelsABTestEngine via lazy import — covariate
+        adjustment requires raw row-level access, which the agg-only Spark
+        path does not preserve. We collect the affected arms (treatment +
+        control rows for the active segment) to pandas with only the
+        (post + covariates) columns selected, then delegate to the same
+        engine the pandas analyzer uses. Suitable for small-K covariate
+        sets; for large-K + huge data prefer Spark MLlib (future work).
+        """
+        from .covariate_resolver import CovariateResolver
+        from .statsmodels_engine import StatsmodelsABTestEngine
+
+        unchanged: Dict[str, Any] = {
+            "covariate_adjustment_applied": False,
+            "covariates_used": [],
+            "covariate_adjusted_effect": effect_size,
+            "covariate_adjusted_p_value": p_value,
+            "covariate_adjusted_confidence_interval": confidence_interval,
+            "covariate_adjusted_model_type": "none",
+            "covariate_adjusted_effect_scale": "mean_difference",
+            "covariate_adjusted_effect_exponentiated": 1.0,
+            "covariate_adjusted_diagnostics": {},
+        }
+
+        if self.df is None:
+            return unchanged
+
+        engine = StatsmodelsABTestEngine(
+            significance_level=self.significance_level,
+            power_threshold=self.power_threshold,
+            seed=self.seed,
+        )
+        resolver = CovariateResolver(stats_engine=engine)
+
+        group_col = self.column_mapping.get("group")
+        segment_col = self.column_mapping.get("segment")
+        pre_col = self.column_mapping.get("pre_effect")
+        if group_col is None or post_col is None:
+            return unchanged
+
+        candidate_cols = resolver.parse_covariate_columns(
+            self.column_mapping.get("covariates")
+        )
+        if pre_col and pre_col in self.df.columns and pre_col not in candidate_cols:
+            candidate_cols.append(pre_col)
+        if not candidate_cols:
+            return unchanged
+
+        existing_cols = set(self.df.columns)
+        covariate_columns = [c for c in candidate_cols if c in existing_cols]
+        if not covariate_columns:
+            return unchanged
+
+        selected = [post_col, group_col, *covariate_columns]
+        if segment_col and segment_col in existing_cols and segment_col not in selected:
+            selected.append(segment_col)
+
+        scoped = self.df.select(*selected)
+        if segment_filter and segment_col:
+            scoped = scoped.filter(F.col(segment_col) == segment_filter)
+
+        treatment_pdf = (
+            scoped.filter(F.col(group_col) == self.treatment_label)
+            .select(post_col, *covariate_columns)
+            .dropna()
+            .toPandas()
+        )
+        control_pdf = (
+            scoped.filter(F.col(group_col) == self.control_label)
+            .select(post_col, *covariate_columns)
+            .dropna()
+            .toPandas()
+        )
+
+        if len(treatment_pdf) < 2 or len(control_pdf) < 2:
+            return unchanged
+
+        return resolver.run_covariate_adjusted_effect_model(
+            post_effect_col=post_col,
+            metric_type_option="auto",
+            count_model_option="auto",
+            heavy_tail_strategy_option="auto",
+            covariate_columns=covariate_columns,
+            treatment_model_df=treatment_pdf,
+            control_model_df=control_pdf,
+            effect_size=effect_size,
+            p_value=p_value,
+            confidence_interval=confidence_interval,
+            model_effect_scale="mean_difference",
+            model_effect_exponentiated=1.0,
+        )
 
     def run_ab_test(
         self,
@@ -849,6 +1096,27 @@ class PySparkABTestAnalyzer:
 
         pooled_std = np.sqrt(((n_t - 1) * var_t + (n_c - 1) * var_c) / (n_t + n_c - 2))
 
+        diagnostics_payload = self._build_diagnostics_payload(
+            n_t=n_t, n_c=n_c, var_t=var_t, var_c=var_c
+        )
+        srm_mismatch = bool(
+            diagnostics_payload["experiment_quality"]["srm"].get("is_sample_ratio_mismatch", False)
+        )
+        if srm_mismatch:
+            is_significant = False
+            prop_is_significant = False
+
+        post_col = self.column_mapping.get(
+            "post_effect", self.column_mapping.get("effect_value")
+        )
+        covariate_effects = self._compute_covariate_adjustment(
+            segment_filter=segment_filter,
+            post_col=post_col,
+            effect_size=effect_size,
+            p_value=p_value,
+            confidence_interval=(ci_lower, ci_upper),
+        )
+
         return SparkABTestResult(
             segment=segment_name,
             treatment_size=n_t,
@@ -896,7 +1164,21 @@ class PySparkABTestAnalyzer:
             bayesian_relative_uplift=bayesian_results["relative_uplift"],
             bayesian_is_significant=bayesian_is_significant,
             bayesian_total_effect=bayesian_results["total_effect"],
-            bayesian_total_effect_per_customer=bayesian_results["total_effect"] / n_t if n_t > 0 else 0.0
+            bayesian_total_effect_per_customer=bayesian_results["total_effect"] / n_t if n_t > 0 else 0.0,
+            inference_guardrail_triggered=srm_mismatch,
+            diagnostics=diagnostics_payload,
+            covariate_adjustment_applied=covariate_effects["covariate_adjustment_applied"],
+            covariates_used=covariate_effects["covariates_used"],
+            covariate_adjusted_effect=covariate_effects["covariate_adjusted_effect"],
+            covariate_adjusted_p_value=covariate_effects["covariate_adjusted_p_value"],
+            covariate_adjusted_confidence_interval=covariate_effects[
+                "covariate_adjusted_confidence_interval"
+            ],
+            covariate_adjusted_model_type=covariate_effects["covariate_adjusted_model_type"],
+            covariate_adjusted_effect_scale=covariate_effects["covariate_adjusted_effect_scale"],
+            covariate_adjusted_effect_exponentiated=covariate_effects[
+                "covariate_adjusted_effect_exponentiated"
+            ],
         )
 
     def run_segmented_analysis(
