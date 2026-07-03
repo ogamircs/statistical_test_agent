@@ -46,6 +46,7 @@ like on the host (`-p 8080:8000`, `-p 80:8000`, etc.).
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | Yes | Used by `langchain-openai` for the agent LLM calls. |
+| `STATAGENT_DATA_ROOTS` | No | Extra directories (`os.pathsep`-separated) that CSV loading may read from. By default only `<app>/data`, `<app>/.files` (chat uploads), and the system temp directory are allowed; all other paths and every URL scheme are rejected. |
 
 Additional Chainlit / LangChain environment variables (e.g. `CHAINLIT_AUTH_SECRET`,
 `LANGCHAIN_TRACING_V2`) can be passed through with extra `-e` flags.
