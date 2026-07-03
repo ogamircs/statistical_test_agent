@@ -79,6 +79,8 @@ def _coerce_int(value: object, default: int) -> int:
     if value in (None, ""):
         return default
     try:
-        return int(value)  # type: ignore[arg-type]
+        if isinstance(value, (int, float)):
+            return int(value)
+        return int(str(value))
     except (TypeError, ValueError):
         return default

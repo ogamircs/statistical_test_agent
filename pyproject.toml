@@ -61,3 +61,16 @@ warn_unused_ignores = true
 ignore_missing_imports = true
 follow_imports = "silent"
 exclude = ["^build/", "^dist/", "^\\.venv/", "^\\.planning/"]
+
+# Burn-down list (TODO.md #61): modules that pre-date enforced type checking.
+# Fix a module's errors, then remove it from this list — never add to it.
+# charts_* are slated for consolidation (TODO.md #56) and pyspark_analyzer
+# for the shared-core extraction (TODO.md #45).
+[[tool.mypy.overrides]]
+module = [
+    "src.statistics.charts_core",
+    "src.statistics.charts_dashboard",
+    "src.statistics.charts_extended",
+    "src.statistics.pyspark_analyzer",
+]
+ignore_errors = true

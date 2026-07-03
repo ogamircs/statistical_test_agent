@@ -24,7 +24,7 @@ from statsmodels.stats.multitest import multipletests
 from .covariate_resolver import CovariateResolver, apply_cuped
 from .data_manager import ABTestDataManager
 from .diagnostics import detect_duplicate_units
-from .models import AATestResult, ABTestResult
+from .models import AATestResult, ABTestResult, ABTestSummary
 from .power_analysis import calculate_minimum_detectable_effect
 from .segment_preparer import SegmentPreparer, _PreparedSegmentData
 from .sequential_config import evaluate_sequential_decision
@@ -119,7 +119,13 @@ class ABTestAnalyzer:
     # ---------------------------------------------------------------------
     # Data and schema API
     # ---------------------------------------------------------------------
-    def load_data(self, filepath: str) -> Dict[str, Any]:
+    def load_data(self, filepath: str, **kwargs: Any) -> Dict[str, Any]:
+        """Load a CSV file.
+
+        Extra keyword arguments (e.g. ``format=`` from the shared backend
+        protocol) are accepted for interface compatibility and ignored by
+        the pandas backend.
+        """
         return self.data_manager.load_data(filepath)
 
     def set_dataframe(self, df: pd.DataFrame) -> None:
@@ -282,6 +288,9 @@ class ABTestAnalyzer:
         segment_filter: Optional[str],
     ) -> _AnalysisSelection:
         """Resolve the segment slice and analysis options for a single run."""
+        if self.df is None:
+            raise ValueError("No data loaded")
+
         group_col = self.column_mapping["group"]
         effect_col = self.column_mapping["effect_value"]
         pre_effect_col = self.column_mapping.get("pre_effect")
@@ -786,6 +795,9 @@ class ABTestAnalyzer:
         if "segment" not in self.column_mapping:
             return [self.run_ab_test(sequential_config=sequential_config)]
 
+        if self.df is None:
+            raise ValueError("No data loaded")
+
         segment_col = self.column_mapping["segment"]
         segments = self.df[segment_col].dropna().unique()
 
@@ -876,7 +888,7 @@ class ABTestAnalyzer:
             result.is_significant_adjusted = bool(reject_main[idx]) and not t_test_blocks
             result.proportion_is_significant_adjusted = bool(reject_prop[idx]) and not prop_blocks
 
-    def generate_summary(self, results: List[ABTestResult]) -> Dict[str, Any]:
+    def generate_summary(self, results: List[ABTestResult]) -> ABTestSummary:
         """Generate aggregate summary and recommendations."""
         return self.summary_builder.generate_summary(
             results,

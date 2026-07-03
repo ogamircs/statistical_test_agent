@@ -24,13 +24,11 @@ class ABAnalyzerProtocol(Protocol):
         self,
         segment_filter: Optional[str] = None,
         sequential_config: Optional[Mapping[str, Any]] = None,
-        **kwargs: Any,
     ) -> Any: ...
 
     def run_segmented_analysis(
         self,
         sequential_config: Optional[Mapping[str, Any]] = None,
-        **kwargs: Any,
     ) -> List[Any]: ...
 
     def generate_summary(self, results: list) -> Any: ...

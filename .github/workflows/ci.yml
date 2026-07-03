@@ -20,30 +20,32 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies (locked)
         run: |
-          python -m pip install --upgrade pip
-          pip install ".[dev]"
+          uv sync --frozen --extra dev
 
       - name: Lint (syntax check)
         run: |
-          python -m compileall -q src tests app.py
+          uv run python -m compileall -q src tests scripts app.py
 
       - name: Ruff
         run: |
-          ruff check src tests app.py
+          uv run ruff check .
 
-      - name: Mypy (non-blocking)
-        continue-on-error: true
+      - name: Mypy
         run: |
-          mypy src
+          uv run mypy src app.py
 
       - name: Smoke test (core analyzer path)
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           from pathlib import Path
           from src.statistics import ABTestAnalyzer
 
@@ -59,11 +61,7 @@ jobs:
 
       - name: Pytest
         run: |
-          pytest -q -ra
-
-      - name: Golden-task prompt coverage
-        run: |
-          pytest -q tests/eval/test_prompt_coverage.py
+          uv run pytest -q -ra
 
   spark:
     runs-on: ubuntu-latest
@@ -77,8 +75,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: pyproject.toml
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -86,13 +88,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install dependencies
+      - name: Install dependencies (locked)
         run: |
-          python -m pip install --upgrade pip
-          pip install ".[dev,spark]"
+          uv sync --frozen --extra dev --extra spark
 
       - name: Spark pytest
         env:
           SPARK_LOCAL_IP: 127.0.0.1
         run: |
-          pytest -q tests/test_pyspark_analyzer.py tests/test_parity_pandas_spark.py -ra
+          uv run pytest -q tests/test_pyspark_analyzer.py tests/test_parity_pandas_spark.py -ra
