@@ -7,7 +7,7 @@ name = "statistical-test-agent"
 version = "0.1.0"
 description = "Conversational A/B testing analysis agent with pandas and PySpark backends."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "chainlit>=1.0.1,<3.0",
     "langchain>=1.0,<2.0",
@@ -43,7 +43,7 @@ include = ["src*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py311"
 extend-exclude = [".venv", "build", "dist", ".planning", "output", "data"]
 
 [tool.ruff.lint]
