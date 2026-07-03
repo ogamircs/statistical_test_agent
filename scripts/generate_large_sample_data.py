@@ -8,8 +8,9 @@ This creates a realistic dataset with:
 - Treatment/control groups
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+
 
 def generate_large_ab_test_data(n_rows=500000, output_file='data/sample_ab_data_large.csv'):
     """Generate large A/B test dataset with realistic patterns"""
@@ -63,7 +64,7 @@ def generate_large_ab_test_data(n_rows=500000, output_file='data/sample_ab_data_
         post_effect = pre_effect.copy()
 
         # Apply treatment effect
-        for idx, (segment, group) in enumerate(zip(segments, groups)):
+        for idx, (segment, group) in enumerate(zip(segments, groups, strict=False)):
             if group == 'treatment':
                 # Treatment gets a lift
                 lift = segment_treatment_lift[segment]
@@ -103,12 +104,12 @@ def generate_large_ab_test_data(n_rows=500000, output_file='data/sample_ab_data_
     print(f"\n[SUCCESS] Generated {len(df):,} rows")
     print(f"[SUCCESS] File size: ~{file_size_mb:.1f} MB")
     print(f"[SUCCESS] Saved to: {output_file}")
-    print(f"\nDataset statistics:")
+    print("\nDataset statistics:")
     print(f"  Treatment: {(df['group'] == 'treatment').sum():,} ({(df['group'] == 'treatment').mean()*100:.1f}%)")
     print(f"  Control: {(df['group'] == 'control').sum():,} ({(df['group'] == 'control').mean()*100:.1f}%)")
-    print(f"\nSegment distribution:")
+    print("\nSegment distribution:")
     print(df['segment'].value_counts().sort_index())
-    print(f"\nRevenue statistics:")
+    print("\nRevenue statistics:")
     print(f"  Pre-effect mean: ${df['pre_effect'].mean():.2f}")
     print(f"  Post-effect mean: ${df['post_effect'].mean():.2f}")
     print(f"  Treatment post mean: ${df[df['group']=='treatment']['post_effect'].mean():.2f}")
