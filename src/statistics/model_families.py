@@ -285,7 +285,7 @@ def estimate_treatment_effect(
 
         diagnostics = build_diagnostics(
             reasons,
-            blocks_significance=False,
+            blocks_significance=small_n,
             small_n=small_n,
             degenerate_variance=True,
             non_finite_values_removed=non_finite_removed,

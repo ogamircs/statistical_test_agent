@@ -85,3 +85,39 @@ def test_infer_metric_type_respects_explicit_request() -> None:
         )
         == "continuous"
     )
+
+
+def test_deterministic_small_n_blocks_significance() -> None:
+    """A tiny sample with zero variance in both arms must not read as
+    significant: every other branch honors small_n (TODO.md #41)."""
+    from src.statistics.model_families import estimate_treatment_effect
+
+    result = estimate_treatment_effect(
+        treatment_data=np.array([5.0, 5.0]),
+        control_data=np.array([3.0, 3.0]),
+        significance_level=0.05,
+        min_recommended_sample_size=8,
+        variance_epsilon=VARIANCE_EPSILON,
+    )
+
+    assert result["model_type"] == "deterministic"
+    assert result["p_value"] == 0.0
+    assert result["diagnostics"]["blocks_significance"] is True
+    assert "small_sample_size" in result["diagnostics"]["reasons"]
+
+
+def test_deterministic_adequate_n_does_not_block_significance() -> None:
+    """With an adequate sample, a deterministic difference may stay
+    significant — only the small-n case is blocked."""
+    from src.statistics.model_families import estimate_treatment_effect
+
+    result = estimate_treatment_effect(
+        treatment_data=np.full(20, 5.0),
+        control_data=np.full(20, 3.0),
+        significance_level=0.05,
+        min_recommended_sample_size=8,
+        variance_epsilon=VARIANCE_EPSILON,
+    )
+
+    assert result["model_type"] == "deterministic"
+    assert result["diagnostics"]["blocks_significance"] is False
