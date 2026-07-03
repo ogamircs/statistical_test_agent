@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from langchain_core.tools import Tool
+from langchain_core.tools import BaseTool
 
 from .tooling import (
     create_analysis_tools,
@@ -14,7 +14,7 @@ from .tooling import (
 from .tooling.common import AgentProtocol, ToolContext
 
 
-def create_agent_tools(agent: AgentProtocol) -> List[Tool]:
+def create_agent_tools(agent: AgentProtocol) -> List[BaseTool]:
     """Create the public tool list while keeping implementation grouped by concern."""
     context = ToolContext(agent)
     return [

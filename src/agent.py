@@ -39,7 +39,7 @@ except (ImportError, AttributeError):
     # ImportError: pyspark not installed
     # AttributeError: pyspark installed but not compatible (e.g., Windows)
     PYSPARK_AVAILABLE = False
-    PySparkABTestAnalyzer = None
+    PySparkABTestAnalyzer = None  # type: ignore[assignment, misc]
 
 load_dotenv()
 logger = logging.getLogger(__name__)

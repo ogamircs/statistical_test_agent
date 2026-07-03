@@ -103,8 +103,7 @@ def configure_json_logging(env: Optional[Dict[str, str]] = None) -> bool:
 
     root = logging.getLogger()
     if not root.handlers:
-        handler = logging.StreamHandler()
-        root.addHandler(handler)
-    for handler in root.handlers:
-        handler.setFormatter(_JsonFormatter())
+        root.addHandler(logging.StreamHandler())
+    for existing_handler in root.handlers:
+        existing_handler.setFormatter(_JsonFormatter())
     return True

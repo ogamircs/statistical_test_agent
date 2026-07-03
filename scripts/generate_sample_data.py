@@ -11,10 +11,10 @@ Usage:
 """
 
 import os
-import sys
-import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
 
 # Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -171,11 +171,11 @@ def generate_sample_data(
 
     print(f"Generated {len(df)} customer records")
     print(f"Saved to: {output_path}")
-    print(f"\nSegment distribution:")
+    print("\nSegment distribution:")
     print(df["customer_segment"].value_counts())
-    print(f"\nGroup distribution:")
+    print("\nGroup distribution:")
     print(df["experiment_group"].value_counts())
-    print(f"\nPre-effect summary by segment and group:")
+    print("\nPre-effect summary by segment and group:")
     print(df.groupby(["customer_segment", "experiment_group"])["pre_effect"].mean().unstack())
 
     return df

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from langchain_core.tools import StructuredTool, Tool
+from langchain_core.tools import BaseTool, StructuredTool, Tool
 
 from ..agent_reporting import (
     render_auto_configure_and_analyze_report,
@@ -19,7 +19,7 @@ from .common import ToolContext
 logger = logging.getLogger(__name__)
 
 
-def create_loading_tools(context: ToolContext) -> List[Tool]:
+def create_loading_tools(context: ToolContext) -> List[BaseTool]:
     agent = context.agent
 
     def load_csv(filepath: str) -> str:

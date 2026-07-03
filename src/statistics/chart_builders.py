@@ -36,7 +36,7 @@ def significance_colors(
 ) -> list[str]:
     """Assign colors based on sign and statistical significance."""
     colors: list[str] = []
-    for value, significant in zip(values, is_significant):
+    for value, significant in zip(values, is_significant, strict=False):
         if significant:
             colors.append(positive_color if value >= 0 else negative_color)
         else:

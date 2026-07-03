@@ -29,13 +29,24 @@ def test_requirements_file_delegates_to_project_metadata() -> None:
     assert ".[dev]" in requirements, "requirements.txt should install the project from pyproject metadata"
 
 
-def test_ci_installs_from_project_metadata_and_has_spark_job() -> None:
+def test_ci_installs_from_lockfile_and_has_spark_job() -> None:
     workflow = _read(".github/workflows/ci.yml")
-    assert '".[dev]"' in workflow or "'.[dev]'" in workflow
-    assert '".[dev,spark]"' in workflow or "'.[dev,spark]'" in workflow
-    assert "spark" in workflow.lower()
+    assert "uv sync --frozen --extra dev" in workflow, (
+        "CI must install from the committed uv.lock so it tests the same "
+        "dependency versions the Docker image ships (TODO.md #64)"
+    )
+    assert "uv sync --frozen --extra dev --extra spark" in workflow
     assert "tests/test_parity_pandas_spark.py" in workflow
     assert "tests/test_pyspark_analyzer.py" in workflow
+
+
+def test_ci_enforces_mypy_and_repo_wide_ruff() -> None:
+    workflow = _read(".github/workflows/ci.yml")
+    assert "continue-on-error" not in workflow, (
+        "mypy must be blocking (TODO.md #61)"
+    )
+    assert "mypy src app.py" in workflow
+    assert "ruff check ." in workflow, "lint the whole repo including scripts/ (TODO.md #71)"
 
 
 def test_gitignore_excludes_generated_output_artifacts() -> None:

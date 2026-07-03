@@ -91,3 +91,6 @@ docs/plans/
 # Playwright smoke artifacts
 .playwright-mcp/
 *.png
+
+# Internal planning scratch files
+.planning/

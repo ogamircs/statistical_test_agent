@@ -410,7 +410,7 @@ def _summary_field_default(field_name: str) -> Any:
 
 
 def _result_to_mapping(result: Any) -> Dict[str, Any]:
-    if is_dataclass(result):
+    if is_dataclass(result) and not isinstance(result, type):
         return asdict(result)
     if isinstance(result, Mapping):
         return dict(result)

@@ -191,7 +191,7 @@ class SparkColumnDetector:
         columns_lower = [col.lower() for col in self.columns]
         numeric_set = set(self.numeric_columns)
 
-        for original, lower in zip(self.columns, columns_lower):
+        for original, lower in zip(self.columns, columns_lower, strict=False):
             if any(pat in lower for pat in self._ID_PATTERNS):
                 suggestions["customer_id"].append(original)
             if any(pat in lower for pat in self._GROUP_PATTERNS):

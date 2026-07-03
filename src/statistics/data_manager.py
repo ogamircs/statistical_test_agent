@@ -80,7 +80,7 @@ class ABTestDataManager:
         columns = [col.lower() for col in self.df.columns]
         original_columns = list(self.df.columns)
 
-        suggestions = {
+        suggestions: Dict[str, List[str]] = {
             "customer_id": [],
             "group": [],
             "pre_effect": [],

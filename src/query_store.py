@@ -30,7 +30,7 @@ class QueryTimeoutError(Exception):
 
 
 def _normalize_sqlite_value(value: Any) -> Any:
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return json.dumps(asdict(value), sort_keys=True)
     if isinstance(value, (dict, list, tuple, set)):
         return json.dumps(value, sort_keys=True, default=str)

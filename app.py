@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 
 import chainlit as cl
+from chainlit.types import ThreadDict
 from dotenv import load_dotenv
 
 from src import ABTestingAgent
@@ -231,7 +232,7 @@ async def on_action_clear(action):
 
 # Enable file upload
 @cl.on_chat_resume
-async def on_chat_resume():
+async def on_chat_resume(thread: ThreadDict):
     """Handle chat resume — rehydrate the agent from the persisted SQLite."""
     agent = ABTestingAgent(query_store_path=_session_query_store_path())
     cl.user_session.set("agent", agent)

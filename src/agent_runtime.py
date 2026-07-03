@@ -6,6 +6,7 @@ import logging
 import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from src.data_paths import resolve_data_path
 from src.statistics.analyzer_protocol import ABAnalyzerProtocol
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,12 @@ class AgentRuntime:
 
         Returns:
             (analyzer, info, backend_name, file_size_mb, spark_selected, fallback_note)
+
+        Raises:
+            DataPathNotAllowedError: when the path is a URL or falls outside
+                the allowed data roots (see src.data_paths).
         """
+        filepath = str(resolve_data_path(filepath))
         file_size_mb = self.get_file_size_mb(filepath)
         spark_selected = self.should_use_spark(filepath)
         fallback_note = None

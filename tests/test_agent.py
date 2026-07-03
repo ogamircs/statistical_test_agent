@@ -363,19 +363,27 @@ def test_load_and_auto_analyze_persists_query_state(stubbed_agent, tmp_path):
     assert stubbed_agent.query_store.summary_saved is True
 
 
-def test_load_csv_missing_file_returns_structured_error(stubbed_agent):
+def test_load_csv_missing_file_returns_structured_error(stubbed_agent, tmp_path):
     load_csv = _get_tool(stubbed_agent, "load_csv")
-    result = load_csv.func("/tmp/this/file/does/not/exist.csv")
+    result = load_csv.func(str(tmp_path / "does_not_exist.csv"))
 
     assert result.startswith("Error loading file:")
     assert "[error_code=FILE_NOT_FOUND]" in result
 
 
-def test_load_csv_failure_is_logged(stubbed_agent, caplog):
+def test_load_csv_disallowed_path_returns_structured_error(stubbed_agent):
+    load_csv = _get_tool(stubbed_agent, "load_csv")
+    result = load_csv.func("/etc/passwd")
+
+    assert result.startswith("Error loading file:")
+    assert "[error_code=DATA_PATH_NOT_ALLOWED]" in result
+
+
+def test_load_csv_failure_is_logged(stubbed_agent, caplog, tmp_path):
     load_csv = _get_tool(stubbed_agent, "load_csv")
 
     with caplog.at_level("ERROR"):
-        load_csv.func("/tmp/this/file/does/not/exist.csv")
+        load_csv.func(str(tmp_path / "does_not_exist.csv"))
 
     assert any("Tool failure: load_csv" in record.message for record in caplog.records)
 

@@ -1078,3 +1078,24 @@ class TestCompleteWorkflow:
 
         assert summary.total_segments_analyzed == 3
         assert hasattr(summary, 'recommendations')
+
+
+def test_small_n_deterministic_difference_is_not_significant():
+    """Two constant-but-unequal arms with tiny n must not be reported
+    significant (TODO.md #41): the deterministic branch previously returned
+    p=0.0 without honoring the small-n guardrail."""
+    df = pd.DataFrame(
+        {
+            "group": ["treatment"] * 2 + ["control"] * 2,
+            "effect": [5.0, 5.0, 3.0, 3.0],
+        }
+    )
+    analyzer = ABTestAnalyzer(significance_level=0.05, power_threshold=0.8)
+    analyzer.set_dataframe(df)
+    analyzer.set_column_mapping({"group": "group", "effect_value": "effect"})
+    analyzer.set_group_labels("treatment", "control")
+
+    result = analyzer.run_ab_test()
+
+    assert result.p_value == 0.0
+    assert result.is_significant is False
