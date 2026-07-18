@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from scipy.stats import kurtosis, skew
+from scipy.stats import kurtosis, norm, skew
 from statsmodels.stats.weightstats import CompareMeans, DescrStatsW
 
 from .engine_helpers import build_diagnostics, sanitize_p_value, zero_if_tiny
@@ -164,6 +164,75 @@ def extract_term_inference(
         "ci_low": float(ci_low),
         "ci_high": float(ci_high),
     }
+
+
+def average_marginal_effect_inference(
+    fitted_model: Any,
+    *,
+    response_transform: str,
+    treatment_term: str = "treatment",
+) -> Optional[Tuple[float, float]]:
+    """Delta-method inference for the treatment effect on the raw response scale.
+
+    GLM term CIs live on the link scale (log-odds, log-rate), which is a
+    different scale than the raw mean/proportion difference reported as
+    ``effect_size``. This computes the average marginal effect of treatment
+    (mean predicted outcome with every row's treatment indicator set to 1
+    minus the same with 0) and its delta-method standard error, both on the
+    response scale, so the caller can build an interval that shares the
+    effect's scale. Returns ``(ame, se)``, or ``None`` when the computation
+    is not applicable or fails, so callers can keep the model-scale interval.
+    """
+    try:
+        exog = np.asarray(fitted_model.model.exog, dtype=float)
+        exog_names = list(getattr(fitted_model.model, "exog_names", []))
+        if treatment_term not in exog_names:
+            return None
+        term_index = exog_names.index(treatment_term)
+        params = np.asarray(fitted_model.params, dtype=float)
+        cov = np.asarray(fitted_model.cov_params(), dtype=float)
+        if exog.shape[1] != params.shape[0] or cov.shape != (params.shape[0], params.shape[0]):
+            return None
+
+        exog_treatment = exog.copy()
+        exog_treatment[:, term_index] = 1.0
+        exog_control = exog.copy()
+        exog_control[:, term_index] = 0.0
+        eta_treatment = exog_treatment @ params
+        eta_control = exog_control @ params
+
+        if response_transform == "link":
+            link = fitted_model.model.family.link
+            mu_treatment = np.asarray(link.inverse(eta_treatment), dtype=float)
+            mu_control = np.asarray(link.inverse(eta_control), dtype=float)
+            dmu_treatment = np.asarray(link.inverse_deriv(eta_treatment), dtype=float)
+            dmu_control = np.asarray(link.inverse_deriv(eta_control), dtype=float)
+        elif response_transform == "log":
+            # Retransform log-scale fitted values with Duan's smearing factor
+            # (treated as fixed for the delta method). Any additive shift used
+            # before the log cancels in the treatment-minus-control contrast.
+            smearing = float(np.mean(np.exp(np.asarray(fitted_model.resid, dtype=float))))
+            mu_treatment = np.exp(eta_treatment) * smearing
+            mu_control = np.exp(eta_control) * smearing
+            dmu_treatment = mu_treatment
+            dmu_control = mu_control
+        else:
+            return None
+
+        gradient = np.mean(
+            dmu_treatment[:, None] * exog_treatment - dmu_control[:, None] * exog_control,
+            axis=0,
+        )
+        variance = float(gradient @ cov @ gradient)
+        if not np.isfinite(variance) or variance <= 0.0:
+            return None
+        ame = float(np.mean(mu_treatment - mu_control))
+        standard_error = float(np.sqrt(variance))
+        if not (np.isfinite(ame) and np.isfinite(standard_error)):
+            return None
+        return ame, standard_error
+    except Exception:
+        return None
 
 
 def estimate_treatment_effect(
@@ -452,6 +521,34 @@ def estimate_treatment_effect(
     if model_fit_reason is not None:
         reasons.append(model_fit_reason)
 
+    # The model term CI lives on the model scale (log-odds/log-rate/log-mean)
+    # while ``effect_size`` is the raw mean difference; rebuild the primary
+    # CI on the effect's scale so reports and charts compare like with like.
+    # The interval borrows the delta-method SE of the average marginal effect
+    # but is centered on the reported raw effect: when the model contrast and
+    # the raw arm difference diverge (log-transform skew, covariate-adjusted
+    # calls), an AME-centered interval need not enclose ``effect_size``, which
+    # would mislead reports and break chart error bars that subtract the
+    # bounds from ``effect_size``. The model-scale interval stays available
+    # as ``model_confidence_interval``.
+    confidence_interval = (float(term_stats["ci_low"]), float(term_stats["ci_high"]))
+    if model_effect_scale in {"log_odds", "log_rate", "log_mean_difference"}:
+        marginal = average_marginal_effect_inference(
+            fitted,
+            response_transform="log" if model_effect_scale == "log_mean_difference" else "link",
+        )
+        if marginal is not None:
+            _ame, marginal_se = marginal
+            half_width = float(norm.ppf(1.0 - significance_level / 2.0)) * marginal_se
+            ci_low = raw_effect - half_width
+            ci_high = raw_effect + half_width
+            if np.isfinite(ci_low) and np.isfinite(ci_high):
+                confidence_interval = (float(ci_low), float(ci_high))
+            else:
+                reasons.append("marginal_effect_ci_failed_using_model_scale")
+        else:
+            reasons.append("marginal_effect_ci_failed_using_model_scale")
+
     diagnostics = build_diagnostics(
         reasons,
         blocks_significance=small_n,
@@ -470,7 +567,7 @@ def estimate_treatment_effect(
         "effect_size": raw_effect,
         "t_statistic": float(term_stats["statistic"]),
         "p_value": p_value,
-        "confidence_interval": (float(term_stats["ci_low"]), float(term_stats["ci_high"])),
+        "confidence_interval": confidence_interval,
         "metric_type": selected_metric_type,
         "model_type": model_type,
         "model_effect": model_effect,
