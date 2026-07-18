@@ -166,22 +166,22 @@ def extract_term_inference(
     }
 
 
-def average_marginal_effect_ci(
+def average_marginal_effect_inference(
     fitted_model: Any,
     *,
     response_transform: str,
-    significance_level: float,
     treatment_term: str = "treatment",
 ) -> Optional[Tuple[float, float]]:
-    """Delta-method CI for the treatment effect on the raw response scale.
+    """Delta-method inference for the treatment effect on the raw response scale.
 
     GLM term CIs live on the link scale (log-odds, log-rate), which is a
     different scale than the raw mean/proportion difference reported as
-    ``effect_size``. This recomputes the interval for the average marginal
-    effect of treatment (mean predicted outcome with every row's treatment
-    indicator set to 1 minus the same with 0), so the primary CI shares the
-    effect's scale. Returns ``None`` when the computation is not applicable
-    or fails, so callers can keep the model-scale interval.
+    ``effect_size``. This computes the average marginal effect of treatment
+    (mean predicted outcome with every row's treatment indicator set to 1
+    minus the same with 0) and its delta-method standard error, both on the
+    response scale, so the caller can build an interval that shares the
+    effect's scale. Returns ``(ame, se)``, or ``None`` when the computation
+    is not applicable or fails, so callers can keep the model-scale interval.
     """
     try:
         exog = np.asarray(fitted_model.model.exog, dtype=float)
@@ -227,12 +227,10 @@ def average_marginal_effect_ci(
         if not np.isfinite(variance) or variance <= 0.0:
             return None
         ame = float(np.mean(mu_treatment - mu_control))
-        half_width = float(norm.ppf(1.0 - significance_level / 2.0)) * float(np.sqrt(variance))
-        ci_low = ame - half_width
-        ci_high = ame + half_width
-        if not (np.isfinite(ci_low) and np.isfinite(ci_high)):
+        standard_error = float(np.sqrt(variance))
+        if not (np.isfinite(ame) and np.isfinite(standard_error)):
             return None
-        return float(ci_low), float(ci_high)
+        return ame, standard_error
     except Exception:
         return None
 
@@ -524,18 +522,30 @@ def estimate_treatment_effect(
         reasons.append(model_fit_reason)
 
     # The model term CI lives on the model scale (log-odds/log-rate/log-mean)
-    # while ``effect_size`` is the raw mean difference; recompute the primary
+    # while ``effect_size`` is the raw mean difference; rebuild the primary
     # CI on the effect's scale so reports and charts compare like with like.
-    # The model-scale interval stays available as ``model_confidence_interval``.
+    # The interval borrows the delta-method SE of the average marginal effect
+    # but is centered on the reported raw effect: when the model contrast and
+    # the raw arm difference diverge (log-transform skew, covariate-adjusted
+    # calls), an AME-centered interval need not enclose ``effect_size``, which
+    # would mislead reports and break chart error bars that subtract the
+    # bounds from ``effect_size``. The model-scale interval stays available
+    # as ``model_confidence_interval``.
     confidence_interval = (float(term_stats["ci_low"]), float(term_stats["ci_high"]))
     if model_effect_scale in {"log_odds", "log_rate", "log_mean_difference"}:
-        marginal_ci = average_marginal_effect_ci(
+        marginal = average_marginal_effect_inference(
             fitted,
             response_transform="log" if model_effect_scale == "log_mean_difference" else "link",
-            significance_level=significance_level,
         )
-        if marginal_ci is not None:
-            confidence_interval = marginal_ci
+        if marginal is not None:
+            _ame, marginal_se = marginal
+            half_width = float(norm.ppf(1.0 - significance_level / 2.0)) * marginal_se
+            ci_low = raw_effect - half_width
+            ci_high = raw_effect + half_width
+            if np.isfinite(ci_low) and np.isfinite(ci_high):
+                confidence_interval = (float(ci_low), float(ci_high))
+            else:
+                reasons.append("marginal_effect_ci_failed_using_model_scale")
         else:
             reasons.append("marginal_effect_ci_failed_using_model_scale")
 

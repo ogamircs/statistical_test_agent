@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from src.statistics.model_families import (
@@ -239,7 +240,74 @@ def test_log_transform_primary_ci_brackets_raw_effect() -> None:
     ci_low, ci_high = result["confidence_interval"]
     assert np.isfinite(ci_low) and np.isfinite(ci_high)
     assert ci_low < result["effect_size"] < ci_high
+    # The interval must be centered on the reported raw effect, not on the
+    # smearing-retransformed AME, which can diverge under skew (PR #7 review).
+    assert (ci_low + ci_high) / 2.0 == pytest.approx(result["effect_size"], abs=1e-9)
     assert "marginal_effect_ci_failed_using_model_scale" not in result["diagnostics"]["reasons"]
+
+
+def test_primary_ci_centered_on_raw_effect_when_covariates_shift_ame() -> None:
+    """With covariates, the covariate-adjusted AME can differ from the raw
+    arm difference; the primary CI must stay centered on the reported
+    ``effect_size`` so chart error bars (bounds minus effect) stay
+    non-negative and the interval encloses the point estimate (PR #7 review).
+    """
+    import statsmodels.api as sm
+
+    from src.statistics.model_families import estimate_treatment_effect
+
+    rng = np.random.default_rng(19)
+    n = 400
+    # Strongly imbalanced covariate: treatment arm has higher x, and y depends
+    # positively on x, so the raw difference overstates the adjusted effect.
+    x_treatment = rng.normal(1.5, 1.0, n)
+    x_control = rng.normal(0.0, 1.0, n)
+    p_treatment = 1.0 / (1.0 + np.exp(-(-1.0 + 1.2 * x_treatment + 0.3)))
+    p_control = 1.0 / (1.0 + np.exp(-(-1.0 + 1.2 * x_control)))
+    treatment = rng.binomial(1, p_treatment).astype(float)
+    control = rng.binomial(1, p_control).astype(float)
+
+    result = estimate_treatment_effect(
+        treatment_data=treatment,
+        control_data=control,
+        significance_level=0.05,
+        min_recommended_sample_size=30,
+        variance_epsilon=VARIANCE_EPSILON,
+        metric_type="binary",
+        treatment_covariates=x_treatment,
+        control_covariates=x_control,
+        covariate_names=["x"],
+    )
+
+    # Sanity: the covariate-adjusted model effect really does diverge from the
+    # raw difference, so the test exercises the divergent-center scenario.
+    frame = pd.DataFrame(
+        {
+            "y": np.concatenate([treatment, control]),
+            "treatment": [1.0] * n + [0.0] * n,
+            "x": np.concatenate([x_treatment, x_control]),
+        }
+    )
+    fitted = sm.GLM(
+        frame["y"],
+        sm.add_constant(frame[["treatment", "x"]], has_constant="add"),
+        family=sm.families.Binomial(),
+    ).fit()
+    x1 = frame[["treatment", "x"]].copy()
+    x1["treatment"] = 1.0
+    x0 = frame[["treatment", "x"]].copy()
+    x0["treatment"] = 0.0
+    ame = float(
+        np.mean(
+            fitted.predict(sm.add_constant(x1, has_constant="add"))
+            - fitted.predict(sm.add_constant(x0, has_constant="add"))
+        )
+    )
+    assert abs(ame - result["effect_size"]) > 0.02
+
+    ci_low, ci_high = result["confidence_interval"]
+    assert ci_low < result["effect_size"] < ci_high
+    assert (ci_low + ci_high) / 2.0 == pytest.approx(result["effect_size"], abs=1e-9)
 
 
 def test_continuous_metric_primary_ci_unchanged() -> None:
