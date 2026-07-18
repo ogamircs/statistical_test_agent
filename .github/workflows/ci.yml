@@ -61,7 +61,7 @@ jobs:
 
       - name: Pytest
         run: |
-          uv run pytest -q -ra
+          uv run pytest -q -ra --cov=src --cov-fail-under=78
 
   spark:
     runs-on: ubuntu-latest
