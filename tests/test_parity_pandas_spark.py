@@ -19,11 +19,12 @@ import pytest
 
 from src.statistics.analyzer import ABTestAnalyzer
 from src.statistics.models import ABTestResult, canonical_result_as_dict
+from tests.spark_gate import skip_or_fail
 
-pyspark = pytest.importorskip(
-    "pyspark",
-    reason="PySpark not installed; skipping pandas-vs-Spark parity tests.",
-)
+try:
+    import pyspark  # noqa: F401
+except ImportError:
+    skip_or_fail("PySpark not installed; skipping pandas-vs-Spark parity tests.")
 
 from src.statistics.pyspark_analyzer import (  # noqa: E402
     PySparkABTestAnalyzer,
@@ -51,7 +52,7 @@ def _create_spark_or_skip(**kwargs: Any):
     try:
         return create_spark_session(**kwargs)
     except Exception as exc:
-        pytest.skip(f"Spark runtime unavailable; skipping parity tests. Details: {exc}")
+        skip_or_fail(f"Spark runtime unavailable; skipping parity tests. Details: {exc}")
 
 
 def _assert_numeric_close(left: float, right: float, *, rel: float = 1e-6, abs_: float = 1e-6) -> None:
