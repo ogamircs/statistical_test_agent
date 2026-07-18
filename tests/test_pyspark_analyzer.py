@@ -17,8 +17,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("pyspark", reason="PySpark not installed; skipping PySpark analyzer tests.")
-
 from src.statistics.analyzer import ABTestAnalyzer
 from src.statistics.models import canonical_result_as_dict
 from src.statistics.pyspark_analyzer import (
@@ -26,13 +24,19 @@ from src.statistics.pyspark_analyzer import (
     SparkABTestResult,
     create_spark_session,
 )
+from tests.spark_gate import skip_or_fail
+
+try:
+    import pyspark  # noqa: F401
+except ImportError:
+    skip_or_fail("PySpark not installed; skipping PySpark analyzer tests.")
 
 
 def _create_spark_or_skip(**kwargs):
     try:
         return create_spark_session(**kwargs)
     except Exception as exc:
-        pytest.skip(f"Spark runtime unavailable; skipping PySpark tests. Details: {exc}")
+        skip_or_fail(f"Spark runtime unavailable; skipping PySpark tests. Details: {exc}")
 
 
 @pytest.fixture(scope="module")

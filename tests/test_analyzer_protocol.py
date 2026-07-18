@@ -1,6 +1,4 @@
 """Verify both analyzer backends satisfy the shared protocol."""
-import pytest
-
 from src.statistics.analyzer import ABTestAnalyzer
 from src.statistics.analyzer_protocol import ABAnalyzerProtocol
 
@@ -16,12 +14,14 @@ from src.statistics.pyspark_analyzer import (  # noqa: E402
     PYSPARK_RUNTIME_AVAILABLE,
     PySparkABTestAnalyzer,
 )
+from tests.spark_gate import skip_or_fail  # noqa: E402
 
 
-@pytest.mark.skipif(not PYSPARK_RUNTIME_AVAILABLE, reason="PySpark not installed")
 def test_spark_analyzer_satisfies_protocol():
+    if not PYSPARK_RUNTIME_AVAILABLE:
+        skip_or_fail("PySpark not installed")
     try:
         analyzer = PySparkABTestAnalyzer()
     except Exception as exc:  # Spark requires a working JVM — skip when unavailable
-        pytest.skip(f"Spark runtime unavailable: {exc}")
+        skip_or_fail(f"Spark runtime unavailable: {exc}")
     assert isinstance(analyzer, ABAnalyzerProtocol)
