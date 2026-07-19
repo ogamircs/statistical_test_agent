@@ -703,3 +703,41 @@ class TestCompleteWorkflow:
         # Generate summary
         summary = analyzer.generate_summary(results)
         assert summary.total_segments_analyzed == 3
+
+
+class TestSequentialConfigRejected:
+    """Spark must fail loudly instead of silently ignoring sequential_config
+    (TODO.md #38, fail-loud half)."""
+
+    def test_run_ab_test_rejects_sequential_config(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_ab_test(sequential_config={"max_looks": 5, "spending": "obrien_fleming"})
+
+    def test_run_ab_test_segment_rejects_sequential_config(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_ab_test(
+                segment_filter="Premium",
+                sequential_config={"max_looks": 5},
+            )
+
+    def test_run_segmented_analysis_rejects_sequential_config(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_segmented_analysis(sequential_config={"max_looks": 5})
+
+    def test_run_ab_test_without_sequential_config_still_works(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        result = analyzer.run_ab_test(sequential_config=None)
+
+        assert isinstance(result, SparkABTestResult)
+        assert result.segment == "Overall"

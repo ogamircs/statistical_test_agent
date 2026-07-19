@@ -995,7 +995,20 @@ class PySparkABTestAnalyzer:
 
         Returns:
             SparkABTestResult with comprehensive metrics
+
+        Raises:
+            NotImplementedError: if ``sequential_config`` is provided — the
+                Spark backend does not implement sequential (alpha-spending)
+                analysis yet and must not silently return a fixed-horizon
+                result for a sequential request (TODO.md #38).
         """
+        if sequential_config is not None:
+            raise NotImplementedError(
+                "Sequential analysis (alpha spending / group-sequential looks) "
+                "is not supported for the active backend (spark). Load the data "
+                "with the pandas backend or omit sequential_config."
+            )
+
         # Get aggregated statistics using Spark
         treatment_stats, control_stats = self._calculate_segment_statistics(segment_filter)
 
@@ -1195,7 +1208,20 @@ class PySparkABTestAnalyzer:
 
         Returns:
             List of SparkABTestResult for each segment
+
+        Raises:
+            NotImplementedError: if ``sequential_config`` is provided — the
+                Spark backend does not implement sequential (alpha-spending)
+                analysis yet and must not silently return a fixed-horizon
+                result for a sequential request (TODO.md #38).
         """
+        if sequential_config is not None:
+            raise NotImplementedError(
+                "Sequential analysis (alpha spending / group-sequential looks) "
+                "is not supported for the active backend (spark). Load the data "
+                "with the pandas backend or omit sequential_config."
+            )
+
         self.segment_failures = []
 
         if "segment" not in self.column_mapping:
