@@ -16,7 +16,7 @@ Three contracts are verified here:
 
 Test 3 is import-free and always runs. Tests 1 and 2 import the Spark
 result class and therefore skip when PySpark is not installed in the
-environment (see ``pytest.importorskip``).
+environment (see ``tests.spark_gate.skip_or_fail``).
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ import re
 from pathlib import Path
 
 import pytest
+
+from tests.spark_gate import skip_or_fail
 
 # Property names to verify — confirmed by reading
 # src/statistics/pyspark_analyzer.py.
@@ -49,10 +51,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def _spark_result_instance():
     """Build a real SparkABTestResult, importing pyspark if available."""
-    pytest.importorskip(
-        "pyspark",
-        reason="PySpark not installed; real-class tests skipped.",
-    )
+    try:
+        import pyspark  # noqa: F401
+    except ImportError:
+        skip_or_fail("PySpark not installed; real-class tests skipped.")
     from src.statistics.pyspark_analyzer import SparkABTestResult
 
     return SparkABTestResult(segment="all", treatment_size=10, control_size=10)
@@ -100,7 +102,10 @@ def test_setter_removed_raises_attributeerror(prop_name: str) -> None:
     post-refactor read-only ``@property`` contract.
     """
     try:
-        pytest.importorskip("pyspark")
+        try:
+            import pyspark  # noqa: F401
+        except ImportError:
+            skip_or_fail("PySpark not installed")
         from src.statistics.pyspark_analyzer import SparkABTestResult
 
         result = SparkABTestResult(segment="all", treatment_size=10, control_size=10)

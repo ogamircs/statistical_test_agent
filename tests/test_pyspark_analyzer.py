@@ -17,8 +17,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("pyspark", reason="PySpark not installed; skipping PySpark analyzer tests.")
-
 from src.statistics.analyzer import ABTestAnalyzer
 from src.statistics.models import canonical_result_as_dict
 from src.statistics.pyspark_analyzer import (
@@ -26,13 +24,19 @@ from src.statistics.pyspark_analyzer import (
     SparkABTestResult,
     create_spark_session,
 )
+from tests.spark_gate import skip_or_fail
+
+try:
+    import pyspark  # noqa: F401
+except ImportError:
+    skip_or_fail("PySpark not installed; skipping PySpark analyzer tests.")
 
 
 def _create_spark_or_skip(**kwargs):
     try:
         return create_spark_session(**kwargs)
     except Exception as exc:
-        pytest.skip(f"Spark runtime unavailable; skipping PySpark tests. Details: {exc}")
+        skip_or_fail(f"Spark runtime unavailable; skipping PySpark tests. Details: {exc}")
 
 
 @pytest.fixture(scope="module")
@@ -699,3 +703,70 @@ class TestCompleteWorkflow:
         # Generate summary
         summary = analyzer.generate_summary(results)
         assert summary.total_segments_analyzed == 3
+
+
+class TestSequentialConfigRejected:
+    """Spark must fail loudly instead of silently ignoring sequential_config
+    (TODO.md #38, fail-loud half)."""
+
+    def test_run_ab_test_rejects_sequential_config(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_ab_test(sequential_config={"max_looks": 5, "spending": "obrien_fleming"})
+
+    def test_run_ab_test_segment_rejects_sequential_config(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_ab_test(
+                segment_filter="Premium",
+                sequential_config={"max_looks": 5},
+            )
+
+    def test_run_segmented_analysis_rejects_sequential_config(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_segmented_analysis(sequential_config={"max_looks": 5})
+
+    def test_run_ab_test_without_sequential_config_still_works(self, analyzer, sample_spark_df):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        result = analyzer.run_ab_test(sequential_config=None)
+
+        assert isinstance(result, SparkABTestResult)
+        assert result.segment == "Overall"
+
+    def test_run_ab_test_allows_disabled_sequential_config(self, analyzer, sample_spark_df):
+        """A serialized {"enabled": False} config must behave like pandas: sequential off."""
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        result = analyzer.run_ab_test(sequential_config={"enabled": False, "max_looks": 5})
+
+        assert isinstance(result, SparkABTestResult)
+        assert result.sequential_mode_enabled is False
+
+    def test_run_segmented_analysis_allows_disabled_sequential_config(
+        self, analyzer, sample_spark_df
+    ):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        results = analyzer.run_segmented_analysis(sequential_config={"enabled": False})
+
+        assert results
+        assert all(isinstance(r, SparkABTestResult) for r in results)
+
+    def test_run_ab_test_rejects_empty_sequential_config(self, analyzer, sample_spark_df):
+        """Empty mapping means "enabled with defaults" in the pandas resolver — still reject."""
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_ab_test(sequential_config={})

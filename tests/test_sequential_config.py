@@ -7,6 +7,7 @@ from src.statistics.sequential_config import (
     _coerce_int,
     evaluate_sequential_decision,
     resolve_sequential_config,
+    sequential_config_enabled,
 )
 from src.statistics.statsmodels_engine import StatsmodelsABTestEngine
 
@@ -71,6 +72,28 @@ class TestResolveSequentialConfig:
         config = resolve_sequential_config(True, {}, engine)
         with pytest.raises(AttributeError):
             config.enabled = False
+
+
+class TestSequentialConfigEnabled:
+    """The shared enablement helper must match resolver semantics exactly."""
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            None,
+            False,
+            True,
+            "invalid",
+            {},
+            {"enabled": True},
+            {"enabled": False},
+            {"enabled": 0},
+            {"max_looks": 5},
+            {"enabled": False, "max_looks": 5},
+        ],
+    )
+    def test_matches_resolver(self, engine, raw):
+        assert sequential_config_enabled(raw) is resolve_sequential_config(raw, {}, engine).enabled
 
 
 class TestEvaluateSequentialDecision:

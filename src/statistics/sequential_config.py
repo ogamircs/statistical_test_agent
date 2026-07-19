@@ -64,6 +64,23 @@ def _coerce_float(
     return float(min(max(numeric, minimum), maximum))
 
 
+def sequential_config_enabled(raw_config: Any) -> bool:
+    """Return True when a raw sequential config opts into sequential mode.
+
+    Shared enablement rules used by ``resolve_sequential_config`` and by
+    backends (e.g. Spark) that must reject sequential requests: ``None``,
+    ``False`` and non-mapping values are off; ``True`` and mappings are on
+    unless they carry an explicit falsy ``"enabled"`` flag.
+    """
+    if raw_config in (None, False):
+        return False
+    if raw_config is True:
+        return True
+    if isinstance(raw_config, Mapping):
+        return bool(raw_config.get("enabled", True))
+    return False
+
+
 def resolve_sequential_config(
     sequential_config: Optional[Mapping[str, Any]],
     column_mapping: Dict[str, Any],
@@ -82,19 +99,10 @@ def resolve_sequential_config(
         else column_mapping.get("sequential")
     )
 
-    if raw_config in (None, False):
+    if not sequential_config_enabled(raw_config):
         return SequentialConfig(enabled=False)
 
-    if raw_config is True:
-        raw_dict: Dict[str, Any] = {}
-    elif isinstance(raw_config, Mapping):
-        raw_dict = dict(raw_config)
-    else:
-        return SequentialConfig(enabled=False)
-
-    enabled = bool(raw_dict.get("enabled", True))
-    if not enabled:
-        return SequentialConfig(enabled=False)
+    raw_dict: Dict[str, Any] = {} if raw_config is True else dict(raw_config)
 
     look_index = _coerce_int(
         raw_dict.get(

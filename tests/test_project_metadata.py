@@ -38,6 +38,11 @@ def test_ci_installs_from_lockfile_and_has_spark_job() -> None:
     assert "uv sync --frozen --extra dev --extra spark" in workflow
     assert "tests/test_parity_pandas_spark.py" in workflow
     assert "tests/test_pyspark_analyzer.py" in workflow
+    assert "STATAGENT_REQUIRE_SPARK" in workflow, (
+        "the spark job must turn Spark bootstrap failures into hard failures (TODO.md #62)"
+    )
+    assert "tests/test_analyzer_protocol.py" in workflow
+    assert "tests/test_pyspark_property_setters.py" in workflow
 
 
 def test_ci_enforces_mypy_and_repo_wide_ruff() -> None:

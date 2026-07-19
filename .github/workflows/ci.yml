@@ -61,7 +61,7 @@ jobs:
 
       - name: Pytest
         run: |
-          uv run pytest -q -ra
+          uv run pytest -q -ra --cov=src --cov-fail-under=78
 
   spark:
     runs-on: ubuntu-latest
@@ -95,5 +95,16 @@ jobs:
       - name: Spark pytest
         env:
           SPARK_LOCAL_IP: 127.0.0.1
+          # Turn every "Spark unavailable" skip into a hard failure so this
+          # job can never go green without executing real Spark (TODO.md #62).
+          STATAGENT_REQUIRE_SPARK: "1"
         run: |
-          uv run pytest -q tests/test_pyspark_analyzer.py tests/test_parity_pandas_spark.py -ra
+          uv run pytest -q -ra \
+            tests/test_pyspark_analyzer.py \
+            tests/test_parity_pandas_spark.py \
+            tests/test_analyzer_protocol.py \
+            tests/test_pyspark_property_setters.py \
+            tests/test_pyspark_seed.py \
+            tests/test_pyspark_diagnostics.py \
+            tests/test_spark_query_data.py \
+            tests/test_spark_column_detector.py
