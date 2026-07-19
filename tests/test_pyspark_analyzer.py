@@ -741,3 +741,32 @@ class TestSequentialConfigRejected:
 
         assert isinstance(result, SparkABTestResult)
         assert result.segment == "Overall"
+
+    def test_run_ab_test_allows_disabled_sequential_config(self, analyzer, sample_spark_df):
+        """A serialized {"enabled": False} config must behave like pandas: sequential off."""
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        result = analyzer.run_ab_test(sequential_config={"enabled": False, "max_looks": 5})
+
+        assert isinstance(result, SparkABTestResult)
+        assert result.sequential_mode_enabled is False
+
+    def test_run_segmented_analysis_allows_disabled_sequential_config(
+        self, analyzer, sample_spark_df
+    ):
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        results = analyzer.run_segmented_analysis(sequential_config={"enabled": False})
+
+        assert results
+        assert all(isinstance(r, SparkABTestResult) for r in results)
+
+    def test_run_ab_test_rejects_empty_sequential_config(self, analyzer, sample_spark_df):
+        """Empty mapping means "enabled with defaults" in the pandas resolver — still reject."""
+        analyzer.set_dataframe(sample_spark_df)
+        analyzer.auto_configure()
+
+        with pytest.raises(NotImplementedError, match="not supported for the active backend"):
+            analyzer.run_ab_test(sequential_config={})

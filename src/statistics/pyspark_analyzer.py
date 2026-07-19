@@ -44,6 +44,7 @@ from ..agent_reporting import AgentUserFacingError
 from .diagnostics import run_srm_diagnostics
 from .label_inference import infer_group_labels
 from .models import ABTestResult
+from .sequential_config import sequential_config_enabled
 from .summary_builder import ABTestSummaryBuilder
 
 logger = logging.getLogger(__name__)
@@ -997,12 +998,14 @@ class PySparkABTestAnalyzer:
             SparkABTestResult with comprehensive metrics
 
         Raises:
-            NotImplementedError: if ``sequential_config`` is provided — the
-                Spark backend does not implement sequential (alpha-spending)
-                analysis yet and must not silently return a fixed-horizon
-                result for a sequential request (TODO.md #38).
+            NotImplementedError: if ``sequential_config`` opts into sequential
+                (alpha-spending) analysis — the Spark backend does not
+                implement sequential analysis yet and must not silently return
+                a fixed-horizon result for a sequential request (TODO.md #38).
+                Disabled configs such as ``{"enabled": False}`` are accepted
+                and treated as sequential off, matching the pandas backend.
         """
-        if sequential_config is not None:
+        if sequential_config_enabled(sequential_config):
             raise NotImplementedError(
                 "Sequential analysis (alpha spending / group-sequential looks) "
                 "is not supported for the active backend (spark). Load the data "
@@ -1210,12 +1213,14 @@ class PySparkABTestAnalyzer:
             List of SparkABTestResult for each segment
 
         Raises:
-            NotImplementedError: if ``sequential_config`` is provided — the
-                Spark backend does not implement sequential (alpha-spending)
-                analysis yet and must not silently return a fixed-horizon
-                result for a sequential request (TODO.md #38).
+            NotImplementedError: if ``sequential_config`` opts into sequential
+                (alpha-spending) analysis — the Spark backend does not
+                implement sequential analysis yet and must not silently return
+                a fixed-horizon result for a sequential request (TODO.md #38).
+                Disabled configs such as ``{"enabled": False}`` are accepted
+                and treated as sequential off, matching the pandas backend.
         """
-        if sequential_config is not None:
+        if sequential_config_enabled(sequential_config):
             raise NotImplementedError(
                 "Sequential analysis (alpha spending / group-sequential looks) "
                 "is not supported for the active backend (spark). Load the data "
