@@ -267,23 +267,13 @@ class ABTestSummaryBuilder:
         recommendations: List[str] = []
 
         aa_failed = [r for r in results if not r.aa_test_passed]
-        bootstrapped = [r for r in results if r.bootstrapping_applied]
 
         if aa_failed:
             segments = [r.segment for r in aa_failed]
             recommendations.append(
                 f"AA TEST WARNING: {len(aa_failed)} segment(s) failed the AA test (imbalanced pre-experiment): {', '.join(segments)}. "
-                "Treatment and control groups had different baseline characteristics."
-            )
-
-        if bootstrapped:
-            segments = [
-                f"{r.segment} (control: {r.original_control_size} → {r.control_size})"
-                for r in bootstrapped
-            ]
-            recommendations.append(
-                f"BOOTSTRAPPING APPLIED: {len(bootstrapped)} segment(s) used bootstrapped control group for balance: {', '.join(segments)}. "
-                "Results should be interpreted with caution."
+                "Treatment and control groups had different baseline characteristics; "
+                "prefer the CUPED/covariate-adjusted estimate and check the randomization."
             )
 
         guardrailed = [

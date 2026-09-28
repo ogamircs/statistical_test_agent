@@ -196,7 +196,6 @@ def _render_ab_results_section(summary: Any) -> str:
     output += f"- **Segments Analyzed:** {normalized.total_segments_analyzed}\n"
     output += f"- **AA Test Passed:** {normalized.aa_test_passed_segments}\n"
     output += f"- **AA Test Failed:** {normalized.aa_test_failed_segments}\n"
-    output += f"- **Bootstrapped Segments:** {normalized.bootstrapped_segments}\n"
     output += (
         f"- **T-test Significant:** {normalized.t_test_significant_segments} "
         f"({normalized.t_test_significance_rate:.1%})\n"
@@ -256,14 +255,13 @@ def _render_ab_results_section(summary: Any) -> str:
         output += f"{truncation_notice}\n\n"
 
     output += "### AA Test & Pre/Post Analysis\n\n"
-    output += "| Segment | AA Pass | Boot | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
-    output += "|---------|---------|------|-----------|----------|------------|-----------|------------|\n"
+    output += "| Segment | AA Pass | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
+    output += "|---------|---------|-----------|----------|------------|-----------|------------|\n"
 
     for result in shown_results:
         aa_pass = "Yes" if result.aa_test_passed else "No"
-        boot = "Yes" if result.bootstrapping_applied else "No"
         output += (
-            f"| {_md_cell(result.segment)} | {aa_pass} | {boot} | "
+            f"| {_md_cell(result.segment)} | {aa_pass} | "
             f"{result.treatment_pre_mean:.2f} | {result.control_pre_mean:.2f} | "
             f"{result.treatment_post_mean:.2f} | {result.control_post_mean:.2f} | "
             f"{result.did_effect:.4f} |\n"

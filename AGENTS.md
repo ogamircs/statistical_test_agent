@@ -66,7 +66,7 @@ docs/TODO.md                The prioritized backlog. Read it before starting non
 ## Rules and invariants
 
 1. **Backend parity.** Any change to statistical behavior in `analyzer.py` or its helpers must be mirrored in `pyspark_analyzer.py`, with a test in `tests/test_parity_pandas_spark.py` when feasible. Prefer shared pure-Python helpers that work on collected aggregates over duplicating math in Spark.
-2. **Never degrade silently.** When a statistical fallback fires (model-fit fallback, test exception, power/MDE sentinel), surface a warning on the result that reaches the report. Do not return plausible-looking defaults.
+2. **Never degrade silently.** When a statistical fallback fires (model-fit fallback, test exception, power/MDE sentinel), append to `ABTestResult.statistical_warnings` so it reaches the report. Do not return plausible-looking defaults.
 3. **Report on consistent scales.** Effect sizes, CIs, and chart error bars must use the same scale (see TODO #36).
 4. **Tool contract.** Tools are built in `src/tooling/` and receive a `ToolContext`. Prefer `StructuredTool` with typed args over hand-parsed JSON or comma-split strings. The schema is what the LLM sees. Tool errors go through `render_tool_error` with a stable error code.
 5. **Prompt changes.** When you materially edit `src/prompts/system.md`, bump `PROMPT_VERSION` and update the tests that pin it. Keep golden tasks in `tests/eval/golden_tasks.py` in sync with tool names.
