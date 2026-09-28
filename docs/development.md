@@ -50,4 +50,4 @@ The large generator writes `data/sample_ab_data_large.csv`, which is intentional
 
 - `pyproject.toml` is the canonical dependency source.
 - `requirements.txt` remains as a compatibility shim for tooling that still expects it.
-- The root `README.md` plus the curated files in `docs/` are the only Markdown docs tracked in git.
+- The root `README.md`, `AGENTS.md` (instructions for AI coding agents), and the curated files in `docs/` are the only Markdown docs tracked in git.

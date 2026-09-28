@@ -126,3 +126,11 @@ def test_custom_ui_assets_define_processing_loader_hooks() -> None:
     assert ".processing-indicator" in custom_css
     assert ".processing-indicator-gif" in custom_css
     assert "@keyframes processing-indicator-spin" in custom_css
+
+
+def test_agents_md_is_tracked_and_documents_ci_gates() -> None:
+    gitignore = _read(".gitignore")
+    assert "!AGENTS.md" in gitignore, "AGENTS.md must be allowlisted past the *.md ignore"
+    agents = _read("AGENTS.md")
+    for gate in ("ruff check .", "mypy src app.py", "--cov-fail-under=78"):
+        assert gate in agents, f"AGENTS.md must document the CI gate: {gate}"
