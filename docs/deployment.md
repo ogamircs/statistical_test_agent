@@ -46,7 +46,7 @@ Compose and most orchestrators can detect a wedged container.
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | Yes | Used by `langchain-openai` for the agent LLM calls. |
-| `STATAGENT_DATA_ROOTS` | No | Extra directories (`os.pathsep`-separated) that CSV loading may read from. By default only `<app>/data`, `<app>/.uploads` (UI uploads), and the system temp directory are allowed; all other paths and every URL scheme are rejected. |
+| `STATAGENT_DATA_ROOTS` | No | Extra directories (`os.pathsep`-separated) that CSV loading may read from. By default only `<app>/data`, the UI uploads directory, and the system temp directory are allowed; all other paths and every URL scheme are rejected. Read once into `Config.data_roots`. |
 
 ### Optional tuning variables
 

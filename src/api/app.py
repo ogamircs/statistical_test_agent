@@ -24,6 +24,7 @@ On an unexpected failure an ``error`` event ``{"code", "message"}`` replaces
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import re
 from contextlib import contextmanager
@@ -105,10 +106,16 @@ def create_app(
     # config (tests, embedding) fully controls credentials and signing key.
     auth_enabled = is_auth_enabled(config)
     signer = TokenSigner(config.auth_secret)
+    resolved_uploads = uploads_dir or Path.cwd() / UPLOADS_DIRNAME
+    # Agents must be allowed to load what this app stores as uploads, even
+    # when uploads_dir is not the default <cwd>/.uploads.
+    agent_config = dataclasses.replace(
+        config, data_roots=(*config.data_roots, str(resolved_uploads))
+    )
     registry = SessionRegistry(
         store_dir=store_dir or Path(config.query_store_dir),
-        uploads_dir=uploads_dir or Path.cwd() / UPLOADS_DIRNAME,
-        agent_factory=agent_factory or _default_agent_factory(config),
+        uploads_dir=resolved_uploads,
+        agent_factory=agent_factory or _default_agent_factory(agent_config),
         max_upload_bytes=int(config.max_upload_mb * 1024 * 1024),
     )
     app = FastAPI(title="A/B Testing Agent", docs_url="/api/docs", openapi_url="/api/openapi.json")

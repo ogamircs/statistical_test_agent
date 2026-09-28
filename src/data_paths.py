@@ -7,19 +7,18 @@ rejects URL schemes and any path outside an explicitly allowed root.
 
 Allowed roots by default: ``<cwd>/data`` (bundled sample data), ``<cwd>/.uploads``
 (web UI upload storage, see ``UPLOADS_DIRNAME``), and the system temp directory.
-Additional roots can be granted with the ``STATAGENT_DATA_ROOTS`` environment
-variable (``os.pathsep``-separated absolute paths).
+Additional roots come from ``Config.data_roots`` (``STATAGENT_DATA_ROOTS``,
+``os.pathsep``-separated) and are passed in by the caller; this module never
+reads the environment, so an injected ``Config`` fully controls confinement.
 """
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Union
 from urllib.parse import urlsplit
 
-_DATA_ROOTS_ENV_VAR = "STATAGENT_DATA_ROOTS"
 # Directory (relative to the working directory) where the web API stores
 # uploaded CSVs, one sub-directory per session.
 UPLOADS_DIRNAME = ".uploads"
@@ -39,14 +38,11 @@ class DataPathNotAllowedError(ValueError):
         self.user_message = message
 
 
-def default_data_roots() -> List[Path]:
+def default_data_roots(extra_roots: Sequence[Union[str, Path]] = ()) -> List[Path]:
     """Roots a data file may be loaded from, resolved to real paths."""
     cwd = Path.cwd()
     roots = [cwd / "data", cwd / UPLOADS_DIRNAME, Path(tempfile.gettempdir())]
-    for entry in os.environ.get(_DATA_ROOTS_ENV_VAR, "").split(os.pathsep):
-        entry = entry.strip()
-        if entry:
-            roots.append(Path(entry))
+    roots.extend(Path(entry) for entry in extra_roots if str(entry).strip())
     return [root.expanduser().resolve() for root in roots]
 
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Tuple
+from pathlib import Path
+from typing import Any, Dict, Sequence, Tuple, Union
 
-from src.data_paths import resolve_data_path
+from src.data_paths import default_data_roots, resolve_data_path
 from src.statistics.analyzer_protocol import ABAnalyzerProtocol
 
 logger = logging.getLogger(__name__)
@@ -15,8 +16,15 @@ logger = logging.getLogger(__name__)
 class AgentRuntime:
     """Own the active analyzer and CSV loading."""
 
-    def __init__(self, *, analyzer: ABAnalyzerProtocol) -> None:
+    def __init__(
+        self,
+        *,
+        analyzer: ABAnalyzerProtocol,
+        extra_data_roots: Sequence[Union[str, Path]] = (),
+    ) -> None:
         self.analyzer: ABAnalyzerProtocol = analyzer
+        # From Config.data_roots; resolved per load so the defaults follow cwd.
+        self.extra_data_roots = tuple(extra_data_roots)
 
     def get_file_size_mb(self, filepath: str) -> float:
         """Get file size in megabytes; warn on OS errors and return 0.0."""
@@ -54,7 +62,9 @@ class AgentRuntime:
             DataPathNotAllowedError: when the path is a URL or falls outside
                 the allowed data roots (see src.data_paths).
         """
-        filepath = str(resolve_data_path(filepath))
+        filepath = str(
+            resolve_data_path(filepath, allowed_roots=default_data_roots(self.extra_data_roots))
+        )
         file_size_mb = self.get_file_size_mb(filepath)
         logger.info("Starting data load (file=%s, size_mb=%.2f)", filepath, file_size_mb)
         info = self.analyzer.load_data(filepath)

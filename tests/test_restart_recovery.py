@@ -181,3 +181,29 @@ def test_new_results_invalidate_pending_charts(tmp_path) -> None:
 
     assert agent.analysis_version > version
     assert agent.get_charts() == {}  # charts of the replaced results are gone
+
+
+def test_agent_can_load_uploads_from_a_custom_uploads_dir(monkeypatch, tmp_path) -> None:
+    # Self-review (PR #10): uploads stored in a non-default uploads_dir were
+    # outside the agent's allowed data roots, so the agent could not load them.
+    monkeypatch.setattr("src.data_paths.tempfile.gettempdir", lambda: str(tmp_path / "sys-tmp"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(
+        create_app(
+            config=Config(),
+            store_dir=tmp_path / "store",
+            uploads_dir=tmp_path / "custom-uploads",
+            frontend_dist=tmp_path / "no-dist",
+        )
+    )
+    session_id = client.post("/api/sessions").json()["id"]
+    with open(SAMPLE_CSV, "rb") as handle:
+        file_id = client.post(
+            f"/api/sessions/{session_id}/upload", files={"file": ("exp.csv", handle, "text/csv")}
+        ).json()["file_id"]
+
+    registry = client.app.state.registry  # type: ignore[attr-defined]
+    agent = registry.get(session_id).agent
+    _, info, _ = agent._load_data(str(registry.resolve_upload(session_id, file_id)))
+
+    assert info["shape"][0] == 5000

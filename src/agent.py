@@ -87,7 +87,9 @@ class ABTestingAgent:
             stream_usage=True,
             callbacks=[self.token_usage],
         )
-        self.runtime = AgentRuntime(analyzer=ABTestAnalyzer())
+        self.runtime = AgentRuntime(
+            analyzer=ABTestAnalyzer(), extra_data_roots=self.config.data_roots
+        )
         self.visualizer = ABTestVisualizer()
         session_kwargs: dict[str, Any] = {
             "llm": self.llm,

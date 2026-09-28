@@ -52,6 +52,8 @@ class Config:
     auth_password: str | None = field(default=None, repr=False)
     # Token signing key; None means a random per-app key (tokens die on restart).
     auth_secret: str | None = field(default=None, repr=False)
+    # Extra directories CSV loading may read from (beyond data/, .uploads/, tmp).
+    data_roots: tuple[str, ...] = ()
 
     @property
     def auth_enabled(self) -> bool:
@@ -97,6 +99,11 @@ class Config:
             auth_username=env.get("STATAGENT_AUTH_USERNAME") or None,
             auth_password=env.get("STATAGENT_AUTH_PASSWORD") or None,
             auth_secret=env.get("STATAGENT_AUTH_SECRET") or None,
+            data_roots=tuple(
+                entry.strip()
+                for entry in env.get("STATAGENT_DATA_ROOTS", "").split(os.pathsep)
+                if entry.strip()
+            ),
         )
 
     def validate_security(self) -> None:

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from src.agent_runtime import AgentRuntime
+from src.config import Config
 from src.data_paths import (
     DataPathNotAllowedError,
     default_data_roots,
@@ -123,13 +124,33 @@ def test_accepts_file_in_system_tempdir(tmp_path: Path) -> None:
     assert resolved == csv_path.resolve()
 
 
-def test_env_var_extends_default_roots(monkeypatch, tmp_path: Path) -> None:
+def test_config_data_roots_extend_default_roots(monkeypatch, tmp_path: Path) -> None:
     extra_root = tmp_path / "warehouse"
+    config = Config.from_env({"STATAGENT_DATA_ROOTS": str(extra_root)})
+
+    assert extra_root.resolve() in default_data_roots(config.data_roots)
+    # The module itself no longer reads the environment.
     monkeypatch.setenv("STATAGENT_DATA_ROOTS", str(extra_root))
+    assert extra_root.resolve() not in default_data_roots()
 
-    roots = default_data_roots()
 
-    assert extra_root.resolve() in roots
+def test_runtime_confines_loads_to_configured_roots(monkeypatch, tmp_path: Path) -> None:
+    # tmp_path lives under the system temp dir (a default root); move it away.
+    monkeypatch.setattr("src.data_paths.tempfile.gettempdir", lambda: str(tmp_path / "sys-tmp"))
+    monkeypatch.chdir(tmp_path)
+    from src.statistics import ABTestAnalyzer
+
+    warehouse = tmp_path / "warehouse"
+    warehouse.mkdir()
+    csv_path = warehouse / "exp.csv"
+    csv_path.write_text("group,value\ntreatment,1\ncontrol,2\n", encoding="utf-8")
+
+    with pytest.raises(DataPathNotAllowedError):
+        AgentRuntime(analyzer=ABTestAnalyzer()).load_data(str(csv_path))
+    _, info, _ = AgentRuntime(analyzer=ABTestAnalyzer(), extra_data_roots=[warehouse]).load_data(
+        str(csv_path)
+    )
+    assert info["shape"][0] == 2
 
 
 def test_error_carries_stable_code_and_user_message() -> None:
