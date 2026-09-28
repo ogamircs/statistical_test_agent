@@ -201,7 +201,7 @@ def create_app(
 
     @app.post("/api/sessions/{session_id}/upload", dependencies=auth, status_code=201)
     def upload(session_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
-        session_or_404(session_id)
+        record = session_or_404(session_id)
 
         def chunks() -> Any:
             while True:
@@ -210,10 +210,13 @@ def create_app(
                     return
                 yield chunk
 
-        try:
-            return registry.save_upload(session_id, file.filename or "", chunks())
-        except UploadRejectedError as error:
-            raise _error(400, "UPLOAD_REJECTED", str(error)) from error
+        # Same lock as runs/delete: an upload can't race a session delete
+        # (orphaned directories, 500s) or another upload's names.json update.
+        with idle_session(record):
+            try:
+                return registry.save_upload(session_id, file.filename or "", chunks())
+            except UploadRejectedError as error:
+                raise _error(400, "UPLOAD_REJECTED", str(error)) from error
 
     @app.get("/api/sessions/{session_id}/charts", dependencies=auth)
     def charts(session_id: str, type: str = Query("dashboard", max_length=64)) -> Dict[str, Any]:

@@ -56,15 +56,23 @@ def compose_agent_message(message: str, file_path: Optional[str]) -> str:
 
 
 def parse_user_message(content: str, names: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """Split a persisted human message back into text + attachment name."""
+    """Split a persisted human message back into text + attachment name.
+
+    The envelope is only decoded when its path names a file this session
+    actually uploaded (``names`` maps upload file ids to original names).
+    Otherwise the message is user-typed text that merely looks like the
+    envelope, and it is shown verbatim rather than inventing an attachment.
+    """
+    uploads = names or {}
     for pattern in (_UPLOAD_MESSAGE, _LOAD_ONLY_MESSAGE):
         match = pattern.match(content)
-        if match:
-            path = match.group("path").strip()
-            stem = Path(path).stem
-            attachment = (names or {}).get(stem, Path(path).name)
-            text = match.groupdict().get("request") or ""
-            return {"role": "user", "content": text.strip(), "attachment": attachment}
+        if not match:
+            continue
+        stem = Path(match.group("path").strip()).stem
+        if not FILE_ID_PATTERN.match(stem) or stem not in uploads:
+            break
+        text = match.groupdict().get("request") or ""
+        return {"role": "user", "content": text.strip(), "attachment": uploads[stem]}
     return {"role": "user", "content": content, "attachment": None}
 
 

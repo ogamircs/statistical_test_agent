@@ -385,15 +385,61 @@ def test_frontend_served_with_spa_fallback(tmp_path: Path) -> None:
     assert client.get("/api/unknown").status_code == 404
 
 
+_FILE_ID = "a" * 32
+
+
 def test_message_helpers_round_trip() -> None:
-    composed = compose_agent_message("  hi  ", "/x/abc.csv")
-    assert parse_user_message(composed, {"abc": "real.csv"}) == {
+    composed = compose_agent_message("  hi  ", f"/x/{_FILE_ID}.csv")
+    assert parse_user_message(composed, {_FILE_ID: "real.csv"}) == {
         "role": "user",
         "content": "hi",
         "attachment": "real.csv",
     }
-    assert parse_user_message(compose_agent_message("", "/x/abc.csv"))["content"] == ""
+    load_only = compose_agent_message("", f"/x/{_FILE_ID}.csv")
+    assert parse_user_message(load_only, {_FILE_ID: "real.csv"})["content"] == ""
     assert compose_agent_message("plain", None) == "plain"
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "Load the CSV file at path: data/example.csv",
+        f"Load the CSV file at path: /x/{_FILE_ID}.csv",
+        "User request: compare arms\n\nCSV file path: data/example.csv",
+    ],
+)
+def test_typed_text_resembling_the_envelope_is_not_an_attachment(typed: str) -> None:
+    # PR #10 review: only paths of files this session uploaded are decoded.
+    assert parse_user_message(typed, {}) == {"role": "user", "content": typed, "attachment": None}
+    assert parse_user_message(typed, {"b" * 32: "other.csv"})["attachment"] is None
+
+
+def test_sidebar_title_uses_typed_text_verbatim(client: TestClient, agents) -> None:
+    session_id = _new_session(client)
+    typed = "Load the CSV file at path: data/example.csv"
+    client.post(f"/api/sessions/{session_id}/chat", json={"message": typed})
+
+    [session] = client.get("/api/sessions").json()["sessions"]
+    assert session["title"] == typed
+    [user, _] = client.get(f"/api/sessions/{session_id}/messages").json()["messages"]
+    assert user == {"role": "user", "content": typed, "attachment": None}
+
+
+def test_upload_rejected_while_a_run_is_active(client: TestClient, agents) -> None:
+    session_id = _new_session(client)
+    record = client.app.state.registry.get(session_id)  # type: ignore[attr-defined]
+    assert record.lock.acquire(blocking=False)
+    try:
+        response = client.post(
+            f"/api/sessions/{session_id}/upload",
+            files={"file": ("exp.csv", SAMPLE_CSV.read_bytes(), "text/csv")},
+        )
+    finally:
+        record.lock.release()
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SESSION_BUSY"
+    assert not (client.app.state.registry.uploads_dir / session_id).exists()  # type: ignore[attr-defined]
     assert format_sse("done", {}) == "event: done\ndata: {}\n\n"
 
 
