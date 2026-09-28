@@ -232,10 +232,10 @@ Input: file path. This is the FASTEST way to get results.""",
             name="set_column_mapping",
             description="Set the column mapping for A/B test analysis. Specify which columns contain customer ID, group indicator, effect value, segments, and duration.",
         ),
-        Tool(
+        StructuredTool.from_function(
+            func=set_group_labels,
             name="set_group_labels",
-            func=lambda x: set_group_labels(*[s.strip() for s in x.split(",")]),
-            description="Set the treatment and control group labels. Input format: 'treatment_label, control_label'",
+            description="Set the treatment and control group labels (exact values from the group column).",
         ),
         StructuredTool.from_function(
             func=configure_and_analyze,

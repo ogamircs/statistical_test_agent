@@ -12,11 +12,11 @@ from src.statistics.models import ABTestSummary
 
 
 class _DummyGraphAgent:
-    def invoke(self, _payload):
+    def invoke(self, _payload, config=None):
         return {"messages": [AIMessage(content="dummy response")]}
 
 class _FailingGraphAgent:
-    def invoke(self, _payload):
+    def invoke(self, _payload, config=None):
         raise RuntimeError("boom")
 
 
@@ -237,8 +237,8 @@ def stubbed_agent(monkeypatch):
     monkeypatch.setattr(agent_module, "ChatOpenAI", lambda **_kwargs: object())
     monkeypatch.setattr(
         agent_module,
-        "create_react_agent",
-        lambda _llm, _tools, prompt=None: _DummyGraphAgent(),
+        "create_agent",
+        lambda _llm, _tools, system_prompt=None: _DummyGraphAgent(),
     )
     return ABTestingAgent()
 
@@ -266,6 +266,20 @@ def test_agent_has_expected_tools(stubbed_agent):
         "generate_charts",
     }
     assert expected.issubset(names)
+
+
+def test_set_group_labels_is_structured_and_accepts_commas(stubbed_agent):
+    """Labels containing commas must not be split apart (TODO.md #78)."""
+    fake_analyzer = _FakeAnalyzer()
+    stubbed_agent.analyzer = fake_analyzer
+    tool = _get_tool(stubbed_agent, "set_group_labels")
+
+    assert set(tool.args) == {"treatment_label", "control_label"}
+    result = tool.invoke({"treatment_label": "variant, B", "control_label": "control"})
+
+    assert "error_code" not in result
+    assert fake_analyzer.treatment_label == "variant, B"
+    assert fake_analyzer.control_label == "control"
 
 
 def test_clear_memory(stubbed_agent):
