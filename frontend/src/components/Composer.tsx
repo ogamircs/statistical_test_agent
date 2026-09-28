@@ -6,7 +6,8 @@ interface Props {
   attached: File | null;
   onAttach: (file: File) => void;
   onDetach: () => void;
-  onSend: (text: string) => void;
+  /** Resolve to false when the message was not sent; the draft is restored. */
+  onSend: (text: string) => void | Promise<boolean | void>;
 }
 
 export function Composer({ disabled, attached, onAttach, onDetach, onSend }: Props) {
@@ -22,8 +23,13 @@ export function Composer({ disabled, attached, onAttach, onDetach, onSend }: Pro
 
   const send = () => {
     if (disabled || (!text.trim() && !attached)) return;
-    onSend(text);
+    const draft = text;
     setText("");
+    void Promise.resolve(onSend(draft)).then((sent) => {
+      // Rejected (e.g. SESSION_BUSY): give the user their text back unless
+      // they already started typing something new.
+      if (sent === false) setText((current) => current || draft);
+    });
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {

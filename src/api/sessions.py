@@ -81,6 +81,9 @@ class SessionRecord:
     agent: Any
     lock: threading.Lock = field(default_factory=threading.Lock)
     latest_charts: List[Dict[str, Any]] = field(default_factory=list)
+    # Set by SessionRegistry.delete. Anyone who looked the record up before
+    # the delete must re-check this after taking `lock` and back off.
+    deleted: bool = False
     # The agent's analysis_version the latest charts were built from; when
     # the agent's version moves on, those charts describe a replaced analysis.
     charts_version: int = 0
@@ -169,7 +172,9 @@ class SessionRegistry:
         # could build a fresh agent over the still-present store, whose files
         # this loop then deletes underneath it.
         with self._guard:
-            self._records.pop(session_id, None)
+            record = self._records.pop(session_id, None)
+            if record is not None:
+                record.deleted = True
             for suffix in ("", "-wal", "-shm"):
                 path = Path(f"{self.store_path(session_id)}{suffix}")
                 if path.exists():

@@ -102,8 +102,9 @@ export default function App() {
     setAttached(file);
   };
 
-  const send = async (text: string) => {
-    if (busy) return;
+  const send = async (text: string): Promise<boolean> => {
+    if (busy || chartLoading) return false;
+    navigation.begin(); // a pending openSession must not replace this conversation
     setBusy(true);
     setNotice(null);
     const file = attached;
@@ -131,6 +132,7 @@ export default function App() {
       const live = new TokenBuffer((streamed) =>
         updateAssistant(assistantId, (m) => ({ ...m, content: streamed })),
       );
+      let rejectedAsBusy = false;
       try {
         for await (const event of api.chat(sessionId, text, fileId)) {
           switch (event.event) {
@@ -185,8 +187,18 @@ export default function App() {
               break;
           }
         }
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "SESSION_BUSY")) throw error;
+        // Nothing was persisted: drop the optimistic turn instead of leaving a
+        // prompt and an empty reply that vanish on reload.
+        rejectedAsBusy = true;
+        setMessages((current) =>
+          current.filter((m) => m.id !== userMessage.id && m.id !== assistantId),
+        );
+        setNotice(error.message);
       } finally {
         live.stop();
+        if (rejectedAsBusy) return false;
         updateAssistant(assistantId, (m) => ({
           ...m,
           pending: false,
@@ -194,8 +206,10 @@ export default function App() {
         }));
       }
       await refreshSessions();
+      return true;
     } catch (error) {
       handleError(error);
+      return true; // the turn was shown with its error; do not restore the draft
     } finally {
       setBusy(false);
     }
@@ -363,7 +377,7 @@ export default function App() {
         )}
 
         <Composer
-          disabled={busy}
+          disabled={busy || chartLoading}
           attached={attached}
           onAttach={attach}
           onDetach={() => setAttached(null)}

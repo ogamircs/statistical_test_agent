@@ -440,10 +440,13 @@ class ABTestingAgent:
         model's text as it is generated; the full final answer is still
         returned and persisted exactly as without it.
         """
+        prompt_recorded = False
+        reply_recorded = False
         try:
             self.token_usage.reset()
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
+            prompt_recorded = True
             self.session.query_store.save_chat_message("human", message)
             run_config: Dict[str, Any] = {"recursion_limit": self.config.agent_recursion_limit}
             if callbacks:
@@ -454,8 +457,8 @@ class ABTestingAgent:
             else:
                 result = self._stream_run(graph_input, run_config, on_token)
             response = result["messages"][-1].content
-            self.chat_history.append(AIMessage(content=response))
-            self.session.query_store.save_chat_message("ai", str(response))
+            reply_recorded = True
+            self._record_reply(response)
             usage = self.token_usage.snapshot()
             logger.info(
                 "Agent run completed (response_chars=%d, llm_calls=%d, "
@@ -469,12 +472,22 @@ class ABTestingAgent:
             return response
         except Exception as e:
             logger.exception("Agent run failed")
-            return render_tool_error(
+            reply = render_tool_error(
                 "Error processing request",
                 self._classify_run_error(e),
                 default_code="AGENT_EXECUTION_FAILED",
                 default_message="Unable to process your request right now.",
             )
+            # Persist the error like any reply: otherwise a reload shows only
+            # the prompt and the next turn sends a dangling human message.
+            if prompt_recorded and not reply_recorded:
+                self._record_reply(reply)
+            return reply
+
+    def _record_reply(self, reply: Any) -> None:
+        """Append the assistant turn to memory and the persisted history."""
+        self.chat_history.append(AIMessage(content=reply))
+        self.session.query_store.save_chat_message("ai", str(reply))
 
     def _stream_run(
         self,

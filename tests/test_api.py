@@ -632,3 +632,47 @@ def test_delete_holds_the_registry_guard_until_files_are_gone(client: TestClient
     assert client.delete(f"/api/sessions/{session_id}").status_code == 204
 
     assert guard_free_during_unlink == [False], "get() could re-create the session mid-delete"
+
+
+class _DeleteOnAcquireLock:
+    """A lock whose first acquire lets a concurrent delete win the race."""
+
+    def __init__(self, on_first_acquire: Any) -> None:
+        self._lock = threading.Lock()
+        self._hook = on_first_acquire
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        hook, self._hook = self._hook, None
+        if hook is not None:
+            hook()
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("POST", "/api/sessions/{id}/chat", {"message": "hi"}),
+        ("DELETE", "/api/sessions/{id}/messages", None),
+        ("GET", "/api/sessions/{id}/charts", None),
+    ],
+)
+def test_endpoints_back_off_when_the_session_was_deleted_before_they_locked(
+    client: TestClient, agents, method: str, path: str, body: Any
+) -> None:
+    session_id = _new_session(client)
+    client.post(f"/api/sessions/{session_id}/chat", json={"message": "hello"})
+    registry = client.app.state.registry  # type: ignore[attr-defined]
+    record = registry.get(session_id)
+    store = registry.store_path(session_id)
+    record.lock = _DeleteOnAcquireLock(lambda: registry.delete(session_id))
+    calls_before = len(agents[0].received)
+
+    response = client.request(method, path.format(id=session_id), json=body)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "SESSION_NOT_FOUND"
+    assert len(agents[0].received) == calls_before, "must not run on a deleted session"
+    assert not store.exists(), "must not recreate the deleted store"

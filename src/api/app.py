@@ -143,6 +143,8 @@ def create_app(
         if not record.lock.acquire(blocking=False):
             raise _error(409, "SESSION_BUSY", "This session is still working on a request.")
         try:
+            if record.deleted:  # deleted between lookup and lock
+                raise _error(404, "SESSION_NOT_FOUND", "Unknown session.")
             yield
         finally:
             record.lock.release()
@@ -261,6 +263,9 @@ def create_app(
             raise _error(400, "EMPTY_MESSAGE", "Type a message or attach a CSV file.")
         if not record.lock.acquire(blocking=False):
             raise _error(409, "SESSION_BUSY", "This session is still working on a request.")
+        if record.deleted:  # deleted between lookup and lock: never run on it
+            record.lock.release()
+            raise _error(404, "SESSION_NOT_FOUND", "Unknown session.")
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[tuple[str, Dict[str, Any]]] = asyncio.Queue()

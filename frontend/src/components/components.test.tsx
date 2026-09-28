@@ -68,6 +68,28 @@ describe("MessageItem", () => {
 });
 
 describe("Composer", () => {
+  it("restores the draft when the send is rejected (e.g. SESSION_BUSY)", async () => {
+    const onSend = vi.fn(() => Promise.resolve(false));
+    render(<Composer disabled={false} attached={null} onAttach={vi.fn()} onDetach={vi.fn()} onSend={onSend} />);
+    const input = screen.getByLabelText("Message");
+
+    await userEvent.type(input, "compare segments{Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("compare segments");
+    await vi.waitFor(() => expect(input).toHaveValue("compare segments"));
+  });
+
+  it("keeps the box empty after an accepted send", async () => {
+    const onSend = vi.fn(() => Promise.resolve(true));
+    render(<Composer disabled={false} attached={null} onAttach={vi.fn()} onDetach={vi.fn()} onSend={onSend} />);
+    const input = screen.getByLabelText("Message");
+
+    await userEvent.type(input, "hello{Enter}");
+    await Promise.resolve();
+
+    expect(input).toHaveValue("");
+  });
+
   it("moves focus to the message box once a file is attached", () => {
     const file = new File(["a,b\n1,2\n"], "exp.csv", { type: "text/csv" });
     const props = { disabled: false, onAttach: vi.fn(), onDetach: vi.fn(), onSend: vi.fn() };
