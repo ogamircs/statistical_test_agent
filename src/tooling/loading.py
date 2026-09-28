@@ -14,6 +14,7 @@ from ..agent_reporting import (
     render_load_csv_success,
     render_set_column_mapping_success,
 )
+from ..statistics.diagnostics import validate_expected_treatment_ratio
 from .common import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -98,9 +99,10 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
         effect_value: str = "",
         segment: Optional[str] = None,
         duration: Optional[str] = None,
+        expected_treatment_ratio: Optional[float] = None,
     ) -> str:
         logger.info("Tool set_column_mapping started")
-        mapping = {}
+        mapping: dict = {}
         if customer_id:
             mapping["customer_id"] = customer_id
         if group:
@@ -113,6 +115,11 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
             mapping["duration"] = duration
 
         try:
+            if expected_treatment_ratio is not None:
+                # Designed treatment share for the SRM check (e.g. 0.1 for a 90/10 holdout).
+                mapping["expected_treatment_ratio"] = validate_expected_treatment_ratio(
+                    expected_treatment_ratio
+                )
             analyzer = context.active_analyzer()
             analyzer.set_column_mapping(mapping)
             logger.info("Tool set_column_mapping completed (fields=%s)", sorted(mapping.keys()))
@@ -230,7 +237,7 @@ Input: file path. This is the FASTEST way to get results.""",
         StructuredTool.from_function(
             func=set_column_mapping,
             name="set_column_mapping",
-            description="Set the column mapping for A/B test analysis. Specify which columns contain customer ID, group indicator, effect value, segments, and duration.",
+            description="Set the column mapping for A/B test analysis. Specify which columns contain customer ID, group indicator, effect value, segments, and duration. If the experiment intentionally uses an unequal split, pass expected_treatment_ratio (treatment share, e.g. 0.1 for a 90/10 holdout) so the sample-ratio-mismatch check uses the designed split.",
         ),
         Tool(
             name="set_group_labels",

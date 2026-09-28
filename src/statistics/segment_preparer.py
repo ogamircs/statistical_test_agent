@@ -1,8 +1,8 @@
 """
 Segment Preparation for A/B Test Analysis
 
-Extracts group splitting, post-only baseline construction, pre-period alignment
-with AA testing and bootstrap balancing into a dedicated component.
+Extracts group splitting, post-only baseline construction, and pre-period
+alignment with AA (balance) testing into a dedicated component.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class SegmentPreparer:
     Parameters
     ----------
     stats_engine:
-        The inferential statistics engine (used for AA tests and bootstrapping).
+        The inferential statistics engine (used for AA tests).
     significance_level:
         Alpha threshold passed through from the analyzer.
     """
@@ -172,7 +172,7 @@ class SegmentPreparer:
         segment_name: str,
         prepared: _PreparedSegmentData,
     ) -> None:
-        """Align pre/post data, run AA checks, and bootstrap control when needed."""
+        """Align pre/post data and record the AA (pre-period balance) check."""
         if not prepared.has_pre_effect or pre_effect_col is None:
             return
 
@@ -195,19 +195,12 @@ class SegmentPreparer:
         prepared.treatment_pre_mean = aa_result.treatment_pre_mean
         prepared.control_pre_mean = aa_result.control_pre_mean
 
+        # A failed AA check is surfaced (aa_test_passed=False -> warnings and
+        # recommendations), never "repaired" by resampling control rows until
+        # the AA p-value looks good: selecting data conditional on a test
+        # outcome biases every downstream p-value (TODO.md #88). CUPED, DiD
+        # and covariate adjustment remain the remedies for baseline imbalance.
         control_df_for_analysis = control_aligned_df
-        if not prepared.aa_test_passed and len(control_aligned_df) > 0:
-            control_df_for_analysis, aa_result = self.stats_engine.bootstrap_balanced_control(
-                treatment_pre=treatment_pre,
-                control_df=control_aligned_df,
-                pre_col=pre_effect_col,
-            )
-            prepared.aa_test_passed = aa_result.is_balanced
-            prepared.aa_p_value = aa_result.aa_p_value
-            prepared.bootstrapping_applied = aa_result.bootstrapping_applied
-            prepared.original_control_size = aa_result.original_control_size
-            prepared.control_pre_mean = aa_result.control_pre_mean
-
         prepared.treatment_pre_aligned = treatment_aligned_df[pre_effect_col].to_numpy()
         prepared.treatment_post_aligned = treatment_aligned_df[post_effect_col].to_numpy()
         prepared.control_pre_aligned = control_df_for_analysis[pre_effect_col].to_numpy()

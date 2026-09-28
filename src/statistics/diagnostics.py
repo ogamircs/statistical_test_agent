@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -149,6 +149,77 @@ def run_srm_diagnostics(
         diagnostics["is_applicable"] = False
         diagnostics["reason"] = "srm_test_failed"
         return diagnostics
+
+
+DEFAULT_EXPECTED_TREATMENT_RATIO = 0.5
+
+
+def resolve_expected_treatment_ratio(
+    column_mapping: Mapping[str, Any] | None,
+    default: float = DEFAULT_EXPECTED_TREATMENT_RATIO,
+) -> float:
+    """Resolve the designed treatment share used by the SRM check.
+
+    ``column_mapping["expected_treatment_ratio"]`` (a per-experiment option,
+    e.g. ``0.1`` for a 90/10 holdout) wins over the analyzer-level
+    ``default``. Raises ``ValueError`` for values outside (0, 1) so a typo
+    cannot silently disable SRM protection.
+    """
+    raw = (column_mapping or {}).get("expected_treatment_ratio")
+    value = default if raw in (None, "") else raw
+    return validate_expected_treatment_ratio(value)
+
+
+def validate_expected_treatment_ratio(value: Any) -> float:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"expected_treatment_ratio must be a number in (0, 1); got {value!r}"
+        ) from error
+    if not np.isfinite(ratio) or ratio <= 0.0 or ratio >= 1.0:
+        raise ValueError(
+            f"expected_treatment_ratio must be strictly between 0 and 1; got {value!r}"
+        )
+    return ratio
+
+
+# Diagnostic reason codes that mean a statistical routine silently degraded to
+# a fallback/placeholder. They must reach the report (TODO.md #43): a model
+# that systematically fails otherwise looks exactly like a clean null result.
+_FALLBACK_REASON_MESSAGES: Dict[str, str] = {
+    "model_fit_failed_fallback_to_ols": (
+        "the selected model failed to fit; the effect was re-estimated with OLS (HC3)"
+    ),
+    "invalid_p_value": "the test produced an invalid p-value; it was replaced by 1.0",
+    "marginal_effect_ci_failed_using_model_scale": (
+        "the effect-scale confidence interval could not be computed; "
+        "the model-scale interval is shown instead"
+    ),
+    "proportion_test_failed": (
+        "the proportion test failed; its p-value is a 1.0 placeholder"
+    ),
+}
+
+
+def describe_statistical_fallbacks(
+    source: str,
+    diagnostics: Mapping[str, Any] | None,
+    *,
+    model_type: str | None = None,
+) -> List[str]:
+    """Translate fallback reason codes in a diagnostics block into warnings."""
+    reasons: Iterable[str] = (diagnostics or {}).get("reasons", []) or []
+    messages = [
+        f"{source}: {_FALLBACK_REASON_MESSAGES[reason]}"
+        for reason in dict.fromkeys(reasons)
+        if reason in _FALLBACK_REASON_MESSAGES
+    ]
+    if model_type == "compare_means_fallback":
+        messages.append(
+            f"{source}: model fitting failed twice; fell back to a Welch t-test on raw means"
+        )
+    return messages
 
 
 def run_assumption_diagnostics(

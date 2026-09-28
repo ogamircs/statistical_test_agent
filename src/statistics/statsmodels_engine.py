@@ -21,9 +21,6 @@ from .diagnostics import (
 )
 from .engine_helpers import build_diagnostics, sanitize_numeric, sanitize_p_value, zero_if_tiny
 from .experiment_design import (
-    bootstrap_balanced_control as compute_bootstrap_balanced_control,
-)
-from .experiment_design import (
     run_aa_test as compute_aa_test,
 )
 from .model_families import (
@@ -333,24 +330,6 @@ class StatsmodelsABTestEngine:
             significance_level=self.significance_level,
         )
 
-    def bootstrap_balanced_control(
-        self,
-        treatment_pre: np.ndarray,
-        control_df,
-        pre_col: str,
-        max_iterations: int = 1000,
-        target_p_value: float = 0.10,
-    ):
-        return compute_bootstrap_balanced_control(
-            treatment_pre=treatment_pre,
-            control_df=control_df,
-            pre_col=pre_col,
-            max_iterations=max_iterations,
-            target_p_value=target_p_value,
-            significance_level=self.significance_level,
-            seed=self.seed,
-        )
-
     def estimate_treatment_effect(
         self,
         treatment_data: np.ndarray,
@@ -396,136 +375,18 @@ class StatsmodelsABTestEngine:
         treatment_data: np.ndarray,
         control_data: np.ndarray,
     ) -> Dict[str, Any]:
-        """Run two-proportion z-test with statsmodels."""
+        """Run two-proportion score test with statsmodels (non-zero = converted)."""
         treatment_data, treatment_invalid = self._sanitize_numeric(treatment_data)
         control_data, control_invalid = self._sanitize_numeric(control_data)
-
-        treatment_conversions = int(np.sum(treatment_data != 0))
-        control_conversions = int(np.sum(control_data != 0))
-        n_treatment = len(treatment_data)
-        n_control = len(control_data)
-
-        p_treatment = treatment_conversions / n_treatment if n_treatment > 0 else 0.0
-        p_control = control_conversions / n_control if n_control > 0 else 0.0
-
-        non_finite_removed = treatment_invalid + control_invalid
-        small_n = (
-            n_treatment < self.MIN_RECOMMENDED_SAMPLE_SIZE
-            or n_control < self.MIN_RECOMMENDED_SAMPLE_SIZE
+        return run_two_proportion_test(
+            treatment_conversions=int(np.sum(treatment_data != 0)),
+            n_treatment=len(treatment_data),
+            control_conversions=int(np.sum(control_data != 0)),
+            n_control=len(control_data),
+            non_finite_removed=treatment_invalid + control_invalid,
+            min_recommended_sample_size=self.MIN_RECOMMENDED_SAMPLE_SIZE,
+            min_expected_cell=self.MIN_EXPECTED_PROPORTION_CELL,
         )
-        invalid_inputs = n_treatment <= 0 or n_control <= 0
-        degenerate_proportions = (
-            n_treatment > 0
-            and n_control > 0
-            and (
-                (treatment_conversions == 0 and control_conversions == 0)
-                or (treatment_conversions == n_treatment and control_conversions == n_control)
-            )
-        )
-        expected_counts_too_small = False
-        if n_treatment > 0 and n_control > 0:
-            expected_counts = [
-                treatment_conversions,
-                n_treatment - treatment_conversions,
-                control_conversions,
-                n_control - control_conversions,
-            ]
-            expected_counts_too_small = any(
-                count < self.MIN_EXPECTED_PROPORTION_CELL for count in expected_counts
-            )
-
-        reasons: List[str] = []
-        if non_finite_removed > 0:
-            reasons.append("non_finite_values_removed")
-        if invalid_inputs:
-            reasons.append("invalid_proportion_inputs")
-        if small_n:
-            reasons.append("small_sample_size")
-        if expected_counts_too_small:
-            reasons.append("expected_counts_too_small")
-        if degenerate_proportions:
-            reasons.append("degenerate_proportions")
-
-        blocks_significance = (
-            invalid_inputs or small_n or expected_counts_too_small or degenerate_proportions
-        )
-        diagnostics = self._build_diagnostics(
-            reasons,
-            blocks_significance=blocks_significance,
-            small_n=small_n,
-            invalid_proportion_inputs=invalid_inputs,
-            expected_counts_too_small=expected_counts_too_small,
-            degenerate_proportions=degenerate_proportions,
-            non_finite_values_removed=non_finite_removed,
-        )
-
-        if invalid_inputs or expected_counts_too_small or degenerate_proportions:
-            return {
-                "treatment_proportion": p_treatment,
-                "control_proportion": p_control,
-                "proportion_diff": p_treatment - p_control,
-                "z_stat": 0.0,
-                "p_value": 1.0,
-                "ci_lower": 0.0,
-                "ci_upper": 0.0,
-                "diagnostics": diagnostics,
-            }
-
-        try:
-            z_stat, p_value = test_proportions_2indep(
-                treatment_conversions,
-                n_treatment,
-                control_conversions,
-                n_control,
-                method="score",
-                alternative="two-sided",
-            )
-            ci_lower, ci_upper = confint_proportions_2indep(
-                treatment_conversions,
-                n_treatment,
-                control_conversions,
-                n_control,
-                method="score",
-            )
-
-            raw_p_value = float(p_value)
-            if not np.isfinite(raw_p_value) or raw_p_value < 0.0 or raw_p_value > 1.0:
-                raw_p_value = 1.0
-                diagnostics["guardrail_triggered"] = True
-                diagnostics["blocks_significance"] = True
-                diagnostics["invalid_proportion_inputs"] = True
-                diagnostics["reasons"] = [*diagnostics["reasons"], "invalid_p_value"]
-
-            return {
-                "treatment_proportion": p_treatment,
-                "control_proportion": p_control,
-                "proportion_diff": p_treatment - p_control,
-                "z_stat": float(z_stat),
-                "p_value": raw_p_value,
-                "ci_lower": float(ci_lower),
-                "ci_upper": float(ci_upper),
-                "diagnostics": diagnostics,
-            }
-        except Exception:
-            fallback_diagnostics = self._build_diagnostics(
-                [*reasons, "proportion_test_failed"],
-                blocks_significance=True,
-                small_n=small_n,
-                invalid_proportion_inputs=True,
-                expected_counts_too_small=expected_counts_too_small,
-                degenerate_proportions=degenerate_proportions,
-                non_finite_values_removed=non_finite_removed,
-            )
-            return {
-                "treatment_proportion": p_treatment,
-                "control_proportion": p_control,
-                "proportion_diff": p_treatment - p_control,
-                "z_stat": 0.0,
-                "p_value": 1.0,
-                "ci_lower": 0.0,
-                "ci_upper": 0.0,
-                "diagnostics": fallback_diagnostics,
-            }
 
     def run_bayesian_test(
         self,
@@ -545,3 +406,142 @@ class StatsmodelsABTestEngine:
             n_samples=n_samples,
             seed=self.seed,
         )
+
+
+def run_two_proportion_test(
+    *,
+    treatment_conversions: int,
+    n_treatment: int,
+    control_conversions: int,
+    n_control: int,
+    non_finite_removed: int = 0,
+    min_recommended_sample_size: int = 8,
+    min_expected_cell: int = 5,
+) -> Dict[str, Any]:
+    """Two-proportion score test on aggregate counts, with guardrails.
+
+    Shared by the pandas and Spark backends (TODO.md #37) so the same counts
+    always yield the same p-value, CI and guardrail decisions. Small-n,
+    small expected-cell and degenerate inputs block significance.
+    """
+    p_treatment = treatment_conversions / n_treatment if n_treatment > 0 else 0.0
+    p_control = control_conversions / n_control if n_control > 0 else 0.0
+
+    small_n = (
+        n_treatment < min_recommended_sample_size
+        or n_control < min_recommended_sample_size
+    )
+    invalid_inputs = n_treatment <= 0 or n_control <= 0
+    degenerate_proportions = (
+        n_treatment > 0
+        and n_control > 0
+        and (
+            (treatment_conversions == 0 and control_conversions == 0)
+            or (treatment_conversions == n_treatment and control_conversions == n_control)
+        )
+    )
+    expected_counts_too_small = False
+    if n_treatment > 0 and n_control > 0:
+        expected_counts = [
+            treatment_conversions,
+            n_treatment - treatment_conversions,
+            control_conversions,
+            n_control - control_conversions,
+        ]
+        expected_counts_too_small = any(
+            count < min_expected_cell for count in expected_counts
+        )
+
+    reasons: List[str] = []
+    if non_finite_removed > 0:
+        reasons.append("non_finite_values_removed")
+    if invalid_inputs:
+        reasons.append("invalid_proportion_inputs")
+    if small_n:
+        reasons.append("small_sample_size")
+    if expected_counts_too_small:
+        reasons.append("expected_counts_too_small")
+    if degenerate_proportions:
+        reasons.append("degenerate_proportions")
+
+    blocks_significance = (
+        invalid_inputs or small_n or expected_counts_too_small or degenerate_proportions
+    )
+    diagnostics = build_diagnostics(
+        reasons,
+        blocks_significance=blocks_significance,
+        small_n=small_n,
+        invalid_proportion_inputs=invalid_inputs,
+        expected_counts_too_small=expected_counts_too_small,
+        degenerate_proportions=degenerate_proportions,
+        non_finite_values_removed=non_finite_removed,
+    )
+
+    if invalid_inputs or expected_counts_too_small or degenerate_proportions:
+        return {
+            "treatment_proportion": p_treatment,
+            "control_proportion": p_control,
+            "proportion_diff": p_treatment - p_control,
+            "z_stat": 0.0,
+            "p_value": 1.0,
+            "ci_lower": 0.0,
+            "ci_upper": 0.0,
+            "diagnostics": diagnostics,
+        }
+
+    try:
+        z_stat, p_value = test_proportions_2indep(
+            treatment_conversions,
+            n_treatment,
+            control_conversions,
+            n_control,
+            method="score",
+            alternative="two-sided",
+        )
+        ci_lower, ci_upper = confint_proportions_2indep(
+            treatment_conversions,
+            n_treatment,
+            control_conversions,
+            n_control,
+            method="score",
+        )
+
+        raw_p_value = float(p_value)
+        if not np.isfinite(raw_p_value) or raw_p_value < 0.0 or raw_p_value > 1.0:
+            raw_p_value = 1.0
+            diagnostics["guardrail_triggered"] = True
+            diagnostics["blocks_significance"] = True
+            diagnostics["invalid_proportion_inputs"] = True
+            diagnostics["reasons"] = [*diagnostics["reasons"], "invalid_p_value"]
+
+        return {
+            "treatment_proportion": p_treatment,
+            "control_proportion": p_control,
+            "proportion_diff": p_treatment - p_control,
+            "z_stat": float(z_stat),
+            "p_value": raw_p_value,
+            "ci_lower": float(ci_lower),
+            "ci_upper": float(ci_upper),
+            "diagnostics": diagnostics,
+        }
+    except Exception:
+        fallback_diagnostics = build_diagnostics(
+            [*reasons, "proportion_test_failed"],
+            blocks_significance=True,
+            small_n=small_n,
+            invalid_proportion_inputs=True,
+            expected_counts_too_small=expected_counts_too_small,
+            degenerate_proportions=degenerate_proportions,
+            non_finite_values_removed=non_finite_removed,
+        )
+        return {
+            "treatment_proportion": p_treatment,
+            "control_proportion": p_control,
+            "proportion_diff": p_treatment - p_control,
+            "z_stat": 0.0,
+            "p_value": 1.0,
+            "ci_lower": 0.0,
+            "ci_upper": 0.0,
+            "diagnostics": fallback_diagnostics,
+        }
+
