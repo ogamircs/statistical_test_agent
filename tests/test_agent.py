@@ -268,6 +268,20 @@ def test_agent_has_expected_tools(stubbed_agent):
     assert expected.issubset(names)
 
 
+def test_set_group_labels_is_structured_and_accepts_commas(stubbed_agent):
+    """Labels containing commas must not be split apart (TODO.md #78)."""
+    fake_analyzer = _FakeAnalyzer()
+    stubbed_agent.analyzer = fake_analyzer
+    tool = _get_tool(stubbed_agent, "set_group_labels")
+
+    assert set(tool.args) == {"treatment_label", "control_label"}
+    result = tool.invoke({"treatment_label": "variant, B", "control_label": "control"})
+
+    assert "error_code" not in result
+    assert fake_analyzer.treatment_label == "variant, B"
+    assert fake_analyzer.control_label == "control"
+
+
 def test_clear_memory(stubbed_agent):
     stubbed_agent.run("hello")
     stubbed_agent.clear_memory()

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from importlib import resources
 
-PROMPT_VERSION = "2026-04-19.3"
+PROMPT_VERSION = "2026-09-27.1"
 
 
 def load_system_prompt() -> str:
