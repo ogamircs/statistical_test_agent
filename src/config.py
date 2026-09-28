@@ -23,6 +23,8 @@ _DEFAULT_AGENT_RECURSION_LIMIT = 25
 # Prior chat messages (human + AI) re-sent to the model each turn. The full
 # history stays persisted; only the model-bound window is bounded.
 _DEFAULT_MAX_HISTORY_MESSAGES = 40
+# Largest CSV accepted by the web upload endpoint.
+_DEFAULT_MAX_UPLOAD_MB = 50.0
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class Config:
     llm_max_retries: int = _DEFAULT_LLM_MAX_RETRIES
     agent_recursion_limit: int = _DEFAULT_AGENT_RECURSION_LIMIT
     max_history_messages: int = _DEFAULT_MAX_HISTORY_MESSAGES
+    max_upload_mb: float = _DEFAULT_MAX_UPLOAD_MB
 
     @classmethod
     def from_env(cls, environ: dict | None = None) -> "Config":
@@ -70,6 +73,9 @@ class Config:
                 env.get("STATAGENT_MAX_HISTORY_MESSAGES"),
                 _DEFAULT_MAX_HISTORY_MESSAGES,
             ),
+            max_upload_mb=_coerce_float(
+                env.get("STATAGENT_MAX_UPLOAD_MB"), _DEFAULT_MAX_UPLOAD_MB
+            ),
         )
 
     def validate(self) -> None:
@@ -90,6 +96,8 @@ class Config:
             raise ValueError("Config.agent_recursion_limit must be >= 2")
         if self.max_history_messages < 1:
             raise ValueError("Config.max_history_messages must be >= 1")
+        if self.max_upload_mb <= 0:
+            raise ValueError("Config.max_upload_mb must be > 0")
 
 
 def _coerce_float(value: object, default: float) -> float:

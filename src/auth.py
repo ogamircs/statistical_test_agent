@@ -1,4 +1,4 @@
-"""Optional password-based auth for the Chainlit UI.
+"""Optional password-based auth for the web UI.
 
 Auth activates only when both ``STATAGENT_AUTH_USERNAME`` and
 ``STATAGENT_AUTH_PASSWORD`` env vars are set. With neither set, the UI

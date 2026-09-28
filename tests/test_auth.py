@@ -1,4 +1,4 @@
-"""Tests for optional Chainlit password auth."""
+"""Tests for optional web UI password auth."""
 
 from __future__ import annotations
 

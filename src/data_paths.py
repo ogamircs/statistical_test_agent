@@ -5,8 +5,8 @@ loading tools, and ``pd.read_csv`` accepts both arbitrary local paths and
 URLs. Every load therefore goes through :func:`resolve_data_path`, which
 rejects URL schemes and any path outside an explicitly allowed root.
 
-Allowed roots by default: ``<cwd>/data`` (bundled sample data), ``<cwd>/.files``
-(Chainlit upload storage), and the system temp directory (upload staging).
+Allowed roots by default: ``<cwd>/data`` (bundled sample data), ``<cwd>/.uploads``
+(web UI upload storage, see ``UPLOADS_DIRNAME``), and the system temp directory.
 Additional roots can be granted with the ``STATAGENT_DATA_ROOTS`` environment
 variable (``os.pathsep``-separated absolute paths).
 """
@@ -20,6 +20,9 @@ from typing import List, Optional, Sequence
 from urllib.parse import urlsplit
 
 _DATA_ROOTS_ENV_VAR = "STATAGENT_DATA_ROOTS"
+# Directory (relative to the working directory) where the web API stores
+# uploaded CSVs, one sub-directory per session.
+UPLOADS_DIRNAME = ".uploads"
 
 
 class DataPathNotAllowedError(ValueError):
@@ -39,7 +42,7 @@ class DataPathNotAllowedError(ValueError):
 def default_data_roots() -> List[Path]:
     """Roots a data file may be loaded from, resolved to real paths."""
     cwd = Path.cwd()
-    roots = [cwd / "data", cwd / ".files", Path(tempfile.gettempdir())]
+    roots = [cwd / "data", cwd / UPLOADS_DIRNAME, Path(tempfile.gettempdir())]
     for entry in os.environ.get(_DATA_ROOTS_ENV_VAR, "").split(os.pathsep):
         entry = entry.strip()
         if entry:
@@ -80,7 +83,7 @@ def resolve_data_path(
         except ValueError:
             continue
         # Block dotfiles/dot-directories below the root (e.g. `.env`), while
-        # allowed roots themselves may be hidden (e.g. `.files`).
+        # allowed roots themselves may be hidden (e.g. `.uploads`).
         if any(part.startswith(".") for part in relative.parts):
             continue
         return path

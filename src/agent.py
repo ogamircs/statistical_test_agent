@@ -10,7 +10,7 @@ An intelligent agent that can:
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import openai
 import plotly.graph_objects as go
@@ -281,19 +281,24 @@ class ABTestingAgent:
             )
         return error
 
-    def run(self, message: str) -> str:
+    def run(self, message: str, callbacks: Optional[Sequence[Any]] = None) -> str:
         """Run the agent synchronously.
 
-        Chainlit wraps this with ``cl.make_async(agent.run)`` for async dispatch.
+        The web API runs this in a worker thread. ``callbacks`` are extra
+        LangChain callback handlers for this run only (the API uses one to
+        stream tool progress to the browser).
         """
         try:
             self.token_usage.reset()
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
             self.session.query_store.save_chat_message("human", message)
+            run_config: Dict[str, Any] = {"recursion_limit": self.config.agent_recursion_limit}
+            if callbacks:
+                run_config["callbacks"] = list(callbacks)
             result = self.agent.invoke(
                 {"messages": self._model_bound_history()},
-                config={"recursion_limit": self.config.agent_recursion_limit},
+                config=run_config,
             )
             response = result["messages"][-1].content
             self.chat_history.append(AIMessage(content=response))

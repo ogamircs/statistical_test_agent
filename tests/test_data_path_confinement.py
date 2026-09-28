@@ -90,9 +90,9 @@ def test_accepts_file_in_data_dir(monkeypatch, tmp_path: Path) -> None:
     assert resolved == csv_path.resolve()
 
 
-def test_accepts_chainlit_upload_in_files_dir(monkeypatch, tmp_path: Path) -> None:
+def test_accepts_web_upload_in_uploads_dir(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    upload_dir = tmp_path / ".files" / "session-abc"
+    upload_dir = tmp_path / ".uploads" / "session-abc"
     upload_dir.mkdir(parents=True)
     csv_path = upload_dir / "upload.csv"
     csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
@@ -100,6 +100,18 @@ def test_accepts_chainlit_upload_in_files_dir(monkeypatch, tmp_path: Path) -> No
     resolved = resolve_data_path(str(csv_path))
 
     assert resolved == csv_path.resolve()
+
+
+def test_rejects_legacy_chainlit_files_dir(monkeypatch, tmp_path: Path) -> None:
+    # Chainlit's .files root was removed with the Chainlit UI.
+    monkeypatch.chdir(tmp_path)
+    upload_dir = tmp_path / ".files" / "session-abc"
+    upload_dir.mkdir(parents=True)
+    csv_path = upload_dir / "upload.csv"
+    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    with pytest.raises(DataPathNotAllowedError):
+        resolve_data_path(str(csv_path))
 
 
 def test_accepts_file_in_system_tempdir(tmp_path: Path) -> None:
