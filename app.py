@@ -6,6 +6,7 @@ Serves the JSON/SSE API used by the React UI in ``frontend/`` and, when
 Run with ``uvicorn app:app`` (or ``python app.py``).
 """
 
+import dataclasses
 import logging
 import os
 from pathlib import Path
@@ -13,7 +14,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.api import create_app
-from src.auth import is_auth_enabled
 from src.config import Config
 from src.observability import configure_json_logging
 from src.query_store_gc import run_startup_gc
@@ -29,7 +29,11 @@ if not logging.getLogger().handlers:
 configure_json_logging()
 logger = logging.getLogger(__name__)
 
+# Both raise ValueError on bad security settings (e.g. STATAGENT_REQUIRE_AUTH=tru,
+# require-auth without credentials, a too-short secret): the app must refuse to
+# start rather than fall back to an open configuration.
 _STARTUP_CONFIG = Config.from_env()
+_STARTUP_CONFIG.validate_security()
 try:
     _STARTUP_CONFIG.validate()
     logger.info(
@@ -42,14 +46,21 @@ try:
         _STARTUP_CONFIG.max_upload_mb,
     )
 except ValueError:
-    logger.exception("Startup Config validation failed; continuing with defaults")
-    # Keep the security-relevant knob: falling back to defaults must not
-    # silently turn a require-auth deployment into an open one.
-    _STARTUP_CONFIG = Config(require_auth=_STARTUP_CONFIG.require_auth)
+    logger.exception("Startup Config validation failed; continuing with default tuning knobs")
+    # Only tuning knobs fall back; security and storage settings are kept so a
+    # bad numeric value can never turn an authenticated deployment open.
+    _STARTUP_CONFIG = dataclasses.replace(
+        Config(),
+        require_auth=_STARTUP_CONFIG.require_auth,
+        auth_username=_STARTUP_CONFIG.auth_username,
+        auth_password=_STARTUP_CONFIG.auth_password,
+        auth_secret=_STARTUP_CONFIG.auth_secret,
+        query_store_dir=_STARTUP_CONFIG.query_store_dir,
+    )
 
 run_startup_gc(Path(_STARTUP_CONFIG.query_store_dir))
 
-if is_auth_enabled():
+if _STARTUP_CONFIG.auth_enabled:
     logger.info("Password auth ENABLED via STATAGENT_AUTH_* env vars")
 else:
     logger.info(

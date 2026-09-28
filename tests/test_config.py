@@ -79,10 +79,39 @@ def test_query_store_dir_comes_from_env_and_is_validated() -> None:
 
 @pytest.mark.parametrize(
     "raw, expected",
-    [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("false", False), ("", False), ("maybe", False)],
+    [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("false", False), ("", False)],
 )
 def test_require_auth_parses_truthy_env_values(raw: str, expected: bool) -> None:
     assert Config.from_env({"STATAGENT_REQUIRE_AUTH": raw}).require_auth is expected
+
+
+@pytest.mark.parametrize("raw", ["maybe", "tru", "enabled", "2"])
+def test_require_auth_rejects_unrecognized_values(raw: str) -> None:
+    # PR #10 review: a typo must stop the app, never silently disable the guard.
+    with pytest.raises(ValueError, match="STATAGENT_REQUIRE_AUTH"):
+        Config.from_env({"STATAGENT_REQUIRE_AUTH": raw})
+
+
+def test_auth_settings_come_from_env() -> None:
+    config = Config.from_env(
+        {
+            "STATAGENT_AUTH_USERNAME": "ana",
+            "STATAGENT_AUTH_PASSWORD": "pw",
+            "STATAGENT_AUTH_SECRET": "x" * 32,
+        }
+    )
+    assert config.auth_enabled is True
+    assert config.auth_secret == "x" * 32
+
+
+def test_validate_security_rejects_short_secret_and_open_require_auth() -> None:
+    with pytest.raises(ValueError, match="STATAGENT_AUTH_SECRET"):
+        Config(auth_secret="short").validate_security()
+    with pytest.raises(ValueError, match="STATAGENT_REQUIRE_AUTH"):
+        Config(require_auth=True).validate_security()
+    with pytest.raises(ValueError):
+        Config(require_auth=True).validate()
+    Config(require_auth=True, auth_username="a", auth_password="b", auth_secret="k" * 16).validate()
 
 
 def test_require_auth_defaults_off() -> None:

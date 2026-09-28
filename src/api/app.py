@@ -51,7 +51,7 @@ from .sessions import (
     compose_agent_message,
     remember_charts,
 )
-from .tokens import issue_token, verify_token
+from .tokens import TokenSigner
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +91,15 @@ def create_app(
     frontend_dist: Optional[Path] = None,
 ) -> FastAPI:
     config = config or Config.from_env()
-    if config.require_auth and not is_auth_enabled():
+    try:
         # Fail fast: a deployment that asked for auth must never run open.
-        raise RuntimeError(
-            "STATAGENT_REQUIRE_AUTH is set but password auth is not configured: set both "
-            "STATAGENT_AUTH_USERNAME and STATAGENT_AUTH_PASSWORD (and STATAGENT_AUTH_SECRET "
-            "so tokens survive restarts and work across replicas)."
-        )
+        config.validate_security()
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    # Everything auth-related comes from the resolved Config, so an injected
+    # config (tests, embedding) fully controls credentials and signing key.
+    auth_enabled = is_auth_enabled(config)
+    signer = TokenSigner(config.auth_secret)
     registry = SessionRegistry(
         store_dir=store_dir or Path(config.query_store_dir),
         uploads_dir=uploads_dir or Path.cwd() / UPLOADS_DIRNAME,
@@ -108,11 +110,11 @@ def create_app(
     app.state.registry = registry
 
     def require_auth(request: Request) -> Optional[str]:
-        if not is_auth_enabled():
+        if not auth_enabled:
             return None
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
-        user = verify_token(token) if scheme.lower() == "bearer" and token else None
+        user = signer.verify(token) if scheme.lower() == "bearer" and token else None
         if user is None:
             raise _error(401, "AUTH_REQUIRED", "Sign in to use the agent.")
         return user
@@ -148,7 +150,7 @@ def create_app(
     @app.get("/api/config")
     def public_config() -> Dict[str, Any]:
         return {
-            "auth_required": is_auth_enabled(),
+            "auth_required": auth_enabled,
             "max_upload_mb": config.max_upload_mb,
             "chart_types": CHART_TYPE_OPTIONS,
             "model": config.llm_model,
@@ -156,12 +158,12 @@ def create_app(
 
     @app.post("/api/login")
     def login(body: LoginRequest) -> Dict[str, str]:
-        if not is_auth_enabled():
+        if not auth_enabled:
             raise _error(400, "AUTH_DISABLED", "Authentication is not enabled on this server.")
-        user = verify_credentials(body.username, body.password)
+        user = verify_credentials(config, body.username, body.password)
         if user is None:
             raise _error(401, "INVALID_CREDENTIALS", "Invalid username or password.")
-        return {"token": issue_token(user)}
+        return {"token": signer.issue(user)}
 
     # -- sessions ----------------------------------------------------------
 

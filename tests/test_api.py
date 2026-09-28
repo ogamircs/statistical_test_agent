@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from src.api import create_app
 from src.api.progress import format_sse
 from src.api.sessions import compose_agent_message, parse_user_message
-from src.api.tokens import issue_token, verify_token
+from src.api.tokens import TokenSigner
 from src.config import Config
 from src.query_store import SQLiteQueryStore
 from src.statistics import ABTestAnalyzer, ABTestVisualizer
@@ -304,9 +304,19 @@ def test_charts_endpoint_builds_from_last_analysis(client: TestClient, agents) -
     assert unknown.status_code == 400
 
 
-def test_auth_required_when_credentials_configured(client: TestClient, monkeypatch) -> None:
-    monkeypatch.setenv("STATAGENT_AUTH_USERNAME", "alice")
-    monkeypatch.setenv("STATAGENT_AUTH_PASSWORD", "s3cret")
+def _auth_client(tmp_path: Path, **config: Any) -> TestClient:
+    app = create_app(
+        config=Config(auth_username="alice", auth_password="s3cret", **config),
+        agent_factory=StubAgent,
+        store_dir=tmp_path / "store",
+        uploads_dir=tmp_path / "uploads",
+        frontend_dist=tmp_path / "no-dist",
+    )
+    return TestClient(app)
+
+
+def test_auth_required_when_credentials_configured(tmp_path: Path) -> None:
+    client = _auth_client(tmp_path)
 
     assert client.get("/api/config").json()["auth_required"] is True
     assert client.get("/api/health").status_code == 200
@@ -326,12 +336,37 @@ def test_login_rejected_when_auth_disabled(client: TestClient) -> None:
 
 
 def test_tokens_expire_and_reject_tampering() -> None:
-    token = issue_token("alice")
-    assert verify_token(token) == "alice"
+    signer = TokenSigner("k" * 32)
+    token = signer.issue("alice")
+    assert signer.verify(token) == "alice"
     payload, signature = token.split(".")
-    assert verify_token(f"{payload}.{'0' * len(signature)}") is None
-    assert verify_token(issue_token("alice", ttl_seconds=-1)) is None
-    assert verify_token("garbage") is None
+    assert signer.verify(f"{payload}.{'0' * len(signature)}") is None
+    assert signer.verify(signer.issue("alice", ttl_seconds=-1)) is None
+    assert signer.verify("garbage") is None
+    # A different key (another deployment) cannot verify the token.
+    assert TokenSigner("z" * 32).verify(token) is None
+
+
+def test_auth_secret_comes_from_injected_config(tmp_path: Path, monkeypatch) -> None:
+    # PR #10 review: the signing key is Config.auth_secret, not process env.
+    monkeypatch.setenv("STATAGENT_AUTH_SECRET", "e" * 32)
+    first = _auth_client(tmp_path, auth_secret="c" * 32)
+    token = first.post("/api/login", json={"username": "alice", "password": "s3cret"}).json()["token"]
+
+    # Same configured secret (e.g. after a restart) accepts the token ...
+    restarted = _auth_client(tmp_path, auth_secret="c" * 32)
+    assert restarted.get("/api/sessions", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    # ... and a signer keyed from the env var instead does not.
+    assert TokenSigner("e" * 32).verify(token) is None
+    # Without a configured secret each app gets its own random key.
+    assert _auth_client(tmp_path).get(
+        "/api/sessions", headers={"Authorization": f"Bearer {token}"}
+    ).status_code == 401
+
+
+def test_create_app_rejects_short_auth_secret(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="STATAGENT_AUTH_SECRET"):
+        _auth_client(tmp_path, auth_secret="short")
 
 
 def test_frontend_served_with_spa_fallback(tmp_path: Path) -> None:
@@ -449,11 +484,9 @@ def test_require_auth_refuses_to_start_without_credentials(tmp_path: Path, monke
         create_app(config=Config(require_auth=True), store_dir=tmp_path, uploads_dir=tmp_path)
 
 
-def test_require_auth_starts_and_enforces_when_credentials_set(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("STATAGENT_AUTH_USERNAME", "ana")
-    monkeypatch.setenv("STATAGENT_AUTH_PASSWORD", "s3cret")
+def test_require_auth_starts_and_enforces_when_credentials_set(tmp_path: Path) -> None:
     app = create_app(
-        config=Config(require_auth=True),
+        config=Config(require_auth=True, auth_username="ana", auth_password="s3cret"),
         agent_factory=StubAgent,
         store_dir=tmp_path / "store",
         uploads_dir=tmp_path / "uploads",
