@@ -146,6 +146,14 @@ From the 2026-07-18 review of the app/UX/ops surface.
 
 ---
 
+## Bucket 10 — Parity gaps found in the 2026-09-27 hardening review
+
+Pre-existing issues surfaced while reviewing the #37–#43/#88/#89/#92 wave; not introduced by it.
+
+117. [ ] **Spark ignores `column_mapping["cuped"]`** — pandas applies CUPED variance reduction when requested, Spark silently runs the unadjusted estimate, so the same config yields different CIs/p-values across backends. Apply CUPED from collected aggregates (theta = cov/var) or fail loudly. _Files:_ `src/statistics/pyspark_analyzer.py`, `tests/test_parity_pandas_spark.py`. **(M)**
+118. [ ] **Spark segment list keeps null/falsy segment values** — `distinct()` keeps `None`/`""`/`0`, and `run_ab_test(segment_filter=<falsy>)` then analyses Overall as an extra row that also enters the BH family; pandas uses `dropna()`. Filter nulls and use `is None` checks for the segment filter. _Files:_ `src/statistics/pyspark_analyzer.py`. **(S)**
+119. [ ] **Report configuration errors once, not as per-segment failures** — an invalid `target_effect_size` / `expected_treatment_ratio` raises inside `run_ab_test`, and both backends log every segment as a "segment failure" instead of one configuration error. Validate before the segment loop. _Files:_ `src/statistics/analyzer.py`, `src/statistics/pyspark_analyzer.py`. **(S)**
+
 ## Suggested sequencing
 
 1. **#48** (file-path confinement) — one small PR, real exposure.
