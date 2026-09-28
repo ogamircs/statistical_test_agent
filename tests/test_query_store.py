@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pandas as pd
@@ -50,7 +51,7 @@ def test_query_store_persists_raw_and_analysis_tables(tmp_path: Path) -> None:
     store.save_segment_results([_sample_result()])
     store.save_summary(summary)
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         tables = {
             row[0]
             for row in connection.execute(

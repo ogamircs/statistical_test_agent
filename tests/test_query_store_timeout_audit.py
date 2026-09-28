@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pandas as pd
@@ -17,7 +18,7 @@ def _make_store(tmp_path: Path, **kwargs) -> SQLiteQueryStore:
 
 
 def _audit_rows(store: SQLiteQueryStore) -> list[tuple]:
-    with sqlite3.connect(store.db_path) as conn:
+    with closing(sqlite3.connect(store.db_path)) as conn, conn:
         return conn.execute(
             "SELECT id, sql, duration_ms, row_count, error FROM _query_audit ORDER BY id"
         ).fetchall()
@@ -25,7 +26,7 @@ def _audit_rows(store: SQLiteQueryStore) -> list[tuple]:
 
 def test_audit_table_created_on_init(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
-    with sqlite3.connect(store.db_path) as conn:
+    with closing(sqlite3.connect(store.db_path)) as conn, conn:
         names = {
             row[0]
             for row in conn.execute(
