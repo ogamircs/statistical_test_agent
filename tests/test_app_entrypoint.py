@@ -48,3 +48,17 @@ def test_bad_tuning_knob_keeps_auth_settings(monkeypatch) -> None:
                      "STATAGENT_AUTH_USERNAME", "STATAGENT_AUTH_PASSWORD"):
             monkeypatch.delenv(name)
         importlib.reload(app)
+
+
+def test_bad_tuning_knob_keeps_configured_data_roots(monkeypatch, tmp_path) -> None:
+    import app
+
+    monkeypatch.setenv("STATAGENT_LLM_TEMPERATURE", "9")  # out of range -> fallback
+    monkeypatch.setenv("STATAGENT_DATA_ROOTS", str(tmp_path))
+    try:
+        importlib.reload(app)
+        assert str(tmp_path) in app._STARTUP_CONFIG.data_roots
+    finally:
+        monkeypatch.delenv("STATAGENT_LLM_TEMPERATURE")
+        monkeypatch.delenv("STATAGENT_DATA_ROOTS")
+        importlib.reload(app)

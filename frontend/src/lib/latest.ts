@@ -15,3 +15,21 @@ export class LatestKey<K> {
     return this.current === key;
   }
 }
+
+/**
+ * Orders user navigations. Each navigation takes a ticket; only the newest
+ * ticket may apply its (async) result, so the view follows the user's last
+ * click rather than whichever response arrives last.
+ */
+export class NavigationGuard {
+  private latest = 0;
+
+  begin(): number {
+    this.latest += 1;
+    return this.latest;
+  }
+
+  isLatest(ticket: number): boolean {
+    return ticket === this.latest;
+  }
+}

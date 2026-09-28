@@ -165,13 +165,16 @@ class SessionRegistry:
 
     def delete(self, session_id: str) -> None:
         self._validate_id(session_id)
+        # Hold the guard until the files are gone: otherwise a concurrent get()
+        # could build a fresh agent over the still-present store, whose files
+        # this loop then deletes underneath it.
         with self._guard:
             self._records.pop(session_id, None)
-        for suffix in ("", "-wal", "-shm"):
-            path = Path(f"{self.store_path(session_id)}{suffix}")
-            if path.exists():
-                path.unlink()
-        shutil.rmtree(self.uploads_dir / session_id, ignore_errors=True)
+            for suffix in ("", "-wal", "-shm"):
+                path = Path(f"{self.store_path(session_id)}{suffix}")
+                if path.exists():
+                    path.unlink()
+            shutil.rmtree(self.uploads_dir / session_id, ignore_errors=True)
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         sessions: List[Dict[str, Any]] = []

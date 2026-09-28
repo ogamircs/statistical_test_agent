@@ -116,3 +116,32 @@ def test_validate_security_rejects_short_secret_and_open_require_auth() -> None:
 
 def test_require_auth_defaults_off() -> None:
     assert Config.from_env({}).require_auth is False
+
+
+def test_default_tuning_fallback_keeps_every_non_tuning_field() -> None:
+    """Inverted allowlist: any setting that is not a tuning knob survives.
+
+    Guards against the fallback silently dropping a setting added later
+    (data_roots was lost this way).
+    """
+    import dataclasses
+
+    custom = Config(
+        llm_temperature=9.0,  # invalid tuning value that triggers the fallback
+        query_store_dir="/srv/stores",
+        require_auth=True,
+        auth_username="ana",
+        auth_password="pw",
+        auth_secret="s" * 32,
+        data_roots=("/srv/data",),
+    )
+
+    fallback = custom.with_default_tuning()
+
+    defaults = Config()
+    for f in dataclasses.fields(Config):
+        if f.name in Config.TUNING_FIELDS:
+            assert getattr(fallback, f.name) == getattr(defaults, f.name), f.name
+        else:
+            assert getattr(fallback, f.name) == getattr(custom, f.name), f.name
+    fallback.validate()

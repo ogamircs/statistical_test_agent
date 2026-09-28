@@ -201,7 +201,10 @@ def create_app(
     @app.get("/api/sessions/{session_id}/messages", dependencies=auth)
     def get_messages(session_id: str) -> Dict[str, Any]:
         record = session_or_404(session_id)
-        return {"messages": registry.messages(session_id), "charts": record.latest_charts}
+        # Mid-run the human turn is persisted but the reply and charts are
+        # not; a snapshot then would pair the new prompt with stale charts.
+        with idle_session(record):
+            return {"messages": registry.messages(session_id), "charts": record.latest_charts}
 
     @app.delete("/api/sessions/{session_id}/messages", dependencies=auth, status_code=204)
     def clear_messages(session_id: str) -> None:

@@ -468,6 +468,7 @@ def test_app_module_exposes_fastapi_app() -> None:
         ("DELETE", "/api/sessions/{id}"),
         ("DELETE", "/api/sessions/{id}/messages"),
         ("GET", "/api/sessions/{id}/charts"),
+        ("GET", "/api/sessions/{id}/messages"),
     ],
 )
 def test_state_endpoints_reject_while_a_run_is_active(
@@ -605,3 +606,29 @@ def test_session_listing_never_recreates_a_deleted_store(client: TestClient, age
     assert listing.status_code == 200
     assert listing.json()["sessions"] == []
     assert not store.exists(), "listing must not recreate a deleted session store"
+
+
+def test_delete_holds_the_registry_guard_until_files_are_gone(client: TestClient, monkeypatch) -> None:
+    session_id = _new_session(client)
+    client.post(f"/api/sessions/{session_id}/chat", json={"message": "hello"})
+    registry = client.app.state.registry  # type: ignore[attr-defined]
+    store = registry.store_path(session_id)
+    guard_free_during_unlink: List[bool] = []
+    real_unlink = Path.unlink
+
+    def observing_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == store:
+            # A concurrent get() runs on another thread; see if it could enter.
+            result: List[bool] = []
+            probe = threading.Thread(target=lambda: result.append(registry._guard.acquire(timeout=0.2)))
+            probe.start()
+            probe.join()
+            if result and result[0]:
+                registry._guard.release()
+            guard_free_during_unlink.append(bool(result and result[0]))
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", observing_unlink)
+    assert client.delete(f"/api/sessions/{session_id}").status_code == 204
+
+    assert guard_free_during_unlink == [False], "get() could re-create the session mid-delete"

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { ApiError, api, storeToken } from "./lib/api";
 import { chartsAfterEvent } from "./lib/charts";
-import { LatestKey } from "./lib/latest";
+import { LatestKey, NavigationGuard } from "./lib/latest";
 import { TokenBuffer } from "./lib/tokenBuffer";
 import type { ChartSpec, ChatMessage, PublicConfig, SessionSummary } from "./lib/types";
 import { prefersReducedMotion, useTheme } from "./lib/theme";
@@ -39,6 +39,7 @@ export default function App() {
   // Chart requests do not lock the sidebar; drop responses for a session the
   // user has since left so they never show another experiment's results.
   const activeSession = useRef(new LatestKey<string>()).current;
+  const navigation = useRef(new NavigationGuard()).current;
   useEffect(() => {
     activeSession.set(activeId);
     setChartLoading(false); // an abandoned request must not leave a spinner
@@ -202,8 +203,11 @@ export default function App() {
 
   const openSession = async (id: string) => {
     if (busy) return;
+    const ticket = navigation.begin();
     try {
       const history = await api.messages(id);
+      // A later click (or New analysis) wins, whatever order responses land in.
+      if (!navigation.isLatest(ticket)) return;
       setActiveId(id);
       setMessages(history.messages.map((message) => ({ ...message, id: newId() })));
       setCharts(history.charts);
@@ -211,12 +215,13 @@ export default function App() {
       setAttached(null);
       setWorkspaceOpen(history.charts.length > 0);
     } catch (error) {
-      handleError(error);
+      if (navigation.isLatest(ticket)) handleError(error);
     }
   };
 
   const newSession = () => {
     if (busy) return;
+    navigation.begin(); // supersede any in-flight openSession
     setActiveId(null);
     setMessages([]);
     setCharts([]);

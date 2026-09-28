@@ -9,6 +9,7 @@ defaults preserve current behavior so existing callers can adopt
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass, field
 
@@ -123,6 +124,32 @@ class Config:
             raise ValueError(
                 f"STATAGENT_AUTH_SECRET must be at least {MIN_AUTH_SECRET_LENGTH} characters"
             )
+
+    # Performance/behaviour knobs that may safely fall back to defaults when a
+    # value is invalid. Everything else is kept by with_default_tuning().
+    TUNING_FIELDS = (
+        "llm_model",
+        "llm_temperature",
+        "sql_default_row_limit",
+        "query_timeout_seconds",
+        "llm_request_timeout_seconds",
+        "llm_max_retries",
+        "agent_recursion_limit",
+        "max_history_messages",
+        "max_upload_mb",
+    )
+
+    def with_default_tuning(self) -> "Config":
+        """Copy with every tuning knob reset to its default.
+
+        An inverted allowlist on purpose: security, storage and data-path
+        settings (and any field added later) survive a bad tuning value, so
+        the fallback can never open auth or drop configured data roots.
+        """
+        defaults = Config()
+        return dataclasses.replace(
+            self, **{name: getattr(defaults, name) for name in self.TUNING_FIELDS}
+        )
 
     def validate(self) -> None:
         """Raise ValueError when a knob is out of range (security checks included)."""

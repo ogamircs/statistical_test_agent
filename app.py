@@ -6,7 +6,6 @@ Serves the JSON/SSE API used by the React UI in ``frontend/`` and, when
 Run with ``uvicorn app:app`` (or ``python app.py``).
 """
 
-import dataclasses
 import logging
 import os
 from pathlib import Path
@@ -49,14 +48,7 @@ except ValueError:
     logger.exception("Startup Config validation failed; continuing with default tuning knobs")
     # Only tuning knobs fall back; security and storage settings are kept so a
     # bad numeric value can never turn an authenticated deployment open.
-    _STARTUP_CONFIG = dataclasses.replace(
-        Config(),
-        require_auth=_STARTUP_CONFIG.require_auth,
-        auth_username=_STARTUP_CONFIG.auth_username,
-        auth_password=_STARTUP_CONFIG.auth_password,
-        auth_secret=_STARTUP_CONFIG.auth_secret,
-        query_store_dir=_STARTUP_CONFIG.query_store_dir,
-    )
+    _STARTUP_CONFIG = _STARTUP_CONFIG.with_default_tuning()
 
 run_startup_gc(Path(_STARTUP_CONFIG.query_store_dir))
 
