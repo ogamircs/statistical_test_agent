@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { ApiError, api, storeToken } from "./lib/api";
+import { chartsAfterEvent } from "./lib/charts";
 import { TokenBuffer } from "./lib/tokenBuffer";
 import type { ChartSpec, ChatMessage, PublicConfig, SessionSummary } from "./lib/types";
 import { prefersReducedMotion, useTheme } from "./lib/theme";
@@ -153,13 +154,16 @@ export default function App() {
                 errorCode: event.data.error_code,
               }));
               break;
-            case "charts":
-              if (event.data.charts.length > 0) {
-                setCharts(event.data.charts);
+            case "charts": {
+              const data = event.data;
+              setCharts((current) => chartsAfterEvent(current, data));
+              if (data.state === "cleared") setChartError(null);
+              if (data.charts.length > 0) {
                 setChartError(null);
                 setWorkspaceOpen(true);
               }
               break;
+            }
             case "error":
               live.stop();
               updateAssistant(assistantId, (m) => ({

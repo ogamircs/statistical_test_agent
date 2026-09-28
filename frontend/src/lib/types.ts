@@ -62,12 +62,24 @@ export interface ChatMessage {
   errorCode?: string | null;
 }
 
+/**
+ * What to do with the charts on screen after a turn:
+ * "updated" replace them with `charts`; "cleared" the analysis they showed was
+ * replaced, remove them; "unchanged" keep them.
+ */
+export type ChartsState = "updated" | "cleared" | "unchanged";
+
+export interface ChartsEventData {
+  charts: ChartSpec[];
+  state?: ChartsState;
+}
+
 export type StreamEvent =
   | { event: "status"; data: { state: string } }
   | { event: "tool_start"; data: { id: string; name: string; label: string } }
   | { event: "tool_end"; data: { id: string; name: string; ok: boolean } }
   | { event: "token"; data: { text: string } }
   | { event: "message"; data: { content: string; error_code: string | null } }
-  | { event: "charts"; data: { charts: ChartSpec[] } }
+  | { event: "charts"; data: ChartsEventData }
   | { event: "error"; data: { code: string; message: string } }
   | { event: "done"; data: Record<string, never> };

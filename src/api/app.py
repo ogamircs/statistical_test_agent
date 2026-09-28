@@ -10,7 +10,11 @@ in order:
   model text as generated, reset by the client on each ``tool_start``)
 - ``message``     ``{"content": markdown, "error_code": str | null}`` (the full
   final answer; replaces any streamed text)
-- ``charts``      ``{"charts": [{"name", "title", "figure"}]}`` (figure = Plotly JSON)
+- ``charts``      ``{"charts": [{"name", "title", "figure"}], "state": str}``
+  (figure = Plotly JSON). ``state`` tells the client what to do with the
+  charts it shows: ``"updated"`` replace them with ``charts``; ``"cleared"``
+  the analysis they described was replaced (new data or re-run without
+  charting), remove them (``charts`` is empty); ``"unchanged"`` keep them.
 - ``done``        ``{}``
 
 On an unexpected failure an ``error`` event ``{"code", "message"}`` replaces
@@ -24,7 +28,7 @@ import logging
 import re
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Iterator, Optional, Tuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -48,6 +52,7 @@ from .sessions import (
     SessionRegistry,
     UploadNotFoundError,
     UploadRejectedError,
+    analysis_version,
     compose_agent_message,
     remember_charts,
 )
@@ -253,7 +258,7 @@ def create_app(
         def emit(event: str, data: Dict[str, Any]) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, (event, data))
 
-        def run() -> Tuple[str, List[Dict[str, Any]]]:
+        def run() -> Tuple[str, Dict[str, Any]]:
             try:
                 response = str(
                     record.agent.run(
@@ -282,7 +287,7 @@ def create_app(
     async def _chat_events(
         record: Any,
         queue: "asyncio.Queue[tuple[str, Dict[str, Any]]]",
-        task: "asyncio.Future[Tuple[str, List[Dict[str, Any]]]]",
+        task: "asyncio.Future[Tuple[str, Dict[str, Any]]]",
     ) -> AsyncIterator[str]:
         yield format_sse("status", {"state": "started"})
         while True:
@@ -300,7 +305,7 @@ def create_app(
             yield format_sse(event, data)
 
         try:
-            response, serialized = task.result()
+            response, charts_event = task.result()
         except Exception:
             logger.exception("Agent run crashed")
             yield format_sse(
@@ -312,7 +317,7 @@ def create_app(
 
         match = _ERROR_CODE.search(response)
         yield format_sse("message", {"content": response, "error_code": match.group(1) if match else None})
-        yield format_sse("charts", {"charts": serialized})
+        yield format_sse("charts", charts_event)
         yield format_sse("done", {})
 
     # -- frontend ----------------------------------------------------------
@@ -329,20 +334,29 @@ def create_app(
     return app
 
 
-def _finalize_charts(record: Any) -> List[Dict[str, Any]]:
-    """Move charts the run generated into the session record (worker thread)."""
+def _finalize_charts(record: Any) -> Dict[str, Any]:
+    """Settle the session's charts after a run (worker thread, under the lock).
+
+    Returns the ``charts`` SSE payload. New charts replace the stored ones;
+    if the run replaced the analysis without charting it, the stored charts
+    are dropped so neither the live UI nor a reopened session shows results
+    for a superseded dataset/analysis.
+    """
     charts = record.agent.get_charts()
-    if not charts:
-        return []
-    try:
-        serialized = serialize_charts(charts)
-    except Exception:
-        logger.exception("Chart serialization failed; sending the reply without charts")
-        serialized = []
-    record.agent.clear_charts()
-    if serialized:
-        remember_charts(record, serialized)
-    return serialized
+    if charts:
+        record.agent.clear_charts()
+        try:
+            serialized = serialize_charts(charts)
+        except Exception:
+            logger.exception("Chart serialization failed; sending the reply without charts")
+            serialized = []
+        if serialized:
+            remember_charts(record, serialized)
+            return {"charts": serialized, "state": "updated"}
+    if record.charts_version != analysis_version(record.agent):
+        remember_charts(record, [])
+        return {"charts": [], "state": "cleared"}
+    return {"charts": [], "state": "unchanged"}
 
 
 def _mount_frontend(app: FastAPI, dist: Path) -> None:

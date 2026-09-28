@@ -53,7 +53,7 @@ Events arrive in this order; each `data` line is one JSON object:
 | `tool_end` | `{"id", "name", "ok"}` (`ok` is false when the tool reported an `[error_code=…]`) |
 | `token` | `{"text": string}`, zero or more, interleaved with tool events: the model's visible text as it is generated (never tool-call arguments or tool output). Text before a tool call is a preamble; the UI clears its live buffer on each `tool_start`. |
 | `message` | `{"content": markdown, "error_code": string or null}`, the complete final answer; clients replace any streamed text with it |
-| `charts` | `{"charts": [{"name", "title", "figure"}]}` (`figure` is Plotly JSON; empty when the turn made no charts) |
+| `charts` | `{"charts": [{"name", "title", "figure"}], "state"}` (`figure` is Plotly JSON). `state` is `"updated"` (replace the shown charts), `"cleared"` (the turn replaced the data or analysis without charting it; remove the shown charts, `charts` is empty) or `"unchanged"` (keep them). Charts are tied to the agent's `analysis_version`, so stale charts are also dropped from the session store. |
 | `done` | `{}` |
 
 If the run crashes, an `error` event (`{"code", "message"}`) replaces `message`/`charts`, followed by `done`. The run is started before streaming begins, so a client disconnect never leaves the session locked, and the reply still lands in the persisted history.

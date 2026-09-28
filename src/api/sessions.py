@@ -81,6 +81,13 @@ class SessionRecord:
     agent: Any
     lock: threading.Lock = field(default_factory=threading.Lock)
     latest_charts: List[Dict[str, Any]] = field(default_factory=list)
+    # The agent's analysis_version the latest charts were built from; when
+    # the agent's version moves on, those charts describe a replaced analysis.
+    charts_version: int = 0
+
+
+def analysis_version(agent: Any) -> int:
+    return int(getattr(agent, "analysis_version", 0))
 
 
 _LATEST_CHARTS_KEY = "latest_charts"
@@ -90,6 +97,7 @@ _charts_logger = logging.getLogger(__name__)
 def remember_charts(record: SessionRecord, charts: List[Dict[str, Any]]) -> None:
     """Set the session's latest charts and persist them for restart recovery."""
     record.latest_charts = charts
+    record.charts_version = analysis_version(record.agent)
     try:
         record.agent.session.query_store.save_state(_LATEST_CHARTS_KEY, charts)
     except Exception:
@@ -147,7 +155,11 @@ class SessionRegistry:
                 raise SessionNotFoundError(session_id)
             self.store_dir.mkdir(parents=True, exist_ok=True)
             agent = self.agent_factory(str(self.store_path(session_id)))
-            record = SessionRecord(agent=agent, latest_charts=_load_persisted_charts(agent))
+            record = SessionRecord(
+                agent=agent,
+                latest_charts=_load_persisted_charts(agent),
+                charts_version=analysis_version(agent),
+            )
             self._records[session_id] = record
             return record
 

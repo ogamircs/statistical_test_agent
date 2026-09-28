@@ -44,6 +44,12 @@ class StubAgent:
         self.release.set()
         self.response = "## Result\n\n| a | b |\n|---|---|\n| 1 | 2 |"
         self.raise_error = False
+        # Mirrors ABTestingAgent.analysis_version: bumped when a turn replaces
+        # the data/analysis. make_charts=False models a turn that re-analyzes
+        # (or loads data) without calling generate_charts.
+        self.analysis_version = 0
+        self.bump_analysis = False
+        self.make_charts = True
 
     def run(self, message: str, callbacks: Any = None, on_token: Any = None) -> str:
         self.release.wait(5)
@@ -59,7 +65,10 @@ class StubAgent:
                 on_token(piece)
         self.session.query_store.save_chat_message("human", message)
         self.session.query_store.save_chat_message("ai", self.response)
-        self.charts = {"dashboard": go.Figure(layout={"title": {"text": "<b>Dash</b>"}})}
+        if self.bump_analysis:
+            self.analysis_version += 1
+        if self.make_charts:
+            self.charts = {"dashboard": go.Figure(layout={"title": {"text": "<b>Dash</b>"}})}
         return self.response
 
     def get_charts(self) -> Dict[str, go.Figure]:
@@ -138,6 +147,7 @@ def test_chat_streams_progress_message_charts_and_done(client: TestClient, agent
     assert events[2][1]["ok"] is True
     assert [data["text"] for name, data in events if name == "token"] == ["## Res", "ult"]
     assert events[5][1] == {"content": agents[0].response, "error_code": None}
+    assert events[6][1]["state"] == "updated"
     chart = events[6][1]["charts"][0]
     assert chart["name"] == "dashboard" and chart["title"] == "Dash"
     assert "layout" in chart["figure"]
@@ -541,3 +551,34 @@ def test_require_auth_starts_and_enforces_when_credentials_set(tmp_path: Path) -
     client = TestClient(app)
     assert client.get("/api/sessions").status_code == 401
     assert client.get("/api/config").json()["auth_required"] is True
+
+
+def _charts_event(client: TestClient, session_id: str, message: str) -> Dict[str, Any]:
+    events = _events(client.post(f"/api/sessions/{session_id}/chat", json={"message": message}).text)
+    return next(data for name, data in events if name == "charts")
+
+
+def test_charts_event_clears_charts_when_the_analysis_is_replaced(client: TestClient, agents) -> None:
+    # PR #10 review: a turn that re-runs analysis (e.g. new CSV) without
+    # charting must not leave the previous dataset's charts looking current.
+    session_id = _new_session(client)
+    assert _charts_event(client, session_id, "analyze")["state"] == "updated"
+
+    agent = agents[0]
+    agent.make_charts = False
+    agent.bump_analysis = True
+    cleared = _charts_event(client, session_id, "load other.csv and analyze")
+
+    assert cleared == {"charts": [], "state": "cleared"}
+    assert client.get(f"/api/sessions/{session_id}/messages").json()["charts"] == []
+
+
+def test_charts_event_keeps_charts_for_text_only_turns(client: TestClient, agents) -> None:
+    session_id = _new_session(client)
+    _charts_event(client, session_id, "analyze")
+    agents[0].make_charts = False
+
+    assert _charts_event(client, session_id, "what does p mean?") == {"charts": [], "state": "unchanged"}
+    assert [c["name"] for c in client.get(f"/api/sessions/{session_id}/messages").json()["charts"]] == [
+        "dashboard"
+    ]
