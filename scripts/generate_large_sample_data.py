@@ -1,5 +1,5 @@
 """
-Generate a large sample A/B test dataset (~10MB) for testing PySpark analyzer
+Generate a large sample A/B test dataset (~30MB) for pandas performance checks
 
 This creates a realistic dataset with:
 - ~500,000 rows

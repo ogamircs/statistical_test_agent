@@ -68,7 +68,7 @@ def sequential_config_enabled(raw_config: Any) -> bool:
     """Return True when a raw sequential config opts into sequential mode.
 
     Shared enablement rules used by ``resolve_sequential_config`` and by
-    backends (e.g. Spark) that must reject sequential requests: ``None``,
+    callers that only need the on/off decision: ``None``,
     ``False`` and non-mapping values are off; ``True`` and mappings are on
     unless they carry an explicit falsy ``"enabled"`` flag.
     """

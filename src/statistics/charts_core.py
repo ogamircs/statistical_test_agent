@@ -113,37 +113,38 @@ class CoreChartsMixin:
         return fig
 
     def plot_combined_effects(self, results: List[ABTestResult]) -> go.Figure:
-        """Create stacked bar chart showing T-test and Proportion effects per segment"""
+        """Grouped bars: headline per-customer effect vs the proportion-based estimate.
+
+        Not stacked: the headline already includes converters, so stacking the
+        proportion estimate on top would double count (TODO.md #42).
+        """
         segments = [r.segment for r in results]
 
         # Calculate effects (using per-customer values for clearer comparison)
-        t_test_effects = [r.effect_size if r.is_significant else 0 for r in results]
         prop_effects = [r.proportion_effect_per_customer for r in results]
         total_effects = [r.total_effect_per_customer for r in results]
 
         fig = go.Figure()
 
-        # T-test effect bars
         fig.add_trace(go.Bar(
-            name='T-test Effect',
+            name='Headline Effect',
             x=segments,
-            y=t_test_effects,
+            y=total_effects,
             marker_color=self.colors['t_test'],
             marker_line_width=0
         ))
 
-        # Proportion effect bars (stacked)
         fig.add_trace(go.Bar(
-            name='Proportion Effect',
+            name='Proportion-based Estimate',
             x=segments,
             y=prop_effects,
             marker_color=self.colors['proportion'],
             marker_line_width=0
         ))
 
-        # Add total line markers
+        # Label the headline value on each segment
         fig.add_trace(go.Scatter(
-            name='Combined Total',
+            name='Headline Total',
             x=segments,
             y=total_effects,
             mode='markers+text',
@@ -159,9 +160,9 @@ class CoreChartsMixin:
 
         fig.add_hline(y=0, line_dash="solid", line_color=self.colors['grid'], line_width=1)
 
-        self._apply_layout(fig, 'Combined Effects by Segment (T-test + Proportion)', 450)
+        self._apply_layout(fig, 'Headline Effect by Segment (vs proportion-based estimate)', 450)
         fig.update_layout(
-            barmode='stack',
+            barmode='group',
             xaxis_title='Segment',
             yaxis_title='Effect per Customer',
             legend=dict(

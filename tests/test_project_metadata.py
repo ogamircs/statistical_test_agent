@@ -20,8 +20,7 @@ def test_pyproject_declares_canonical_metadata_and_extras() -> None:
     assert "dependencies = [" in pyproject
     assert "[project.optional-dependencies]" in pyproject
     assert "dev = [" in pyproject
-    assert "spark = [" in pyproject
-    assert "pyspark" in pyproject
+    assert "pyspark" not in pyproject, "the project is pandas-only; Spark was removed"
 
 
 def test_requirements_file_delegates_to_project_metadata() -> None:
@@ -29,20 +28,13 @@ def test_requirements_file_delegates_to_project_metadata() -> None:
     assert ".[dev]" in requirements, "requirements.txt should install the project from pyproject metadata"
 
 
-def test_ci_installs_from_lockfile_and_has_spark_job() -> None:
+def test_ci_installs_from_lockfile() -> None:
     workflow = _read(".github/workflows/ci.yml")
     assert "uv sync --frozen --extra dev" in workflow, (
         "CI must install from the committed uv.lock so it tests the same "
         "dependency versions the Docker image ships (TODO.md #64)"
     )
-    assert "uv sync --frozen --extra dev --extra spark" in workflow
-    assert "tests/test_parity_pandas_spark.py" in workflow
-    assert "tests/test_pyspark_analyzer.py" in workflow
-    assert "STATAGENT_REQUIRE_SPARK" in workflow, (
-        "the spark job must turn Spark bootstrap failures into hard failures (TODO.md #62)"
-    )
-    assert "tests/test_analyzer_protocol.py" in workflow
-    assert "tests/test_pyspark_property_setters.py" in workflow
+    assert "spark" not in workflow.lower()
 
 
 def test_ci_enforces_mypy_and_repo_wide_ruff() -> None:
@@ -64,12 +56,11 @@ def test_gitignore_excludes_generated_output_artifacts() -> None:
     assert "!docs/testing.md" in gitignore
 
 
-def test_readme_documents_backend_capabilities_and_modern_install_flow() -> None:
+def test_readme_documents_modern_install_flow() -> None:
     readme = _read("README.md")
-    assert "## Backend Capability Matrix" in readme
     assert "uv sync --extra dev" in readme
-    assert "PySpark" in readme
     assert "pandas" in readme
+    assert "spark" not in readme.lower()
 
 
 def test_curated_docs_cover_architecture_development_and_testing() -> None:
@@ -77,13 +68,12 @@ def test_curated_docs_cover_architecture_development_and_testing() -> None:
     development = _read("docs/development.md")
     testing = _read("docs/testing.md")
 
-    assert "PySpark" in architecture
     assert "app.py" in architecture
     assert "uv sync --extra dev" in development
     assert "chainlit" in development.lower() or "python app.py" in development
     assert "pytest -q" in testing
-    assert "tests/test_pyspark_analyzer.py" in testing
-    assert "tests/test_parity_pandas_spark.py" in testing
+    for doc in (architecture, development, testing):
+        assert "spark" not in doc.lower()
 
 
 def test_chainlit_config_references_custom_ui_assets() -> None:
@@ -126,3 +116,11 @@ def test_custom_ui_assets_define_processing_loader_hooks() -> None:
     assert ".processing-indicator" in custom_css
     assert ".processing-indicator-gif" in custom_css
     assert "@keyframes processing-indicator-spin" in custom_css
+
+
+def test_agents_md_is_tracked_and_documents_ci_gates() -> None:
+    gitignore = _read(".gitignore")
+    assert "!AGENTS.md" in gitignore, "AGENTS.md must be allowlisted past the *.md ignore"
+    agents = _read("AGENTS.md")
+    for gate in ("ruff check .", "mypy src app.py", "--cov-fail-under=78"):
+        assert gate in agents, f"AGENTS.md must document the CI gate: {gate}"

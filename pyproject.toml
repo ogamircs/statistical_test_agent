@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "statistical-test-agent"
 version = "0.1.0"
-description = "Conversational A/B testing analysis agent with pandas and PySpark backends."
+description = "Conversational A/B testing analysis agent built on pandas and statsmodels."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,9 +30,6 @@ dev = [
     "pytest-cov>=5.0.0,<8.0",
     "ruff>=0.4.0,<0.10",
     "mypy>=1.8.0,<2.0",
-]
-spark = [
-    "pyspark>=3.5.0,<4.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -65,13 +62,11 @@ exclude = ["^build/", "^dist/", "^\\.venv/", "^\\.planning/"]
 
 # Burn-down list (TODO.md #61): modules that pre-date enforced type checking.
 # Fix a module's errors, then remove it from this list — never add to it.
-# charts_* are slated for consolidation (TODO.md #56) and pyspark_analyzer
-# for the shared-core extraction (TODO.md #45).
+# charts_* are slated for consolidation (TODO.md #56).
 [[tool.mypy.overrides]]
 module = [
     "src.statistics.charts_core",
     "src.statistics.charts_dashboard",
     "src.statistics.charts_extended",
-    "src.statistics.pyspark_analyzer",
 ]
 ignore_errors = true

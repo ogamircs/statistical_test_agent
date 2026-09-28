@@ -131,30 +131,21 @@ def test_error_carries_stable_code_and_user_message() -> None:
 
 def test_runtime_load_rejects_disallowed_path() -> None:
     pandas_analyzer = _FakeAnalyzer()
-    runtime = AgentRuntime(
-        analyzer=pandas_analyzer,
-        spark_factory=None,
-        spark_available=lambda: False,
-    )
+    runtime = AgentRuntime(analyzer=pandas_analyzer)
 
     with pytest.raises(DataPathNotAllowedError):
-        runtime.load_data_with_backend("/etc/passwd")
+        runtime.load_data("/etc/passwd")
 
     assert pandas_analyzer.load_calls == []
 
 
 def test_runtime_load_accepts_allowed_path(tmp_path: Path) -> None:
     pandas_analyzer = _FakeAnalyzer()
-    runtime = AgentRuntime(
-        analyzer=pandas_analyzer,
-        spark_factory=None,
-        spark_available=lambda: False,
-    )
+    runtime = AgentRuntime(analyzer=pandas_analyzer)
     csv_path = tmp_path / "ok.csv"
     csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
 
-    analyzer, info, backend, *_ = runtime.load_data_with_backend(str(csv_path))
+    analyzer, info, _size_mb = runtime.load_data(str(csv_path))
 
     assert analyzer is pandas_analyzer
-    assert backend == "pandas"
     assert pandas_analyzer.load_calls[0][0] == str(csv_path.resolve())

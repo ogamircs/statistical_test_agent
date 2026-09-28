@@ -86,9 +86,9 @@ class TestBalancedGroups:
 
 
 class TestImbalancedGroups:
-    """Imbalanced treatment/control that may trigger bootstrapping."""
+    """Imbalanced pre-period: AA failure is recorded, control rows are kept."""
 
-    def test_bootstrap_triggered_for_imbalanced_pre(self, preparer):
+    def test_aa_failure_is_reported_without_resampling(self, preparer):
         rng = np.random.RandomState(99)
         n_t, n_c = 50, 100
         groups = ["treatment"] * n_t + ["control"] * n_c
@@ -112,9 +112,12 @@ class TestImbalancedGroups:
             treatment_label="treatment",
             control_label="control",
         )
-        # Bootstrap should have been attempted
-        assert result.bootstrapping_applied is True
-        assert result.original_control_size > 0
+        # Selecting a control subsample conditional on the AA p-value would
+        # bias every downstream test (TODO.md #88): keep every row, flag it.
+        assert result.aa_test_passed is False
+        assert result.bootstrapping_applied is False
+        assert len(result.control_post_aligned) == n_c
+        assert result.original_control_size == n_c
 
 
 class TestMissingPreEffect:

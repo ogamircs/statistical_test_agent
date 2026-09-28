@@ -19,13 +19,25 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from statsmodels.stats.multitest import multipletests
 
-from .covariate_resolver import CovariateResolver, apply_cuped
+from .covariate_resolver import CovariateResolver, CupedResult, apply_cuped
 from .data_manager import ABTestDataManager
-from .diagnostics import detect_duplicate_units
+from .diagnostics import (
+    DEFAULT_EXPECTED_TREATMENT_RATIO,
+    describe_statistical_fallbacks,
+    detect_duplicate_units,
+    resolve_expected_treatment_ratio,
+    validate_expected_treatment_ratio,
+)
+from .engine_helpers import apply_fdr_correction, combine_total_effect_per_customer
 from .models import AATestResult, ABTestResult, ABTestSummary
-from .power_analysis import calculate_minimum_detectable_effect
+from .power_analysis import (
+    DEFAULT_TARGET_EFFECT_SIZE,
+    calculate_minimum_detectable_effect,
+    calculate_power,
+    calculate_required_sample_size,
+    is_sample_adequate,
+)
 from .segment_preparer import SegmentPreparer, _PreparedSegmentData
 from .sequential_config import evaluate_sequential_decision
 from .statsmodels_engine import StatsmodelsABTestEngine
@@ -62,10 +74,20 @@ class ABTestAnalyzer:
         significance_level: float = 0.05,
         power_threshold: float = 0.8,
         seed: int = 42,
+        expected_treatment_ratio: float = DEFAULT_EXPECTED_TREATMENT_RATIO,
+        target_effect_size: float = DEFAULT_TARGET_EFFECT_SIZE,
     ):
         self.significance_level = significance_level
         self.power_threshold = power_threshold
         self.seed = seed
+        # Designed treatment share for the SRM check (0.5 = 50/50). A
+        # per-experiment override lives in column_mapping["expected_treatment_ratio"].
+        self.expected_treatment_ratio = validate_expected_treatment_ratio(
+            expected_treatment_ratio
+        )
+        # Standardized effect the sample must be able to detect to count as
+        # adequate; override per experiment via column_mapping["target_effect_size"].
+        self.target_effect_size = float(target_effect_size)
 
         self.data_manager = ABTestDataManager()
         self.stats_engine = StatsmodelsABTestEngine(
@@ -174,22 +196,6 @@ class ABTestAnalyzer:
         segment_name: str = "Overall",
     ) -> AATestResult:
         return self.stats_engine.run_aa_test(treatment_pre, control_pre, segment_name)
-
-    def bootstrap_balanced_control(
-        self,
-        treatment_pre: np.ndarray,
-        control_df: pd.DataFrame,
-        pre_col: str,
-        max_iterations: int = 1000,
-        target_p_value: float = 0.10,
-    ):
-        return self.stats_engine.bootstrap_balanced_control(
-            treatment_pre,
-            control_df,
-            pre_col,
-            max_iterations=max_iterations,
-            target_p_value=target_p_value,
-        )
 
     def run_proportion_test(self, treatment_data: np.ndarray, control_data: np.ndarray) -> Dict[str, Any]:
         return self.stats_engine.run_proportion_test(treatment_data, control_data)
@@ -417,30 +423,67 @@ class ABTestAnalyzer:
             control_pre_aligned=prepared.control_pre_aligned,
         )
 
-        # --- CUPED variance reduction (opt-in via column_mapping["cuped"]) ---
-        cuped_result = None
-        if bool(self.column_mapping.get("cuped", False)):
-            cuped_result = apply_cuped(
-                treatment_post=prepared.treatment_post_aligned,
-                control_post=prepared.control_post_aligned,
-                treatment_pre=prepared.treatment_pre_aligned,
-                control_pre=prepared.control_pre_aligned,
+        statistical_warnings: List[str] = []
+        if not prepared.aa_test_passed:
+            statistical_warnings.append(
+                f"Pre-period balance (AA) check failed (p={prepared.aa_p_value:.4f}): "
+                "arms differed before the experiment. Prefer the CUPED, DiD or "
+                "covariate-adjusted estimate over the raw post-period difference."
             )
-            if cuped_result.applied:
-                prepared.treatment_post_aligned = cuped_result.treatment_adjusted
-                prepared.control_post_aligned = cuped_result.control_adjusted
+
+        # Raw (unadjusted) post-period values. CUPED residuals are only valid
+        # for the primary mean-difference estimate; the proportion test counts
+        # non-zero values as conversions, and DiD / Bayesian / per-arm means
+        # must stay on the metric's own scale (TODO.md #89).
+        raw_treatment_post = np.asarray(prepared.treatment_post_aligned)
+        raw_control_post = np.asarray(prepared.control_post_aligned)
+        estimation_metric_type = selection.metric_type_option
+
+        # --- CUPED variance reduction (opt-in via column_mapping["cuped"]) ---
+        cuped_result: Optional[CupedResult] = None
+        if bool(self.column_mapping.get("cuped", False)):
+            raw_metric_type = self.stats_engine._infer_metric_type(
+                np.concatenate([raw_treatment_post, raw_control_post]),
+                selection.metric_type_option,
+            )
+            if raw_metric_type != "continuous":
+                # Residualizing a binary/count/heavy-tail metric breaks the
+                # family-specific model (GLM on non-0/1 or negative values).
+                cuped_result = CupedResult(
+                    applied=False,
+                    theta=0.0,
+                    variance_reduction=0.0,
+                    treatment_adjusted=raw_treatment_post,
+                    control_adjusted=raw_control_post,
+                    reason=f"cuped_not_supported_for_{raw_metric_type}_metric",
+                )
+                statistical_warnings.append(
+                    "CUPED was requested but skipped: it is only applied to continuous "
+                    f"metrics and this metric was detected as '{raw_metric_type}'."
+                )
+            else:
+                cuped_result = apply_cuped(
+                    treatment_post=raw_treatment_post,
+                    control_post=raw_control_post,
+                    treatment_pre=prepared.treatment_pre_aligned,
+                    control_pre=prepared.control_pre_aligned,
+                )
+                if cuped_result.applied:
+                    prepared.treatment_post_aligned = cuped_result.treatment_adjusted
+                    prepared.control_post_aligned = cuped_result.control_adjusted
+                    # Residuals can look heavy-tailed; keep the family chosen
+                    # on the raw metric.
+                    estimation_metric_type = "continuous"
 
         # --- Primary effect estimation ---
         effect_metrics = self.stats_engine.estimate_treatment_effect(
             treatment_data=prepared.treatment_post_aligned,
             control_data=prepared.control_post_aligned,
-            metric_type=selection.metric_type_option,
+            metric_type=estimation_metric_type,
             count_model=selection.count_model_option,
             heavy_tail_strategy=selection.heavy_tail_strategy_option,
         )
 
-        treatment_mean = effect_metrics["treatment_mean"]
-        control_mean = effect_metrics["control_mean"]
         effect_size = effect_metrics["effect_size"]
         p_value = effect_metrics["p_value"]
         confidence_interval = effect_metrics["confidence_interval"]
@@ -469,23 +512,47 @@ class ABTestAnalyzer:
             model_effect_exponentiated=model_effect_exponentiated,
         )
 
-        treatment_post_mean = treatment_mean
-        control_post_mean = control_mean
+        treatment_post_mean = float(np.mean(raw_treatment_post))
+        control_post_mean = float(np.mean(raw_control_post))
 
+        statistical_warnings.extend(
+            describe_statistical_fallbacks(
+                "Primary effect model", t_test_diagnostics, model_type=model_type
+            )
+        )
+
+        n_treatment = len(prepared.treatment_post_aligned)
+        n_control = len(prepared.control_post_aligned)
         cohens_d = self.calculate_cohens_d(
             prepared.treatment_post_aligned,
             prepared.control_post_aligned,
         )
-        power = self.calculate_power(
-            cohens_d,
-            len(prepared.treatment_post_aligned),
-            len(prepared.control_post_aligned),
+        # Observed (post-hoc) power: informational only, never used for adequacy.
+        power = calculate_power(
+            effect_size=cohens_d,
+            n_treatment=n_treatment,
+            n_control=n_control,
+            significance_level=self.significance_level,
+            warnings_sink=statistical_warnings,
         )
-        required_n = self.calculate_required_sample_size(
-            cohens_d,
-            ratio=(len(prepared.control_post_aligned) / len(prepared.treatment_post_aligned))
-            if len(prepared.treatment_post_aligned) > 0
-            else 1.0,
+        target_effect_size = self._resolve_target_effect_size()
+        achieved_mde = calculate_minimum_detectable_effect(
+            n_treatment=n_treatment,
+            n_control=n_control,
+            significance_level=self.significance_level,
+            power_threshold=self.power_threshold,
+            warnings_sink=statistical_warnings,
+        )
+        sample_adequate = is_sample_adequate(
+            achieved_mde=achieved_mde,
+            target_effect_size=target_effect_size,
+        )
+        required_n = calculate_required_sample_size(
+            effect_size=target_effect_size,
+            ratio=(n_control / n_treatment) if n_treatment > 0 else 1.0,
+            power_threshold=self.power_threshold,
+            significance_level=self.significance_level,
+            warnings_sink=statistical_warnings,
         )
 
         is_significant = p_value < self.significance_level and not inference_blocks_significance
@@ -497,9 +564,9 @@ class ABTestAnalyzer:
         ):
             did_metrics = self.stats_engine.estimate_did_effect(
                 treatment_pre=prepared.treatment_pre_aligned,
-                treatment_post=prepared.treatment_post_aligned,
+                treatment_post=raw_treatment_post,
                 control_pre=prepared.control_pre_aligned,
-                control_post=prepared.control_post_aligned,
+                control_post=raw_control_post,
             )
             did_treatment_change = did_metrics["treatment_change"]
             did_control_change = did_metrics["control_change"]
@@ -509,10 +576,7 @@ class ABTestAnalyzer:
             did_control_change = 0.0
             did_effect = effect_size
 
-        prop_results = self.run_proportion_test(
-            prepared.treatment_post_aligned,
-            prepared.control_post_aligned,
-        )
+        prop_results = self.run_proportion_test(raw_treatment_post, raw_control_post)
         proportion_diff = prop_results["proportion_diff"]
         proportion_diagnostics = prop_results.get("diagnostics", {})
         proportion_guardrail_triggered = bool(
@@ -524,10 +588,16 @@ class ABTestAnalyzer:
         proportion_is_significant = (
             prop_results["p_value"] < self.significance_level and not proportion_blocks_significance
         )
+        statistical_warnings.extend(
+            describe_statistical_fallbacks("Proportion test", proportion_diagnostics)
+        )
 
         srm_diagnostics = self.stats_engine.run_srm_diagnostics(
-            treatment_size=len(prepared.treatment_post_aligned),
-            control_size=len(prepared.control_post_aligned),
+            treatment_size=n_treatment,
+            control_size=n_control,
+            expected_treatment_ratio=resolve_expected_treatment_ratio(
+                self.column_mapping, self.expected_treatment_ratio
+            ),
         )
         srm_mismatch = bool(srm_diagnostics.get("is_sample_ratio_mismatch", False))
         if srm_mismatch:
@@ -573,23 +643,22 @@ class ABTestAnalyzer:
         )
 
         if proportion_is_significant and proportion_diff > 0:
-            proportion_effect_per_customer = proportion_diff * control_mean
-            proportion_effect = proportion_effect_per_customer * len(prepared.treatment_post_aligned)
+            proportion_effect_per_customer = proportion_diff * control_post_mean
+            proportion_effect = proportion_effect_per_customer * n_treatment
         else:
             proportion_effect_per_customer = 0.0
             proportion_effect = 0.0
 
-        t_test_total_effect = (
-            effect_size * len(prepared.treatment_post_aligned) if is_significant else 0.0
+        total_effect_per_customer = combine_total_effect_per_customer(
+            effect_size=effect_size,
+            is_significant=is_significant,
+            proportion_effect_per_customer=proportion_effect_per_customer,
         )
-        total_effect = t_test_total_effect + proportion_effect
-        total_effect_per_customer = (
-            (effect_size if is_significant else 0.0) + proportion_effect_per_customer
-        )
+        total_effect = total_effect_per_customer * n_treatment
 
         bayesian_results = self.run_bayesian_test(
-            treatment_post=prepared.treatment_post_aligned,
-            control_post=prepared.control_post_aligned,
+            treatment_post=raw_treatment_post,
+            control_post=raw_control_post,
             treatment_pre=prepared.treatment_pre_aligned,
             control_pre=prepared.control_pre_aligned,
         )
@@ -646,7 +715,25 @@ class ABTestAnalyzer:
             did_effect=did_effect,
             power=power,
             required_n=required_n,
+            achieved_mde=achieved_mde,
+            is_sample_adequate=sample_adequate,
+            target_effect_size=target_effect_size,
+            statistical_warnings=statistical_warnings,
         )
+
+    def _resolve_target_effect_size(self) -> float:
+        raw: Any = self.column_mapping.get("target_effect_size")
+        if raw in (None, ""):
+            return abs(self.target_effect_size)
+        try:
+            value = abs(float(raw))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"target_effect_size must be a positive number; got {raw!r}"
+            ) from error
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"target_effect_size must be a positive number; got {raw!r}")
+        return value
 
     def _assemble_ab_test_result(
         self,
@@ -678,6 +765,10 @@ class ABTestAnalyzer:
         did_effect: float,
         power: float,
         required_n: int,
+        achieved_mde: float,
+        is_sample_adequate: bool,
+        target_effect_size: float,
+        statistical_warnings: List[str],
     ) -> ABTestResult:
         """Pack the result of one segment-level analysis into ABTestResult.
 
@@ -726,7 +817,7 @@ class ABTestAnalyzer:
             ],
             power=power,
             required_sample_size=required_n,
-            is_sample_adequate=power >= self.power_threshold,
+            is_sample_adequate=is_sample_adequate,
             did_treatment_change=did_treatment_change,
             did_control_change=did_control_change,
             did_effect=did_effect,
@@ -772,12 +863,9 @@ class ABTestAnalyzer:
                 bayesian_results["total_effect"] / treatment_n if treatment_n > 0 else 0.0
             ),
             rows_dropped=prepared.rows_dropped,
-            achieved_mde=calculate_minimum_detectable_effect(
-                n_treatment=treatment_n,
-                n_control=control_n,
-                significance_level=self.significance_level,
-                power_threshold=self.power_threshold,
-            ),
+            achieved_mde=achieved_mde,
+            target_effect_size=target_effect_size,
+            statistical_warnings=list(dict.fromkeys(statistical_warnings)),
             cuped_applied=bool(cuped_result and cuped_result.applied),
             cuped_theta=float(cuped_result.theta) if cuped_result else 0.0,
             cuped_variance_reduction=(
@@ -827,66 +915,9 @@ class ABTestAnalyzer:
 
         return results
 
-    @staticmethod
-    def _sanitize_p_value(p_value: Any) -> float:
-        """Clamp invalid p-values to 1.0 so correction is robust to upstream edge cases."""
-        try:
-            numeric = float(p_value)
-        except (TypeError, ValueError):
-            return 1.0
-        if not np.isfinite(numeric):
-            return 1.0
-        if numeric < 0.0 or numeric > 1.0:
-            return 1.0
-        return numeric
-
     def _apply_multiple_testing_correction(self, results: List[ABTestResult]) -> None:
         """Apply BH/FDR correction across segment-level frequentist p-values."""
-        p_values = np.array([self._sanitize_p_value(r.p_value) for r in results], dtype=float)
-        prop_p_values = np.array(
-            [self._sanitize_p_value(r.proportion_p_value) for r in results],
-            dtype=float,
-        )
-
-        try:
-            reject_main, adjusted_main, _, _ = multipletests(
-                p_values,
-                alpha=self.significance_level,
-                method="fdr_bh",
-            )
-            reject_prop, adjusted_prop, _, _ = multipletests(
-                prop_p_values,
-                alpha=self.significance_level,
-                method="fdr_bh",
-            )
-        except Exception:
-            for result in results:
-                result.p_value_adjusted = self._sanitize_p_value(result.p_value)
-                result.is_significant_adjusted = result.is_significant
-                result.proportion_p_value_adjusted = self._sanitize_p_value(result.proportion_p_value)
-                result.proportion_is_significant_adjusted = result.proportion_is_significant
-                result.multiple_testing_method = "none"
-                result.multiple_testing_applied = False
-            return
-
-        for idx, result in enumerate(results):
-            result.p_value_adjusted = float(adjusted_main[idx])
-            result.proportion_p_value_adjusted = float(adjusted_prop[idx])
-            result.multiple_testing_method = "fdr_bh"
-            result.multiple_testing_applied = True
-
-            t_test_blocks = bool(
-                result.diagnostics.get("frequentist", {})
-                .get("t_test", {})
-                .get("blocks_significance", False)
-            )
-            prop_blocks = bool(
-                result.diagnostics.get("frequentist", {})
-                .get("proportion_test", {})
-                .get("blocks_significance", False)
-            )
-            result.is_significant_adjusted = bool(reject_main[idx]) and not t_test_blocks
-            result.proportion_is_significant_adjusted = bool(reject_prop[idx]) and not prop_blocks
+        apply_fdr_correction(results, significance_level=self.significance_level)
 
     def generate_summary(self, results: List[ABTestResult]) -> ABTestSummary:
         """Generate aggregate summary and recommendations."""

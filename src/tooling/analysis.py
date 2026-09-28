@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from langchain_core.tools import Tool
+from langchain_core.tools import BaseTool, StructuredTool, Tool
 
 from ..agent_reporting import (
     AgentUserFacingError,
@@ -34,13 +34,13 @@ _RATIO_METRIC_DESCRIPTION = (
     "numerator and a denominator that vary by user — the standard t-test on the "
     "user-level ratio is biased; this tool computes sum(num)/sum(denom) per arm "
     "and the variance via the delta method.\n\n"
-    "Input: JSON object with `numerator` (column name), `denominator` (column "
-    "name), and optional `segment` (filter to one segment). Requires data to be "
-    "loaded with the standard group column already mapped."
+    "Args: `numerator` (column name), `denominator` (column name), and optional "
+    "`segment` (filter to one segment). Requires data to be loaded with the "
+    "standard group column already mapped."
 )
 
 
-def _ratio_metric_impl(context: ToolContext, payload: str) -> str:
+def _ratio_metric_impl(context: ToolContext, payload: str | Dict[str, Any]) -> str:
     try:
         try:
             params = json.loads(payload) if isinstance(payload, str) else dict(payload)
@@ -59,7 +59,7 @@ def _ratio_metric_impl(context: ToolContext, payload: str) -> str:
             )
 
         analyzer = context.active_analyzer()
-        df = context.require_pandas_dataframe(analyzer, "compute_ratio_metric")
+        df = context.require_dataframe(analyzer)
         mapping = getattr(analyzer, "column_mapping", {}) or {}
         group_col = mapping.get("group")
         treatment_label = getattr(analyzer, "treatment_label", None)
@@ -134,7 +134,7 @@ def _ratio_metric_impl(context: ToolContext, payload: str) -> str:
 
 _PLAN_SAMPLE_SIZE_DESCRIPTION = (
     "Plan required sample size per arm BEFORE collecting data. "
-    "Input: a JSON object with these fields: "
+    "Args: "
     "`metric_type` (\"proportion\" or \"continuous\", required), "
     "`mde` (absolute minimum detectable effect, required — for proportion this is the "
     "absolute lift in rate; for continuous this is the lift in the mean), "
@@ -146,7 +146,7 @@ _PLAN_SAMPLE_SIZE_DESCRIPTION = (
 )
 
 
-def _plan_sample_size_impl(payload: str) -> str:
+def _plan_sample_size_impl(payload: str | Dict[str, Any]) -> str:
     try:
         try:
             params: Dict[str, Any] = json.loads(payload) if isinstance(payload, str) else dict(payload)
@@ -254,8 +254,45 @@ def _plan_sample_size_impl(payload: str) -> str:
         )
 
 
-def create_analysis_tools(context: ToolContext) -> List[Tool]:
+def plan_sample_size(
+    metric_type: Literal["proportion", "continuous"],
+    mde: float,
+    baseline_rate: Optional[float] = None,
+    baseline_mean: Optional[float] = None,
+    baseline_std: Optional[float] = None,
+    alpha: float = 0.05,
+    power: float = 0.8,
+    ratio: float = 1.0,
+) -> str:
+    """Typed entry point so the LLM sees a real parameter schema (TODO.md #79)."""
+    params: Dict[str, Any] = {
+        "metric_type": metric_type,
+        "mde": mde,
+        "alpha": alpha,
+        "power": power,
+        "ratio": ratio,
+    }
+    optional = {
+        "baseline_rate": baseline_rate,
+        "baseline_mean": baseline_mean,
+        "baseline_std": baseline_std,
+    }
+    params.update({key: value for key, value in optional.items() if value is not None})
+    return _plan_sample_size_impl(params)
+
+
+def create_analysis_tools(context: ToolContext) -> List[BaseTool]:
     agent = context.agent
+
+    def compute_ratio_metric(
+        numerator: str,
+        denominator: str,
+        segment: Optional[str] = None,
+    ) -> str:
+        params: Dict[str, Any] = {"numerator": numerator, "denominator": denominator}
+        if segment:
+            params["segment"] = segment
+        return _ratio_metric_impl(context, params)
 
     def run_ab_test(segment: Optional[str] = None) -> str:
         logger.info("Tool run_ab_test started (segment=%s)", segment or "overall")
@@ -325,8 +362,6 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
             analyzer = context.active_analyzer()
             if getattr(analyzer, "df", None) is None:
                 return "No data loaded. Please load a CSV file first."
-            if not hasattr(analyzer, "query_data"):
-                raise context.unsupported("Querying data", analyzer)
 
             result = analyzer.query_data(query)
             logger.info("Tool query_data completed (rows=%s)", len(result))
@@ -344,8 +379,6 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
         logger.info("Tool get_data_summary started")
         try:
             analyzer = context.active_analyzer()
-            if not hasattr(analyzer, "get_data_summary"):
-                raise context.unsupported("Getting a data summary", analyzer)
 
             summary = analyzer.get_data_summary()
             logger.info("Tool get_data_summary completed")
@@ -363,8 +396,6 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
         logger.info("Tool get_segment_distribution started")
         try:
             analyzer = context.active_analyzer()
-            if not hasattr(analyzer, "get_segment_distribution"):
-                raise context.unsupported("Getting the segment distribution", analyzer)
 
             dist = analyzer.get_segment_distribution()
             logger.info("Tool get_segment_distribution completed")
@@ -382,7 +413,7 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
         logger.info("Tool get_column_values started (column=%s)", column_name)
         try:
             analyzer = context.active_analyzer()
-            df = context.require_pandas_dataframe(analyzer, "Listing column values")
+            df = context.require_dataframe(analyzer)
             if column_name not in df.columns:
                 return f"Column '{column_name}' not found. Available columns: {list(df.columns)}"
 
@@ -403,7 +434,7 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
         logger.info("Tool calculate_statistics started (column=%s)", column_name)
         try:
             analyzer = context.active_analyzer()
-            df = context.require_pandas_dataframe(analyzer, "Calculating column statistics")
+            df = context.require_dataframe(analyzer)
             if column_name not in df.columns:
                 return f"Column '{column_name}' not found."
 
@@ -467,14 +498,14 @@ def create_analysis_tools(context: ToolContext) -> List[Tool]:
             func=calculate_stats,
             description="Calculate detailed statistics for a numeric column including mean, median, std dev, percentiles.",
         ),
-        Tool(
+        StructuredTool.from_function(
+            func=plan_sample_size,
             name="plan_sample_size",
-            func=_plan_sample_size_impl,
             description=_PLAN_SAMPLE_SIZE_DESCRIPTION,
         ),
-        Tool(
+        StructuredTool.from_function(
+            func=compute_ratio_metric,
             name="compute_ratio_metric",
-            func=lambda payload: _ratio_metric_impl(context, payload),
             description=_RATIO_METRIC_DESCRIPTION,
         ),
     ]

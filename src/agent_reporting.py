@@ -100,45 +100,64 @@ def render_tool_error(
     return f"{prefix}: {structured.message} [error_code={structured.code}]"
 
 
+def _inline(value: Any) -> str:
+    """Collapse a data-derived value onto one line.
+
+    Segment names, labels and column names come straight from user CSVs; a
+    raw newline would let a crafted value forge extra report lines (or fake
+    instructions) in the text the LLM reads back (TODO.md #82).
+    """
+    return " ".join(str(value).split())
+
+
+def _md_cell(value: Any) -> str:
+    """Render a data-derived value safely inside a markdown table cell."""
+    return _inline(value).replace("|", "\\|")
+
+
+def _uses_fdr(results: Sequence[Any]) -> bool:
+    return any(getattr(result, "multiple_testing_applied", False) for result in results)
+
+
+def _cap_segment_results(
+    results: Sequence[Any], max_rows: int = DEFAULT_LLM_ROW_LIMIT
+) -> Tuple[List[Any], Optional[str]]:
+    """Bound per-segment rows sent to chat and back into LLM context (TODO.md #81).
+
+    When truncating, keep the segments with the smallest t-test p-values so
+    the most decision-relevant rows survive; the headline counts above the
+    tables still cover every segment.
+    """
+    total = len(results)
+    if total <= max_rows:
+        return list(results), None
+    shown = sorted(results, key=lambda result: getattr(result, "p_value", 1.0))[:max_rows]
+    notice = (
+        f"_showing {max_rows:,} of {total:,} segments (lowest t-test p-values first); "
+        "ask about a specific segment to see the rest_"
+    )
+    return shown, notice
+
+
 def render_load_csv_success(
     *,
     filepath: str,
     file_size_mb: float,
-    backend: str,
-    file_size_threshold_mb: float,
-    spark_selected: bool,
-    fallback_note: Optional[str],
     shape: Tuple[int, int],
     columns: Sequence[str],
     suggestions: Mapping[str, Sequence[str]],
 ) -> str:
     """Render successful load_csv output."""
-    result = f"File size: {file_size_mb:.2f} MB\n"
-
-    if backend == "spark":
-        result += (
-            f"[LARGE FILE DETECTED] Using PySpark for distributed processing "
-            f"(file size > {file_size_threshold_mb}MB)\n\n"
-        )
-    else:
-        if spark_selected:
-            result += (
-                f"[LARGE FILE DETECTED] PySpark requested for files > "
-                f"{file_size_threshold_mb}MB\n"
-            )
-        result += "Using pandas for in-memory processing\n"
-        if fallback_note:
-            result += f"{fallback_note}\n"
-        result += "\n"
+    result = f"File size: {file_size_mb:.2f} MB\n\n"
 
     result += f"Successfully loaded data from '{filepath}'\n"
     result += f"Shape: {shape[0]:,} rows, {shape[1]} columns\n\n"
-    result += f"Columns found: {', '.join(columns)}\n\n"
+    result += f"Columns found: {', '.join(_inline(column) for column in columns)}\n\n"
     result += "Column suggestions based on naming patterns:\n"
 
     for col_type, suggested in suggestions.items():
         if suggested:
-            result += f"  - {col_type}: {', '.join(suggested)}\n"
+            result += f"  - {col_type}: {', '.join(_inline(item) for item in suggested)}\n"
         else:
             result += f"  - {col_type}: No automatic match found\n"
 
@@ -149,13 +168,14 @@ def render_load_csv_success(
 def _render_ab_results_section(summary: Any) -> str:
     """Render the shared markdown A/B results section."""
     normalized = to_ab_test_summary(summary)
+    fdr_applied = _uses_fdr(normalized.detailed_results)
+    shown_results, truncation_notice = _cap_segment_results(normalized.detailed_results)
     output = "## A/B Test Results\n\n"
 
     output += "### Overview\n"
     output += f"- **Segments Analyzed:** {normalized.total_segments_analyzed}\n"
     output += f"- **AA Test Passed:** {normalized.aa_test_passed_segments}\n"
     output += f"- **AA Test Failed:** {normalized.aa_test_failed_segments}\n"
-    output += f"- **Bootstrapped Segments:** {normalized.bootstrapped_segments}\n"
     output += (
         f"- **T-test Significant:** {normalized.t_test_significant_segments} "
         f"({normalized.t_test_significance_rate:.1%})\n"
@@ -164,6 +184,17 @@ def _render_ab_results_section(summary: Any) -> str:
         f"- **Proportion Test Significant:** {normalized.prop_test_significant_segments} "
         f"({normalized.prop_test_significance_rate:.1%})\n"
     )
+    if fdr_applied:
+        output += (
+            f"- **T-test Significant after FDR correction:** "
+            f"{normalized.t_test_significant_segments_adjusted} "
+            f"({normalized.t_test_significance_rate_adjusted:.1%})\n"
+        )
+        output += (
+            f"- **Proportion Test Significant after FDR correction:** "
+            f"{normalized.prop_test_significant_segments_adjusted} "
+            f"({normalized.prop_test_significance_rate_adjusted:.1%})\n"
+        )
     output += (
         f"- **Bayesian Significant:** {normalized.bayesian_significant_segments} "
         f"({normalized.bayesian_significance_rate:.1%})\n\n"
@@ -197,18 +228,20 @@ def _render_ab_results_section(summary: Any) -> str:
         output += "| Segment | Reason |\n"
         output += "|---------|--------|\n"
         for failure in normalized.segment_failures:
-            output += f"| {failure.segment} | {failure.error} |\n"
+            output += f"| {_md_cell(failure.segment)} | {_md_cell(failure.error)} |\n"
         output += "\n"
 
-    output += "### AA Test & Pre/Post Analysis\n\n"
-    output += "| Segment | AA Pass | Boot | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
-    output += "|---------|---------|------|-----------|----------|------------|-----------|------------|\n"
+    if truncation_notice:
+        output += f"{truncation_notice}\n\n"
 
-    for result in normalized.detailed_results:
+    output += "### AA Test & Pre/Post Analysis\n\n"
+    output += "| Segment | AA Pass | Pre Treat | Pre Ctrl | Post Treat | Post Ctrl | DiD Effect |\n"
+    output += "|---------|---------|-----------|----------|------------|-----------|------------|\n"
+
+    for result in shown_results:
         aa_pass = "Yes" if result.aa_test_passed else "No"
-        boot = "Yes" if result.bootstrapping_applied else "No"
         output += (
-            f"| {result.segment} | {aa_pass} | {boot} | "
+            f"| {_md_cell(result.segment)} | {aa_pass} | "
             f"{result.treatment_pre_mean:.2f} | {result.control_pre_mean:.2f} | "
             f"{result.treatment_post_mean:.2f} | {result.control_post_mean:.2f} | "
             f"{result.did_effect:.4f} |\n"
@@ -217,39 +250,64 @@ def _render_ab_results_section(summary: Any) -> str:
     output += "\n"
 
     output += "### Frequentist Results\n\n"
-    output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
-    output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
+    if fdr_applied:
+        output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test adj p | T-test Effect | Prop p-val | Prop adj p | Prop Effect | Total Effect |\n"
+        output += "|---------|---------|--------|--------------|--------------|---------------|------------|------------|-------------|-------------|\n"
+    else:
+        output += "| Segment | Treat N | Ctrl N | T-test p-val | T-test Effect | Prop p-val | Prop Effect | Total Effect |\n"
+        output += "|---------|---------|--------|--------------|---------------|------------|-------------|-------------|\n"
 
-    for result in normalized.detailed_results:
+    for result in shown_results:
         t_effect = result.effect_size
         t_pval = result.p_value
         prop_pval = result.proportion_p_value
         prop_effect_per_cust = result.proportion_effect_per_customer
 
-        t_total = t_effect * result.treatment_size if result.is_significant else 0
-        prop_total = (
-            prop_effect_per_cust * result.control_size
-            if result.proportion_is_significant
-            else 0
+        # With segment-level FDR control the adjusted call is the one that
+        # counts; stars and the per-row total follow it (TODO.md #92).
+        t_significant = (
+            result.is_significant_adjusted if fdr_applied else result.is_significant
         )
-        total_effect = t_total + prop_total
+        prop_significant = (
+            result.proportion_is_significant_adjusted
+            if fdr_applied
+            else result.proportion_is_significant
+        )
 
-        t_sig_marker = "*" if result.is_significant else ""
-        p_sig_marker = "*" if result.proportion_is_significant else ""
+        # Single source of truth: the backend's non-double-counted total,
+        # already recomputed from the adjusted calls when FDR ran (TODO.md #42).
+        total_effect = result.total_effect
 
+        t_sig_marker = "*" if t_significant else ""
+        p_sig_marker = "*" if prop_significant else ""
+
+        if fdr_applied:
+            output += (
+                f"| {_md_cell(result.segment)} | {result.treatment_size:,} | {result.control_size:,} | "
+                f"{t_pval:.4f} | {result.p_value_adjusted:.4f}{t_sig_marker} | {t_effect:.4f} | "
+                f"{prop_pval:.4f} | {result.proportion_p_value_adjusted:.4f}{p_sig_marker} | "
+                f"{prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+            )
+        else:
+            output += (
+                f"| {_md_cell(result.segment)} | {result.treatment_size:,} | {result.control_size:,} | "
+                f"{t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | "
+                f"{prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+            )
+
+    if fdr_applied:
         output += (
-            f"| {result.segment} | {result.treatment_size:,} | {result.control_size:,} | "
-            f"{t_pval:.4f}{t_sig_marker} | {t_effect:.4f} | "
-            f"{prop_pval:.4f}{p_sig_marker} | {prop_effect_per_cust:.4f} | {total_effect:.2f} |\n"
+            "\n*\\* indicates statistical significance after Benjamini-Hochberg FDR "
+            "correction across segments (adjusted p-value); raw p-values are shown for reference*\n\n"
         )
-
-    output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
+    else:
+        output += "\n*\\* indicates statistical significance (p < 0.05)*\n\n"
 
     output += "### Bayesian Results (with DiD Total Effect)\n\n"
     output += "| Segment | P(Treat>Ctrl) | 95% Credible Interval | Expected Loss | Bayesian Total Effect |\n"
     output += "|---------|---------------|----------------------|---------------|----------------------|\n"
 
-    for result in normalized.detailed_results:
+    for result in shown_results:
         expected_loss = min(
             result.bayesian_expected_loss_treatment,
             result.bayesian_expected_loss_control,
@@ -257,7 +315,7 @@ def _render_ab_results_section(summary: Any) -> str:
         b_sig_marker = "*" if result.bayesian_is_significant else ""
 
         output += (
-            f"| {result.segment} | {result.bayesian_prob_treatment_better:.1%}{b_sig_marker} | "
+            f"| {_md_cell(result.segment)} | {result.bayesian_prob_treatment_better:.1%}{b_sig_marker} | "
             f"[{result.bayesian_credible_interval[0]:.4f}, {result.bayesian_credible_interval[1]:.4f}] | "
             f"{expected_loss:.4f} | {result.bayesian_total_effect:.2f} |\n"
         )
@@ -265,7 +323,7 @@ def _render_ab_results_section(summary: Any) -> str:
     output += "\n*\\* indicates Bayesian significance (P > 95% or P < 5%)*\n"
 
     diagnostic_rows = []
-    for result in normalized.detailed_results:
+    for result in shown_results:
         findings = _format_segment_diagnostics(result)
         if findings:
             diagnostic_rows.append((result.segment, findings))
@@ -276,7 +334,7 @@ def _render_ab_results_section(summary: Any) -> str:
         output += "| Segment | Findings |\n"
         output += "|---------|----------|\n"
         for segment, findings in diagnostic_rows:
-            output += f"| {segment} | {' '.join(findings)} |\n"
+            output += f"| {_md_cell(segment)} | {' '.join(findings)} |\n"
         output += "\n"
 
     output += "\n### Recommendations\n\n"
@@ -293,20 +351,11 @@ def render_load_and_auto_analyze_report(
     filepath: str,
     file_size_mb: float,
     shape: Tuple[int, int],
-    backend: str,
-    fallback_note: Optional[str],
     config: Dict[str, Any],
     summary: Any,
 ) -> str:
     """Render load_and_auto_analyze output."""
     output = "## Best Guess Mode - Analysis Complete\n\n"
-
-    if backend == "spark":
-        output += "**Backend:** PySpark (distributed processing for large files)\n"
-    else:
-        output += "**Backend:** pandas (in-memory processing)\n"
-    if fallback_note:
-        output += f"**Backend Note:** {fallback_note}\n"
 
     output += f"**File:** {filepath.split('/')[-1].split(chr(92))[-1]}\n"
     output += f"**File Size:** {file_size_mb:.2f} MB\n"
@@ -536,24 +585,38 @@ def render_full_analysis_output(summary: Any) -> str:
     )
     output += f"  Power Adequacy Rate: {normalized.power_adequacy_rate:.1%}\n\n"
 
-    output += "SEGMENT DETAILS:\n"
-    output += "-" * 100 + "\n"
-    output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Sig?':<6} {'Power':<8} {'Adequate?':<10}\n"
-    output += "-" * 100 + "\n"
-
-    for result in normalized.detailed_results:
-        sig = "YES" if result.is_significant else "NO"
-        adeq = "YES" if result.is_sample_adequate else "NO"
+    fdr_applied = _uses_fdr(normalized.detailed_results)
+    shown_results, truncation_notice = _cap_segment_results(normalized.detailed_results)
+    if fdr_applied:
         output += (
-            f"{result.segment:<20} {result.treatment_size:<10} {result.control_size:<10} "
-            f"{result.effect_size:<12.4f} {result.p_value:<12.6f} {sig:<6} "
+            f"  Significant after FDR correction: "
+            f"{normalized.t_test_significant_segments_adjusted} "
+            f"(Benjamini-Hochberg across segments; use this for segment-level calls)\n\n"
+        )
+
+    output += "SEGMENT DETAILS:\n"
+    output += "-" * 112 + "\n"
+    output += f"{'Segment':<20} {'Treat N':<10} {'Ctrl N':<10} {'Effect':<12} {'p-value':<12} {'Adj p':<12} {'Sig?':<6} {'Power':<8} {'Adequate?':<10}\n"
+    output += "-" * 112 + "\n"
+
+    for result in shown_results:
+        significant = result.is_significant_adjusted if fdr_applied else result.is_significant
+        sig = "YES" if significant else "NO"
+        adeq = "YES" if result.is_sample_adequate else "NO"
+        adj_p = f"{result.p_value_adjusted:.6f}" if fdr_applied else "n/a"
+        output += (
+            f"{_inline(result.segment):<20} {result.treatment_size:<10} {result.control_size:<10} "
+            f"{result.effect_size:<12.4f} {result.p_value:<12.6f} {adj_p:<12} {sig:<6} "
             f"{result.power:<8.2%} {adeq:<10}\n"
         )
 
-    output += "-" * 100 + "\n\n"
+    output += "-" * 112 + "\n"
+    if truncation_notice:
+        output += f"{truncation_notice}\n"
+    output += "\n"
 
     diagnostic_rows = []
-    for result in normalized.detailed_results:
+    for result in shown_results:
         findings = _format_segment_diagnostics(result)
         if findings:
             diagnostic_rows.append((result.segment, findings))
@@ -565,7 +628,7 @@ def render_full_analysis_output(summary: Any) -> str:
             "non-parametric methods when these fire.\n"
         )
         for segment, findings in diagnostic_rows:
-            output += f"  - {segment}: {' '.join(findings)}\n"
+            output += f"  - {_inline(segment)}: {' '.join(findings)}\n"
         output += "\n"
 
     output += "RECOMMENDATIONS:\n"
@@ -677,7 +740,7 @@ def render_column_values_output(column_name: str, values: Sequence[Any], value_c
     output = f"Unique values in '{column_name}' ({len(values)} unique):\n"
     head, _ = truncate_dataframe_for_llm(value_counts.to_frame("count"))
     for val, count in head["count"].items():
-        output += f"  - {val}: {count}\n"
+        output += f"  - {_inline(val)}: {count}\n"
 
     if len(values) > DEFAULT_LLM_ROW_LIMIT:
         output += f"  ... and {len(values) - DEFAULT_LLM_ROW_LIMIT} more values"

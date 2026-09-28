@@ -30,11 +30,9 @@ _STARTUP_CONFIG = Config.from_env()
 try:
     _STARTUP_CONFIG.validate()
     logger.info(
-        "Startup config: model=%s temperature=%s file_size_threshold_mb=%.2f "
-        "sql_row_limit=%d query_timeout_s=%.1f",
+        "Startup config: model=%s temperature=%s sql_row_limit=%d query_timeout_s=%.1f",
         _STARTUP_CONFIG.llm_model,
         _STARTUP_CONFIG.llm_temperature,
-        _STARTUP_CONFIG.file_size_threshold_mb,
         _STARTUP_CONFIG.sql_default_row_limit,
         _STARTUP_CONFIG.query_timeout_seconds,
     )

@@ -14,6 +14,7 @@ from ..agent_reporting import (
     render_load_csv_success,
     render_set_column_mapping_success,
 )
+from ..statistics.diagnostics import validate_expected_treatment_ratio
 from .common import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -25,24 +26,19 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
     def load_csv(filepath: str) -> str:
         logger.info("Tool load_csv started (file=%s)", filepath)
         try:
-            analyzer, info, backend, file_size_mb, spark_selected, fallback_note = agent._load_data_with_backend(filepath)
+            analyzer, info, file_size_mb = agent._load_data(filepath)
             shape = agent._normalize_shape(info)
             columns = info["columns"]
             suggestions = analyzer.detect_columns()
             agent.persist_loaded_data(analyzer)
             logger.info(
-                "Tool load_csv completed (backend=%s, rows=%s, cols=%s)",
-                backend,
+                "Tool load_csv completed (rows=%s, cols=%s)",
                 shape[0],
                 shape[1],
             )
             return render_load_csv_success(
                 filepath=filepath,
                 file_size_mb=file_size_mb,
-                backend=backend,
-                file_size_threshold_mb=agent.FILE_SIZE_THRESHOLD_MB,
-                spark_selected=spark_selected,
-                fallback_note=fallback_note,
                 shape=shape,
                 columns=columns,
                 suggestions=suggestions,
@@ -59,7 +55,7 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
     def load_and_auto_analyze(filepath: str) -> str:
         logger.info("Tool load_and_auto_analyze started (file=%s)", filepath)
         try:
-            analyzer, info, backend, file_size_mb, _spark_selected, fallback_note = agent._load_data_with_backend(filepath)
+            analyzer, info, file_size_mb = agent._load_data(filepath)
             shape = agent._normalize_shape(info)
             config = analyzer.auto_configure()
             if not config["success"]:
@@ -70,16 +66,13 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
             agent.persist_loaded_data(analyzer)
             context.remember_analysis(results, summary)
             logger.info(
-                "Tool load_and_auto_analyze completed (backend=%s, segments=%s)",
-                backend,
+                "Tool load_and_auto_analyze completed (segments=%s)",
                 getattr(summary, 'total_segments_analyzed', None),
             )
             return render_load_and_auto_analyze_report(
                 filepath=filepath,
                 file_size_mb=file_size_mb,
                 shape=shape,
-                backend=backend,
-                fallback_note=fallback_note,
                 config=config,
                 summary=summary,
             )
@@ -98,9 +91,13 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
         effect_value: str = "",
         segment: Optional[str] = None,
         duration: Optional[str] = None,
+        expected_treatment_ratio: Optional[float] = None,
     ) -> str:
         logger.info("Tool set_column_mapping started")
-        mapping = {}
+        # Partial update: fields not passed keep their current value. The model
+        # naturally calls this with only expected_treatment_ratio to declare an
+        # allocation, which previously wiped group/effect and broke the session.
+        mapping: dict = dict(getattr(context.active_analyzer(), "column_mapping", None) or {})
         if customer_id:
             mapping["customer_id"] = customer_id
         if group:
@@ -113,6 +110,11 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
             mapping["duration"] = duration
 
         try:
+            if expected_treatment_ratio is not None:
+                # Designed treatment share for the SRM check (e.g. 0.1 for a 90/10 holdout).
+                mapping["expected_treatment_ratio"] = validate_expected_treatment_ratio(
+                    expected_treatment_ratio
+                )
             analyzer = context.active_analyzer()
             analyzer.set_column_mapping(mapping)
             logger.info("Tool set_column_mapping completed (fields=%s)", sorted(mapping.keys()))
@@ -150,15 +152,44 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
         control_label: str,
         segment_column: Optional[str] = None,
         customer_id_column: Optional[str] = None,
+        expected_treatment_ratio: Optional[float] = None,
+        pre_effect_column: Optional[str] = None,
     ) -> str:
         logger.info("Tool configure_and_analyze started")
         try:
             analyzer = context.active_analyzer()
-            mapping = {"group": group_column, "effect_value": effect_column}
+            previous: dict = dict(getattr(analyzer, "column_mapping", None) or {})
+            same_metric = effect_column in (
+                previous.get("effect_value"),
+                previous.get("post_effect"),
+            )
+            # Re-running the same metric (e.g. after declaring the allocation)
+            # must keep the detected pre-period column, duration and analysis
+            # options; otherwise the AA check and DiD silently disappear.
+            # Segment and customer ID follow the explicit arguments only, so
+            # omitting segment_column still means "no segmentation".
+            mapping: dict = (
+                {k: v for k, v in previous.items() if k not in ("segment", "customer_id")}
+                if same_metric
+                else {}
+            )
+            mapping.update({"group": group_column, "effect_value": effect_column})
+            if not same_metric:
+                mapping.pop("post_effect", None)
             if segment_column:
                 mapping["segment"] = segment_column
             if customer_id_column:
                 mapping["customer_id"] = customer_id_column
+            if pre_effect_column:
+                mapping["pre_effect"] = pre_effect_column
+            # An explicit ratio wins; otherwise keep one declared earlier via
+            # set_column_mapping instead of silently resetting to 50/50 (TODO.md #40).
+            if expected_treatment_ratio is None:
+                expected_treatment_ratio = previous.get("expected_treatment_ratio")
+            if expected_treatment_ratio is not None:
+                mapping["expected_treatment_ratio"] = validate_expected_treatment_ratio(
+                    expected_treatment_ratio
+                )
             analyzer.set_column_mapping(mapping)
             analyzer.set_group_labels(treatment_label, control_label)
 
@@ -230,12 +261,12 @@ Input: file path. This is the FASTEST way to get results.""",
         StructuredTool.from_function(
             func=set_column_mapping,
             name="set_column_mapping",
-            description="Set the column mapping for A/B test analysis. Specify which columns contain customer ID, group indicator, effect value, segments, and duration.",
+            description="Set the column mapping for A/B test analysis. Specify which columns contain customer ID, group indicator, effect value, segments, and duration. This is a partial update: fields you omit keep their current value. If the experiment intentionally uses an unequal split, pass expected_treatment_ratio (treatment share, e.g. 0.1 for a 90/10 holdout) so the sample-ratio-mismatch check uses the designed split.",
         ),
-        Tool(
+        StructuredTool.from_function(
+            func=set_group_labels,
             name="set_group_labels",
-            func=lambda x: set_group_labels(*[s.strip() for s in x.split(",")]),
-            description="Set the treatment and control group labels. Input format: 'treatment_label, control_label'",
+            description="Set the treatment and control group labels (exact values from the group column).",
         ),
         StructuredTool.from_function(
             func=configure_and_analyze,
@@ -243,7 +274,7 @@ Input: file path. This is the FASTEST way to get results.""",
             description="""Configure column mappings, set treatment/control labels, and run full A/B test analysis in ONE step.
 Use this tool to quickly set up and analyze data without multiple separate steps.
 Required: group_column, effect_column, treatment_label, control_label
-Optional: segment_column, customer_id_column""",
+Optional: segment_column, customer_id_column, pre_effect_column (pre-period metric for the AA check and DiD; kept automatically when re-running the same effect column), expected_treatment_ratio (designed treatment share for an intentionally unequal split, e.g. 0.1 for a 90/10 holdout; default 0.5)""",
         ),
         Tool(
             name="auto_configure_and_analyze",

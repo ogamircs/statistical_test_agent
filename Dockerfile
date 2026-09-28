@@ -2,10 +2,6 @@
 # Multi-stage Dockerfile for the Statistical Test Agent (Chainlit + LangGraph).
 # Build:   docker build -t statistical-test-agent .
 # Run:     docker run -p 8000:8000 -e OPENAI_API_KEY=... statistical-test-agent
-#
-# Spark extras are intentionally excluded from the default image: pulling in a
-# Java runtime for PySpark would more than double the image size and is only
-# required for the optional large-file backend. See docs/deployment.md.
 
 ############################
 # Stage 1: builder

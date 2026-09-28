@@ -78,6 +78,7 @@ output/
 # Markdown docs
 *.md
 !README.md
+!AGENTS.md
 !docs/
 !docs/architecture.md
 !docs/development.md

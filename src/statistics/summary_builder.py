@@ -50,6 +50,13 @@ class ABTestSummaryBuilder:
             r for r in results if r.proportion_is_significant_adjusted
         ]
         bayesian_significant_results = [r for r in results if r.bayesian_is_significant]
+        # Effect totals follow the FDR-adjusted calls when segment-level
+        # correction ran, so they agree with the stars in the report (TODO.md #92).
+        fdr_applied = any(r.multiple_testing_applied for r in results)
+        t_effect_results = t_significant_adjusted_results if fdr_applied else t_significant_results
+        prop_effect_results = (
+            prop_significant_adjusted_results if fdr_applied else prop_significant_results
+        )
         inference_guardrailed = [r for r in results if r.inference_guardrail_triggered]
         proportion_guardrailed = [r for r in results if r.proportion_guardrail_triggered]
         srm_mismatch_results = [
@@ -95,21 +102,21 @@ class ABTestSummaryBuilder:
             )
         ]
 
-        t_test_total_effect = sum(r.effect_size * r.treatment_size for r in t_significant_results)
+        t_test_total_effect = sum(r.effect_size * r.treatment_size for r in t_effect_results)
         avg_t_test_effect = (
-            float(np.mean([r.effect_size for r in t_significant_results]))
-            if t_significant_results
+            float(np.mean([r.effect_size for r in t_effect_results]))
+            if t_effect_results
             else 0.0
         )
-        total_treatment_in_t_significant = sum(r.treatment_size for r in t_significant_results)
+        total_treatment_in_t_significant = sum(r.treatment_size for r in t_effect_results)
 
-        prop_total_effect = sum(r.proportion_effect for r in prop_significant_results)
+        prop_total_effect = sum(r.proportion_effect for r in prop_effect_results)
         avg_prop_effect = (
-            float(np.mean([r.proportion_effect_per_customer for r in prop_significant_results]))
-            if prop_significant_results
+            float(np.mean([r.proportion_effect_per_customer for r in prop_effect_results]))
+            if prop_effect_results
             else 0.0
         )
-        total_treatment_in_prop_significant = sum(r.treatment_size for r in prop_significant_results)
+        total_treatment_in_prop_significant = sum(r.treatment_size for r in prop_effect_results)
 
         combined_total_effect = sum(r.total_effect for r in results)
 
@@ -160,6 +167,9 @@ class ABTestSummaryBuilder:
             )
 
         analysis_warnings: List[str] = []
+        for result in results:
+            for warning in getattr(result, "statistical_warnings", None) or []:
+                analysis_warnings.append(f"[{result.segment}] {warning}")
         if failures:
             failed_segments = ", ".join(failure.segment for failure in failures[:5])
             suffix = "" if len(failures) <= 5 else ", ..."
@@ -226,8 +236,9 @@ class ABTestSummaryBuilder:
             ),
             combined_total_effect=combined_total_effect,
             combined_effect_calculation=(
-                f"T-test ({t_test_total_effect:.2f}) + Proportion ({prop_total_effect:.2f}) = "
-                f"{combined_total_effect:.2f}"
+                f"{combined_total_effect:.2f} (per segment: significant mean difference × "
+                "treatment N; proportion-based estimate only where the mean test is not "
+                "significant — never summed, since the mean already includes converters)"
             ),
             bayesian_significant_segments=len(bayesian_significant_results),
             bayesian_significance_rate=(
@@ -263,23 +274,13 @@ class ABTestSummaryBuilder:
         recommendations: List[str] = []
 
         aa_failed = [r for r in results if not r.aa_test_passed]
-        bootstrapped = [r for r in results if r.bootstrapping_applied]
 
         if aa_failed:
             segments = [r.segment for r in aa_failed]
             recommendations.append(
                 f"AA TEST WARNING: {len(aa_failed)} segment(s) failed the AA test (imbalanced pre-experiment): {', '.join(segments)}. "
-                "Treatment and control groups had different baseline characteristics."
-            )
-
-        if bootstrapped:
-            segments = [
-                f"{r.segment} (control: {r.original_control_size} → {r.control_size})"
-                for r in bootstrapped
-            ]
-            recommendations.append(
-                f"BOOTSTRAPPING APPLIED: {len(bootstrapped)} segment(s) used bootstrapped control group for balance: {', '.join(segments)}. "
-                "Results should be interpreted with caution."
+                "Treatment and control groups had different baseline characteristics; "
+                "prefer the CUPED/covariate-adjusted estimate and check the randomization."
             )
 
         guardrailed = [
@@ -409,20 +410,17 @@ class ABTestSummaryBuilder:
 
         if inadequate_samples:
             segments = [
-                f"{r.segment} (needs ~{r.required_sample_size} per group)"
+                f"{r.segment} (MDE d={r.achieved_mde:.3f} vs target d={r.target_effect_size:.3f}; "
+                f"needs ~{r.required_sample_size} per group)"
                 for r in inadequate_samples[:3]
             ]
             recommendations.append(
-                f"SAMPLE SIZE: {len(inadequate_samples)} segment(s) have insufficient statistical power. "
+                f"SAMPLE SIZE: {len(inadequate_samples)} segment(s) are too small to reliably detect "
+                "the target effect (minimum detectable effect exceeds the target). "
                 f"Examples: {'; '.join(segments)}"
             )
 
-        imbalanced = [
-            r
-            for r in results
-            if (r.control_size > 0 and r.treatment_size / r.control_size > 2)
-            or (r.treatment_size > 0 and r.control_size / r.treatment_size > 2)
-        ]
+        imbalanced = [r for r in results if _allocation_deviates(r)]
         if imbalanced:
             recommendations.append(
                 f"GROUP IMBALANCE: {len(imbalanced)} segment(s) have imbalanced treatment/control ratios. "
@@ -430,3 +428,27 @@ class ABTestSummaryBuilder:
             )
 
         return recommendations
+
+
+def _allocation_deviates(result: Any, factor: float = 2.0) -> bool:
+    """True when the observed treatment:control odds differ from the design by > factor.
+
+    Compares against the SRM check's expected ratio so an intentional
+    90/10 holdout is not flagged as imbalance (TODO.md #40).
+    """
+    if result.treatment_size <= 0 or result.control_size <= 0:
+        return False
+    expected_ratio = (
+        result.diagnostics.get("experiment_quality", {})
+        .get("srm", {})
+        .get("expected_treatment_ratio", 0.5)
+    )
+    try:
+        expected_ratio = float(expected_ratio)
+    except (TypeError, ValueError):
+        expected_ratio = 0.5
+    if not 0.0 < expected_ratio < 1.0:
+        expected_ratio = 0.5
+    expected_odds = expected_ratio / (1.0 - expected_ratio)
+    observed_odds = result.treatment_size / result.control_size
+    return observed_odds / expected_odds > factor or expected_odds / observed_odds > factor

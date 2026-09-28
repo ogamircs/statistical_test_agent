@@ -81,9 +81,8 @@ def test_tool_registered() -> None:
         _last_results = None
         _last_summary = None
         _last_charts: dict = {}
-        FILE_SIZE_THRESHOLD_MB = 2.0
 
-        def _load_data_with_backend(self, filepath):
+        def _load_data(self, filepath):
             raise NotImplementedError
 
         def _normalize_shape(self, info):
@@ -100,3 +99,24 @@ def test_tool_registered() -> None:
 
     tools = create_agent_tools(_StubAgent())
     assert any(getattr(tool, "name", None) == "plan_sample_size" for tool in tools)
+
+
+def test_plan_sample_size_tool_exposes_typed_schema_and_runs() -> None:
+    """The tool must advertise typed args to the LLM, not a raw JSON string (TODO.md #79)."""
+    from src.tooling.analysis import create_analysis_tools
+    from src.tooling.common import ToolContext
+
+    tools = {tool.name: tool for tool in create_analysis_tools(ToolContext(agent=None))}  # type: ignore[arg-type]
+    tool = tools["plan_sample_size"]
+    schema = tool.args
+    assert {"metric_type", "mde", "baseline_rate", "baseline_mean", "baseline_std"} <= set(schema)
+    assert schema["metric_type"].get("enum") == ["proportion", "continuous"]
+
+    output = tool.invoke({"metric_type": "proportion", "baseline_rate": 0.1, "mde": 0.02})
+    assert "Treatment arm" in output
+    assert "error_code=" not in output
+
+    output = tool.invoke(
+        {"metric_type": "continuous", "baseline_mean": 100, "baseline_std": 20, "mde": 5}
+    )
+    assert "Treatment arm" in output

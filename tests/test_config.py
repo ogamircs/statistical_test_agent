@@ -11,7 +11,6 @@ def test_defaults_match_legacy_constants() -> None:
     cfg = Config()
     assert cfg.llm_model == "gpt-5.2"
     assert cfg.llm_temperature == 0.0
-    assert cfg.file_size_threshold_mb == 2.0
     assert cfg.sql_default_row_limit == 20
     assert cfg.query_timeout_seconds == 5.0
 
@@ -20,14 +19,12 @@ def test_from_env_overrides_each_field() -> None:
     env = {
         "STATAGENT_LLM_MODEL": "claude-sonnet-4-6",
         "STATAGENT_LLM_TEMPERATURE": "0.3",
-        "STATAGENT_FILE_SIZE_THRESHOLD_MB": "8.5",
         "STATAGENT_SQL_ROW_LIMIT": "50",
         "STATAGENT_QUERY_TIMEOUT_SECONDS": "12",
     }
     cfg = Config.from_env(env)
     assert cfg.llm_model == "claude-sonnet-4-6"
     assert cfg.llm_temperature == 0.3
-    assert cfg.file_size_threshold_mb == 8.5
     assert cfg.sql_default_row_limit == 50
     assert cfg.query_timeout_seconds == 12.0
 
@@ -49,9 +46,7 @@ def test_validate_rejects_bad_temperature() -> None:
         Config(llm_temperature=2.5).validate()
 
 
-def test_validate_rejects_nonpositive_threshold() -> None:
-    with pytest.raises(ValueError):
-        Config(file_size_threshold_mb=0).validate()
+def test_validate_rejects_nonpositive_limits() -> None:
     with pytest.raises(ValueError):
         Config(query_timeout_seconds=0).validate()
     with pytest.raises(ValueError):
@@ -63,11 +58,11 @@ def test_validate_rejects_empty_model() -> None:
         Config(llm_model="").validate()
 
 
-def test_agent_picks_up_config_threshold(monkeypatch) -> None:
-    """Agent should pick up file_size_threshold_mb from injected Config."""
+def test_agent_picks_up_injected_config(monkeypatch) -> None:
+    """Agent should use the injected Config rather than re-reading the env."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
     from src.agent import ABTestingAgent
 
-    cfg = Config(file_size_threshold_mb=7.5)
+    cfg = Config(agent_recursion_limit=7)
     agent = ABTestingAgent(config=cfg)
-    assert agent.runtime.file_size_threshold_mb == 7.5
+    assert agent.config.agent_recursion_limit == 7

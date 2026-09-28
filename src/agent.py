@@ -9,17 +9,18 @@ An intelligent agent that can:
 - Generate interactive visualizations
 """
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+import openai
 import plotly.graph_objects as go
 from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+from langgraph.errors import GraphRecursionError
 
-from .agent_reporting import render_tool_error
+from .agent_reporting import AgentUserFacingError, render_tool_error
 from .agent_runtime import AgentRuntime
 from .agent_session import AgentAnalysisSession
 from .agent_tools import create_agent_tools
@@ -30,16 +31,6 @@ from .query_store import SQLiteQueryStore
 from .statistics import ABTestAnalyzer, ABTestVisualizer
 from .statistics.analyzer_protocol import ABAnalyzerProtocol
 from .statistics.models import ABTestResult, ABTestSummary
-
-# Try to import PySpark analyzer (optional dependency)
-try:
-    from .statistics.pyspark_analyzer import PySparkABTestAnalyzer
-    PYSPARK_AVAILABLE = True
-except (ImportError, AttributeError):
-    # ImportError: pyspark not installed
-    # AttributeError: pyspark installed but not compatible (e.g., Windows)
-    PYSPARK_AVAILABLE = False
-    PySparkABTestAnalyzer = None  # type: ignore[assignment, misc]
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -56,13 +47,6 @@ class ABTestingAgent:
     - Answering data-related questions
     - Generating interactive visualizations
     """
-
-    @staticmethod
-    def _create_spark_backend():
-        """Create the optional Spark backend using the current module import state."""
-        if PySparkABTestAnalyzer is None:
-            raise RuntimeError("PySpark is not available in this environment")
-        return PySparkABTestAnalyzer()
 
     def __init__(
         self,
@@ -81,14 +65,11 @@ class ABTestingAgent:
         self.llm = ChatOpenAI(
             model=resolved_model,
             temperature=resolved_temperature,
+            timeout=self.config.llm_request_timeout_seconds,
+            max_retries=self.config.llm_max_retries,
             callbacks=[self.token_usage],
         )
-        self.runtime = AgentRuntime(
-            analyzer=ABTestAnalyzer(),
-            spark_factory=self._create_spark_backend,
-            spark_available=lambda: PYSPARK_AVAILABLE,
-            file_size_threshold_mb=self.config.file_size_threshold_mb,
-        )
+        self.runtime = AgentRuntime(analyzer=ABTestAnalyzer())
         self.visualizer = ABTestVisualizer()
         session_kwargs: dict[str, Any] = {
             "llm": self.llm,
@@ -102,12 +83,9 @@ class ABTestingAgent:
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
-            "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s, "
-            "file_size_threshold_mb=%.2f, restored_history=%d)",
+            "ABTestingAgent initialized (model=%s, temperature=%s, restored_history=%d)",
             resolved_model,
             resolved_temperature,
-            PYSPARK_AVAILABLE,
-            self.config.file_size_threshold_mb,
             len(self.session.state.chat_history),
         )
 
@@ -132,30 +110,6 @@ class ABTestingAgent:
     @analyzer.setter
     def analyzer(self, value: ABAnalyzerProtocol) -> None:
         self.runtime.analyzer = value
-
-    @property
-    def spark_analyzer(self) -> Optional[ABAnalyzerProtocol]:
-        return self.runtime.spark_analyzer
-
-    @spark_analyzer.setter
-    def spark_analyzer(self, value: Optional[ABAnalyzerProtocol]) -> None:
-        self.runtime.spark_analyzer = value
-
-    @property
-    def _using_spark(self) -> bool:
-        return self.runtime.using_spark
-
-    @_using_spark.setter
-    def _using_spark(self, value: bool) -> None:
-        self.runtime.using_spark = value
-
-    @property
-    def FILE_SIZE_THRESHOLD_MB(self) -> float:
-        return self.runtime.file_size_threshold_mb
-
-    @FILE_SIZE_THRESHOLD_MB.setter
-    def FILE_SIZE_THRESHOLD_MB(self, value: float) -> None:
-        self.runtime.file_size_threshold_mb = value
 
     @property
     def chat_history(self) -> List[BaseMessage]:
@@ -244,30 +198,21 @@ class ABTestingAgent:
         """Get file size in megabytes."""
         return self.runtime.get_file_size_mb(filepath)
 
-    def _should_use_spark(self, filepath: str) -> bool:
-        """Determine if PySpark should be used based on file size."""
-        return self.runtime.should_use_spark(filepath)
-
     def _get_active_analyzer(self):
-        """Get the currently active analyzer (pandas or PySpark)."""
+        """Get the active analyzer."""
         return self.runtime.get_active_analyzer()
-
-    def _init_spark_analyzer(self):
-        """Initialize the Spark analyzer lazily."""
-        return self.runtime.init_spark_analyzer()
 
     def _normalize_shape(self, info: Dict[str, Any]) -> Tuple[int, int]:
         """Normalize load_data metadata to (rows, columns)."""
         return self.runtime.normalize_shape(info)
 
-    def _load_data_with_backend(self, filepath: str):
-        """
-        Load data using Spark when appropriate, with automatic pandas fallback.
+    def _load_data(self, filepath: str):
+        """Load a CSV into the pandas analyzer.
 
         Returns:
-            (analyzer, info, backend_name, file_size_mb, spark_selected, fallback_note)
+            (analyzer, info, file_size_mb)
         """
-        return self.runtime.load_data_with_backend(filepath)
+        return self.runtime.load_data(filepath)
 
     def _create_tools(self) -> List[Any]:
         """Create the tools for the agent."""
@@ -279,7 +224,62 @@ class ABTestingAgent:
         tools = self._create_tools()
         system_prompt = load_system_prompt()
         logger.info("System prompt loaded (version=%s)", PROMPT_VERSION)
-        return create_react_agent(self.llm, tools, prompt=system_prompt)
+        return create_agent(self.llm, tools, system_prompt=system_prompt)
+
+    def _model_bound_history(self) -> List[BaseMessage]:
+        """Return the most recent slice of chat history to send to the model.
+
+        The full history stays in session state and SQLite; only the window
+        re-sent each turn is bounded so long sessions don't grow cost
+        linearly or overflow the context window. The window always starts on
+        a human turn so the model never sees a dangling AI reply.
+        """
+        history = self.chat_history
+        limit = self.config.max_history_messages
+        if len(history) <= limit:
+            return list(history)
+        window = history[-limit:]
+        for index, message in enumerate(window):
+            if isinstance(message, HumanMessage):
+                return list(window[index:])
+        return list(history[-1:])
+
+    @staticmethod
+    def _classify_run_error(error: Exception) -> Exception:
+        """Map LLM/graph failures to user-facing errors with distinct codes."""
+        if isinstance(error, GraphRecursionError):
+            return AgentUserFacingError(
+                "AGENT_STEP_LIMIT_REACHED",
+                "The request needed more reasoning/tool steps than allowed and was "
+                "stopped. Try a narrower question or break it into smaller steps.",
+            )
+        if isinstance(error, openai.RateLimitError):
+            return AgentUserFacingError(
+                "LLM_RATE_LIMITED",
+                "The language model provider is rate-limiting requests or the API "
+                "quota is exhausted. Please wait a moment and try again.",
+            )
+        if isinstance(error, openai.APITimeoutError):
+            return AgentUserFacingError(
+                "LLM_TIMEOUT",
+                "The language model did not respond in time. Please try again.",
+            )
+        if isinstance(error, openai.AuthenticationError):
+            return AgentUserFacingError(
+                "LLM_AUTH_FAILED",
+                "The language model API key was rejected. Check OPENAI_API_KEY.",
+            )
+        if isinstance(error, openai.APIConnectionError):
+            return AgentUserFacingError(
+                "LLM_UNAVAILABLE",
+                "Could not reach the language model provider. Please try again.",
+            )
+        if isinstance(error, openai.InternalServerError):
+            return AgentUserFacingError(
+                "LLM_UNAVAILABLE",
+                "The language model provider returned a server error. Please try again.",
+            )
+        return error
 
     def run(self, message: str) -> str:
         """Run the agent synchronously.
@@ -291,7 +291,10 @@ class ABTestingAgent:
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
             self.session.query_store.save_chat_message("human", message)
-            result = self.agent.invoke({"messages": self.chat_history})
+            result = self.agent.invoke(
+                {"messages": self._model_bound_history()},
+                config={"recursion_limit": self.config.agent_recursion_limit},
+            )
             response = result["messages"][-1].content
             self.chat_history.append(AIMessage(content=response))
             self.session.query_store.save_chat_message("ai", str(response))
@@ -310,18 +313,10 @@ class ABTestingAgent:
             logger.exception("Agent run failed")
             return render_tool_error(
                 "Error processing request",
-                e,
+                self._classify_run_error(e),
                 default_code="AGENT_EXECUTION_FAILED",
                 default_message="Unable to process your request right now.",
             )
-
-    async def arun(self, message: str) -> str:
-        """Run the agent asynchronously.
-
-        Thin wrapper kept for backward compatibility with notebooks, async
-        tests, and background workers that call ``await agent.arun(...)``.
-        """
-        return await asyncio.to_thread(self.run, message)
 
     def clear_memory(self):
         """Clear conversation memory (both in-memory and persisted SQLite).
@@ -336,16 +331,3 @@ class ABTestingAgent:
         except Exception:
             logger.exception("Failed to wipe persisted chat history")
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    agent = ABTestingAgent()
-    logger.info("A/B Testing Agent CLI initialized. Type 'quit' to exit.")
-
-    while True:
-        user_input = input("\nYou: ").strip()
-        if user_input.lower() in ['quit', 'exit', 'q']:
-            break
-
-        response = agent.run(user_input)
-        logger.info("Agent: %s", response)

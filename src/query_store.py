@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,8 +55,23 @@ class SQLiteQueryStore:
         self.query_timeout_seconds = float(query_timeout_seconds)
         self._initialize_database()
 
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection that commits on success and is always closed.
+
+        ``sqlite3.Connection``'s own context manager only commits/rolls back;
+        it never closes, which leaked a connection (and a ResourceWarning)
+        per call.
+        """
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _initialize_database(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 f"""
@@ -83,7 +99,7 @@ class SQLiteQueryStore:
     def save_chat_message(self, role: str, content: str) -> None:
         """Append one chat message to the persisted history."""
         try:
-            with sqlite3.connect(self.db_path) as connection:
+            with self._connect() as connection:
                 connection.execute(
                     f"INSERT INTO {_CHAT_HISTORY_TABLE} (created_at, role, content) VALUES (?, ?, ?)",
                     (
@@ -99,7 +115,7 @@ class SQLiteQueryStore:
     def load_chat_messages(self) -> List[Dict[str, str]]:
         """Return persisted chat history in insertion order."""
         try:
-            with sqlite3.connect(self.db_path) as connection:
+            with self._connect() as connection:
                 rows = connection.execute(
                     f"SELECT role, content FROM {_CHAT_HISTORY_TABLE} ORDER BY id ASC"
                 ).fetchall()
@@ -110,7 +126,7 @@ class SQLiteQueryStore:
     def clear_chat_messages(self) -> None:
         """Wipe persisted chat history so resume starts fresh."""
         try:
-            with sqlite3.connect(self.db_path) as connection:
+            with self._connect() as connection:
                 connection.execute(f"DELETE FROM {_CHAT_HISTORY_TABLE}")
         except sqlite3.Error:
             pass
@@ -123,7 +139,7 @@ class SQLiteQueryStore:
         error: Optional[str],
     ) -> None:
         try:
-            with sqlite3.connect(self.db_path) as connection:
+            with self._connect() as connection:
                 connection.execute(
                     f"INSERT INTO {_AUDIT_TABLE} (executed_at, sql, duration_ms, row_count, error)"
                     " VALUES (?, ?, ?, ?, ?)",
@@ -147,7 +163,7 @@ class SQLiteQueryStore:
         for column in normalized.columns:
             normalized[column] = normalized[column].map(_normalize_sqlite_value)
 
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             normalized.to_sql("raw_data", connection, index=False, if_exists="replace")
 
     def save_segment_results(self, results: Iterable[Any]) -> None:
@@ -156,7 +172,7 @@ class SQLiteQueryStore:
             for result in results
         ]
         frame = pd.DataFrame(rows)
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             frame.to_sql(
                 "analysis_segment_results",
                 connection,
@@ -170,7 +186,7 @@ class SQLiteQueryStore:
         summary_payload.pop("detailed_results", None)
         summary_payload.pop("segment_failures", None)
 
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             pd.DataFrame([_normalize_record(summary_payload)]).to_sql(
                 "analysis_summary",
                 connection,
@@ -183,7 +199,7 @@ class SQLiteQueryStore:
             _normalize_record(asdict(to_segment_analysis_failure(failure)))
             for failure in failures
         ]
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             pd.DataFrame(rows).to_sql(
                 "analysis_segment_failures",
                 connection,
@@ -192,7 +208,7 @@ class SQLiteQueryStore:
             )
 
     def list_tables(self) -> List[str]:
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             rows = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
             ).fetchall()
@@ -201,7 +217,7 @@ class SQLiteQueryStore:
 
     def describe_schema(self) -> str:
         lines: List[str] = []
-        with sqlite3.connect(self.db_path) as connection:
+        with self._connect() as connection:
             for table_name in self.list_tables():
                 columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
                 column_bits = ", ".join(f"{column[1]} {column[2]}" for column in columns)
