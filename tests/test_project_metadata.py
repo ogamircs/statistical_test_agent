@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -76,46 +77,51 @@ def test_curated_docs_cover_architecture_development_and_testing() -> None:
         assert "spark" not in doc.lower()
 
 
-def test_chainlit_config_references_custom_ui_assets() -> None:
-    config = _read(".chainlit/config.toml")
-    assert 'custom_css = "/public/custom.css"' in config
-    assert 'custom_js = "/public/custom.js"' in config
-    assert (REPO_ROOT / "public" / "custom.css").exists()
-    assert (REPO_ROOT / "public" / "custom.js").exists()
+def test_chainlit_is_fully_removed() -> None:
+    pyproject = _read("pyproject.toml")
+    assert "chainlit" not in pyproject.lower()
+    assert "fastapi" in pyproject and "uvicorn" in pyproject
+    assert not (REPO_ROOT / ".chainlit").exists()
+    assert not (REPO_ROOT / "public").exists()
+    assert "chainlit" not in _read("Dockerfile").lower()
+    assert "chainlit" not in _read("app.py").lower()
 
 
-def test_custom_ui_assets_define_centered_conversation_layout_hooks() -> None:
-    custom_js = _read("public/custom.js")
-    custom_css = _read("public/custom.css")
-    assert "layout-centered-conversation" in custom_js
-    assert "centered-conversation-root" in custom_js
-    assert "centered-conversation-scroll" in custom_js
-    assert ".centered-conversation-root" in custom_css
-    assert ".centered-conversation-scroll" in custom_css
+def test_frontend_package_defines_ci_scripts_and_lockfile() -> None:
+    package = json.loads(_read("frontend/package.json"))
+    for script in ("dev", "build", "typecheck", "test"):
+        assert script in package["scripts"], f"frontend is missing the {script!r} script"
+    assert (REPO_ROOT / "frontend" / "package-lock.json").exists(), "commit the npm lockfile"
+    for dependency in ("react", "react-markdown", "remark-gfm", "plotly.js-dist-min"):
+        assert dependency in package["dependencies"]
 
 
-def test_custom_ui_assets_define_conversation_sidebar_hooks() -> None:
-    custom_js = _read("public/custom.js")
-    custom_css = _read("public/custom.css")
-    assert "ab-testing-agent.conversation-list" in custom_js
-    assert "ab-testing-agent.active-conversation" in custom_js
-    assert "ab-testing-agent.clear-history-suppression" in custom_js
-    assert "firstUserMessageTitle" in custom_js
-    assert "loadClearHistorySuppression" in custom_js
-    assert "conversation-history-title-text" in custom_js
-    assert ".conversation-history-title-text" in custom_css
-    assert ".conversation-history-item.is-active" in custom_css
+def test_frontend_loads_no_external_assets() -> None:
+    """No CDN/hot-linked assets: the UI must work air-gapped (TODO.md #72)."""
+    sources = [REPO_ROOT / "frontend" / "index.html"]
+    sources += [
+        path
+        for path in (REPO_ROOT / "frontend" / "src").rglob("*")
+        if path.suffix in {".ts", ".tsx", ".css"} and not path.name.endswith((".test.ts", ".test.tsx"))
+    ]
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        assert "http://" not in text and "https://" not in text, f"external URL in {path.name}"
 
 
-def test_custom_ui_assets_define_processing_loader_hooks() -> None:
-    custom_js = _read("public/custom.js")
-    custom_css = _read("public/custom.css")
-    assert "Ajax-loader.gif" in custom_js
-    assert "enhanceProcessingIndicators" in custom_js
-    assert "processing-indicator" in custom_js
-    assert ".processing-indicator" in custom_css
-    assert ".processing-indicator-gif" in custom_css
-    assert "@keyframes processing-indicator-spin" in custom_css
+def test_ci_builds_and_tests_the_frontend() -> None:
+    workflow = _read(".github/workflows/ci.yml")
+    assert "frontend:" in workflow
+    for step in ("npm ci", "npm run typecheck", "npm test", "npm run build"):
+        assert step in workflow, f"CI frontend job must run {step!r}"
+
+
+def test_dockerfile_builds_ui_and_ships_runtime_only() -> None:
+    dockerfile = _read("Dockerfile")
+    assert "FROM node:" in dockerfile and "npm run build" in dockerfile
+    assert "--extra dev" not in dockerfile, "runtime image must not ship dev tooling (TODO.md #70)"
+    assert "HEALTHCHECK" in dockerfile and "/api/health" in dockerfile, "TODO.md #116"
+    assert 'CMD ["uvicorn", "app:app"' in dockerfile
 
 
 def test_agents_md_is_tracked_and_documents_ci_gates() -> None:

@@ -22,9 +22,13 @@ __pycache__/
 # Planning / scratch
 .planning/
 
-# Chainlit runtime artifacts that should be regenerated inside the image
-.chainlit/translations/
+# Runtime artifacts that should never ship in the image
+.uploads/
 .files/
+
+# Frontend deps/build are produced inside the image
+frontend/node_modules/
+frontend/dist/
 
 # Editor / OS noise
 .DS_Store
