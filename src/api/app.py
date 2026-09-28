@@ -87,6 +87,13 @@ def create_app(
     frontend_dist: Optional[Path] = None,
 ) -> FastAPI:
     config = config or Config.from_env()
+    if config.require_auth and not is_auth_enabled():
+        # Fail fast: a deployment that asked for auth must never run open.
+        raise RuntimeError(
+            "STATAGENT_REQUIRE_AUTH is set but password auth is not configured: set both "
+            "STATAGENT_AUTH_USERNAME and STATAGENT_AUTH_PASSWORD (and STATAGENT_AUTH_SECRET "
+            "so tokens survive restarts and work across replicas)."
+        )
     registry = SessionRegistry(
         store_dir=store_dir or Path(config.query_store_dir),
         uploads_dir=uploads_dir or Path.cwd() / UPLOADS_DIRNAME,

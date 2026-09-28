@@ -75,3 +75,15 @@ def test_query_store_dir_comes_from_env_and_is_validated() -> None:
     assert Config.from_env({}).query_store_dir == "output/query_store"
     with pytest.raises(ValueError):
         Config(query_store_dir="  ").validate()
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("false", False), ("", False), ("maybe", False)],
+)
+def test_require_auth_parses_truthy_env_values(raw: str, expected: bool) -> None:
+    assert Config.from_env({"STATAGENT_REQUIRE_AUTH": raw}).require_auth is expected
+
+
+def test_require_auth_defaults_off() -> None:
+    assert Config.from_env({}).require_auth is False

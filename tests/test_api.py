@@ -433,3 +433,28 @@ def test_charts_are_finalized_even_if_the_client_disconnects(client: TestClient,
     assert [chart["name"] for chart in record.latest_charts] == ["dashboard"]
     # Cleared from the agent, so a later text-only turn cannot re-emit them.
     assert agent.charts == {}
+
+
+# -- STATAGENT_REQUIRE_AUTH (TODO.md #49) -----------------------------------
+
+
+def test_require_auth_refuses_to_start_without_credentials(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("STATAGENT_AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("STATAGENT_AUTH_PASSWORD", raising=False)
+    with pytest.raises(RuntimeError, match="STATAGENT_REQUIRE_AUTH"):
+        create_app(config=Config(require_auth=True), store_dir=tmp_path, uploads_dir=tmp_path)
+
+
+def test_require_auth_starts_and_enforces_when_credentials_set(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("STATAGENT_AUTH_USERNAME", "ana")
+    monkeypatch.setenv("STATAGENT_AUTH_PASSWORD", "s3cret")
+    app = create_app(
+        config=Config(require_auth=True),
+        agent_factory=StubAgent,
+        store_dir=tmp_path / "store",
+        uploads_dir=tmp_path / "uploads",
+        frontend_dist=tmp_path / "no-dist",
+    )
+    client = TestClient(app)
+    assert client.get("/api/sessions").status_code == 401
+    assert client.get("/api/config").json()["auth_required"] is True

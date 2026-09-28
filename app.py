@@ -43,7 +43,9 @@ try:
     )
 except ValueError:
     logger.exception("Startup Config validation failed; continuing with defaults")
-    _STARTUP_CONFIG = Config()
+    # Keep the security-relevant knob: falling back to defaults must not
+    # silently turn a require-auth deployment into an open one.
+    _STARTUP_CONFIG = Config(require_auth=_STARTUP_CONFIG.require_auth)
 
 run_startup_gc(Path(_STARTUP_CONFIG.query_store_dir))
 

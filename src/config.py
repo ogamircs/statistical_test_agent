@@ -43,6 +43,8 @@ class Config:
     max_history_messages: int = _DEFAULT_MAX_HISTORY_MESSAGES
     max_upload_mb: float = _DEFAULT_MAX_UPLOAD_MB
     query_store_dir: str = _DEFAULT_QUERY_STORE_DIR
+    # Refuse to start unless password auth is configured (TODO.md #49).
+    require_auth: bool = False
 
     @classmethod
     def from_env(cls, environ: dict | None = None) -> "Config":
@@ -80,6 +82,7 @@ class Config:
                 env.get("STATAGENT_MAX_UPLOAD_MB"), _DEFAULT_MAX_UPLOAD_MB
             ),
             query_store_dir=env.get("STATAGENT_QUERY_STORE_DIR") or _DEFAULT_QUERY_STORE_DIR,
+            require_auth=_coerce_bool(env.get("STATAGENT_REQUIRE_AUTH"), False),
         )
 
     def validate(self) -> None:
@@ -124,3 +127,18 @@ def _coerce_int(value: object, default: int) -> int:
         return int(str(value))
     except (TypeError, ValueError):
         return default
+
+
+_TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off", ""}
+
+
+def _coerce_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in _TRUTHY:
+        return True
+    if text in _FALSY:
+        return False
+    return default

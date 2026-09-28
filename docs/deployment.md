@@ -71,6 +71,7 @@ All are read by `Config.from_env` (`src/config.py`) and validated at startup.
 | --- | --- | --- |
 | `STATAGENT_AUTH_USERNAME` / `STATAGENT_AUTH_PASSWORD` | unset | When both are set, the UI shows a sign-in form and every `/api` route except health/config/login requires a bearer token. |
 | `STATAGENT_AUTH_SECRET` | random per process | HMAC key for bearer tokens (12 h lifetime). Set it so tokens survive restarts and work across replicas. |
+| `STATAGENT_REQUIRE_AUTH` | `false` | Set to `true` in any shared deployment. The server then refuses to start unless `STATAGENT_AUTH_USERNAME` and `STATAGENT_AUTH_PASSWORD` are both set, so a missing secret can never leave it running open. Pair it with `STATAGENT_AUTH_SECRET`. |
 
 Serve the app over HTTPS (reverse proxy or PaaS TLS) whenever auth is enabled:
 the password and bearer token otherwise travel in clear text.
