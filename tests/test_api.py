@@ -582,3 +582,26 @@ def test_charts_event_keeps_charts_for_text_only_turns(client: TestClient, agent
     assert [c["name"] for c in client.get(f"/api/sessions/{session_id}/messages").json()["charts"]] == [
         "dashboard"
     ]
+
+
+def test_session_listing_never_recreates_a_deleted_store(client: TestClient, agents, monkeypatch) -> None:
+    session_id = _new_session(client)
+    client.post(f"/api/sessions/{session_id}/chat", json={"message": "hello"})
+    registry = client.app.state.registry  # type: ignore[attr-defined]
+    store = registry.store_path(session_id)
+
+    # Simulate a delete landing between glob() and the history read.
+    real_glob = Path.glob
+
+    def glob_then_delete(self: Path, pattern: str):
+        found = list(real_glob(self, pattern))
+        store.unlink()
+        return iter(found)
+
+    monkeypatch.setattr(Path, "glob", glob_then_delete)
+    listing = client.get("/api/sessions")
+    monkeypatch.setattr(Path, "glob", real_glob)
+
+    assert listing.status_code == 200
+    assert listing.json()["sessions"] == []
+    assert not store.exists(), "listing must not recreate a deleted session store"

@@ -30,7 +30,7 @@ from .agent_tools import create_agent_tools
 from .config import Config
 from .observability import TokenUsageCallback
 from .prompts import PROMPT_VERSION, load_system_prompt
-from .query_store import SQLiteQueryStore
+from .query_store import LATEST_CHARTS_STATE_KEY, SQLiteQueryStore
 from .statistics import ABTestAnalyzer, ABTestVisualizer
 from .statistics.analyzer_protocol import ABAnalyzerProtocol
 from .statistics.models import ABTestResult, ABTestSummary
@@ -109,6 +109,9 @@ class ABTestingAgent:
         # Bumped whenever the data or the current analysis is replaced; the
         # API compares it to know when previously shown charts went stale.
         self.analysis_version = 0
+        # True only while the store's raw_data table holds the dataframe the
+        # current analysis ran on; replay state is persisted only then.
+        self._raw_data_persisted = False
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
@@ -172,10 +175,14 @@ class ABTestingAgent:
         self.session.state.last_summary = None
         self.session.state.last_charts = {}
         self.analysis_version += 1
-        try:
-            self.session.query_store.delete_state(self._ANALYSIS_STATE_KEY)
-        except Exception:
-            logger.exception("Failed to clear persisted analysis state")
+        self._raw_data_persisted = False
+        # Drop the chart snapshot too: the in-memory chart version resets on
+        # restart, so a stale snapshot would otherwise be served as current.
+        for key in (self._ANALYSIS_STATE_KEY, LATEST_CHARTS_STATE_KEY):
+            try:
+                self.session.query_store.delete_state(key)
+            except Exception:
+                logger.exception("Failed to clear persisted state %r", key)
 
     def _ensure_analysis_restored(self) -> None:
         """Rebuild data, mapping, labels and results saved by a previous process."""
@@ -189,6 +196,7 @@ class ABTestingAgent:
                 return
             analyzer: Any = self.runtime.analyzer
             analyzer.set_dataframe(df)
+            self._raw_data_persisted = True  # the analyzer now holds the stored table
             analyzer.set_column_mapping(dict(state["column_mapping"]))
             analyzer.set_group_labels(state["treatment_label"], state["control_label"])
             results = self._replay_scope(analyzer, state.get("scope"))
@@ -279,13 +287,16 @@ class ABTestingAgent:
             persisted = self.session.persist_loaded_data(analyzer)
         except Exception:
             logger.exception("Failed to persist raw dataframe to SQLite query store")
+            self._raw_data_persisted = False
             return False
 
         if not persisted:
             logger.info("Skipping raw-data persistence for non-pandas backend")
+            self._raw_data_persisted = False
             return False
 
         logger.info("Persisted raw dataframe to SQLite query store")
+        self._raw_data_persisted = True
         return True
 
     def persist_analysis_outputs(
@@ -296,6 +307,16 @@ class ABTestingAgent:
             self.session.persist_analysis_outputs(results, summary)
         except Exception:
             logger.exception("Failed to persist analysis outputs to SQLite query store")
+        if not self._raw_data_persisted:
+            # The stored raw_data may be a previous dataset; replaying this
+            # mapping on it after a restart would report results for data the
+            # analysis never ran on. Restart recovery stays chat-only instead.
+            logger.warning("Raw data not persisted; skipping analysis replay state")
+            try:
+                self.session.query_store.delete_state(self._ANALYSIS_STATE_KEY)
+            except Exception:
+                logger.exception("Failed to clear persisted analysis state")
+            return
         try:
             self._persist_analysis_state(scope)
         except Exception:

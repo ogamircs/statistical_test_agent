@@ -207,3 +207,36 @@ def test_agent_can_load_uploads_from_a_custom_uploads_dir(monkeypatch, tmp_path)
     _, info, _ = agent._load_data(str(registry.resolve_upload(session_id, file_id)))
 
     assert info["shape"][0] == 5000
+
+
+# -- PR #10 review round 3 ---------------------------------------------------
+
+
+def test_invalidation_also_drops_the_persisted_chart_snapshot(tmp_path) -> None:
+    from src.query_store import LATEST_CHARTS_STATE_KEY
+
+    store = str(tmp_path / "session.sqlite")
+    agent = ABTestingAgent(query_store_path=store)
+    _analyze(agent)
+    agent.session.query_store.save_state(LATEST_CHARTS_STATE_KEY, [{"name": "dashboard"}])
+
+    agent._load_data(SAMPLE_CSV)  # new data; process could die before charts finalize
+
+    restarted = ABTestingAgent(query_store_path=store)
+    assert restarted.session.query_store.load_state(LATEST_CHARTS_STATE_KEY) is None
+
+
+def test_replay_state_is_not_saved_when_raw_data_persistence_fails(tmp_path, monkeypatch) -> None:
+    store = str(tmp_path / "session.sqlite")
+    _analyze(ABTestingAgent(query_store_path=store))  # store now holds dataset #1 + its state
+
+    agent = ABTestingAgent(query_store_path=store)
+    monkeypatch.setattr(
+        agent.session, "persist_loaded_data", lambda _analyzer: (_ for _ in ()).throw(RuntimeError("too wide"))
+    )
+    _tool(agent, "load_and_auto_analyze").func(SAMPLE_CSV)  # analysis succeeds in memory
+
+    assert agent._last_results
+    # The stale raw_data table must not be paired with this analysis on restart.
+    restarted = ABTestingAgent(query_store_path=store)
+    assert restarted._pending_analysis_state is None

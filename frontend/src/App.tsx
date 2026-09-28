@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { ApiError, api, storeToken } from "./lib/api";
 import { chartsAfterEvent } from "./lib/charts";
+import { LatestKey } from "./lib/latest";
 import { TokenBuffer } from "./lib/tokenBuffer";
 import type { ChartSpec, ChatMessage, PublicConfig, SessionSummary } from "./lib/types";
 import { prefersReducedMotion, useTheme } from "./lib/theme";
@@ -35,6 +36,13 @@ export default function App() {
   const [needsLogin, setNeedsLogin] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Chart requests do not lock the sidebar; drop responses for a session the
+  // user has since left so they never show another experiment's results.
+  const activeSession = useRef(new LatestKey<string>()).current;
+  useEffect(() => {
+    activeSession.set(activeId);
+    setChartLoading(false); // an abandoned request must not leave a spinner
+  }, [activeSession, activeId]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [charts, setCharts] = useState<ChartSpec[]>([]);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -240,15 +248,18 @@ export default function App() {
 
   const requestCharts = async (type: string) => {
     if (!activeId) return;
+    const requestedFor = activeId;
     setChartLoading(true);
     setChartError(null);
     try {
-      setCharts(await api.charts(activeId, type));
+      const built = await api.charts(requestedFor, type);
+      if (activeSession.isCurrent(requestedFor)) setCharts(built);
     } catch (error) {
+      if (!activeSession.isCurrent(requestedFor)) return;
       if (error instanceof ApiError && error.status !== 401) setChartError(error.message);
       else handleError(error);
     } finally {
-      setChartLoading(false);
+      if (activeSession.isCurrent(requestedFor)) setChartLoading(false);
     }
   };
 

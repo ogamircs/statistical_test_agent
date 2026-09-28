@@ -26,6 +26,8 @@ _CHAT_HISTORY_TABLE = "_chat_history"
 # Small JSON key/value store for state needed to rebuild a session after a
 # restart (column mapping, group labels, latest charts).
 _STATE_TABLE = "_session_state"
+# State key holding the serialized charts last shown for the session.
+LATEST_CHARTS_STATE_KEY = "latest_charts"
 _RAW_DATA_TABLE = "raw_data"
 _DEFAULT_QUERY_TIMEOUT_SECONDS = 5.0
 _PROGRESS_HANDLER_INTERVAL = 1000
@@ -59,6 +61,32 @@ def _normalize_sqlite_value(value: Any) -> Any:
 
 def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return {key: _normalize_sqlite_value(value) for key, value in record.items()}
+
+
+def read_chat_messages(db_path: str | Path) -> Optional[List[Dict[str, str]]]:
+    """Read a store's chat history without creating or initializing it.
+
+    Opens the file read-only (``mode=ro``): a store deleted between a
+    directory listing and this read stays deleted instead of being
+    recreated as an empty session. Returns None when the store is gone or
+    unreadable.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = connection.execute(
+            f"SELECT role, content FROM {_CHAT_HISTORY_TABLE} ORDER BY id ASC"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    return [{"role": row[0], "content": row[1]} for row in rows]
 
 
 class SQLiteQueryStore:

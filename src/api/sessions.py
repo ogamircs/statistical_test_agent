@@ -21,7 +21,7 @@ from uuid import uuid4
 
 import pandas as pd
 
-from src.query_store import SQLiteQueryStore
+from src.query_store import LATEST_CHARTS_STATE_KEY, read_chat_messages
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 FILE_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
@@ -90,7 +90,7 @@ def analysis_version(agent: Any) -> int:
     return int(getattr(agent, "analysis_version", 0))
 
 
-_LATEST_CHARTS_KEY = "latest_charts"
+_LATEST_CHARTS_KEY = LATEST_CHARTS_STATE_KEY
 _charts_logger = logging.getLogger(__name__)
 
 
@@ -181,9 +181,16 @@ class SessionRegistry:
             session_id = path.stem[len("session-"):]
             if not SESSION_ID_PATTERN.match(session_id):
                 continue
-            messages = SQLiteQueryStore(path).load_chat_messages()
+            # Read-only: never recreate a store that a concurrent delete removed.
+            messages = read_chat_messages(path)
+            if messages is None:
+                continue
             first_human = next((m for m in messages if m.get("role") == "human"), None)
             if first_human is None:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:  # deleted since the read above
                 continue
             parsed = parse_user_message(first_human.get("content", ""), self._upload_names(session_id))
             title = parsed["content"] or (
@@ -193,9 +200,7 @@ class SessionRegistry:
                 {
                     "id": session_id,
                     "title": title[:120],
-                    "updated_at": datetime.fromtimestamp(
-                        path.stat().st_mtime, tz=timezone.utc
-                    ).isoformat(),
+                    "updated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
                     "message_count": len(messages),
                 }
             )
