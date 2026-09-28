@@ -135,6 +135,11 @@ class SQLiteQueryStore:
                 (key, payload, datetime.now(timezone.utc).isoformat()),
             )
 
+    def delete_state(self, key: str) -> None:
+        """Remove ``key`` (no-op when absent)."""
+        with self._connect() as connection:
+            connection.execute(f"DELETE FROM {_STATE_TABLE} WHERE key = ?", (key,))
+
     def load_state(self, key: str) -> Any:
         """Return the stored value, or None when absent or unreadable."""
         try:

@@ -120,3 +120,64 @@ def test_api_restart_restores_charts_and_analysis(tmp_path, monkeypatch) -> None
     dashboard = second.get(f"/api/sessions/{session_id}/charts", params={"type": "dashboard"})
     assert dashboard.status_code == 200, dashboard.text
     assert "T-test sig: 3/5" in dashboard.json()["charts"][0]["figure"]["layout"]["title"]["text"]
+
+
+# -- PR #10 review round 2 ----------------------------------------------------
+
+ALT_CSV = str(Path(__file__).resolve().parent.parent / "data" / "sample_ab_data_alt.csv")
+
+
+def test_load_csv_invalidates_persisted_analysis(tmp_path) -> None:
+    # An inspection-only load replaces raw_data; a restart must not combine
+    # the new dataframe with the previous dataset's mapping and labels.
+    store = str(tmp_path / "session.sqlite")
+    before = ABTestingAgent(query_store_path=store)
+    _analyze(before)
+    version = before.analysis_version
+    _tool(before, "load_csv").func(ALT_CSV)
+
+    assert before.analysis_version > version
+    assert before._last_results is None
+    assert before.session.query_store.load_state("analysis") is None
+
+    after = ABTestingAgent(query_store_path=store)
+    assert after._last_results is None
+    assert after._get_active_analyzer().df is None  # chat-only, nothing mixed
+
+
+def test_restart_replays_a_single_segment_analysis(tmp_path) -> None:
+    store = str(tmp_path / "session.sqlite")
+    before = ABTestingAgent(query_store_path=store)
+    _analyze(before, ratio=None)
+    _tool(before, "run_ab_test").func(segment="Premium")
+    [expected] = before._last_results or []
+
+    after = ABTestingAgent(query_store_path=store)
+    restored = after._last_results or []
+
+    assert [r.segment for r in restored] == ["Premium"]
+    assert restored[0].p_value == pytest.approx(expected.p_value)
+
+
+def test_restart_replays_an_overall_only_analysis(tmp_path) -> None:
+    store = str(tmp_path / "session.sqlite")
+    before = ABTestingAgent(query_store_path=store)
+    _analyze(before, ratio=None)
+    _tool(before, "run_ab_test").func()
+
+    after = ABTestingAgent(query_store_path=store)
+
+    assert [r.segment for r in after._last_results or []] == ["Overall"]
+
+
+def test_new_results_invalidate_pending_charts(tmp_path) -> None:
+    agent = ABTestingAgent(query_store_path=str(tmp_path / "session.sqlite"))
+    _analyze(agent, ratio=None)
+    _tool(agent, "generate_charts").func("dashboard")
+    assert agent.get_charts()
+    version = agent.analysis_version
+
+    _tool(agent, "run_full_analysis").func("")
+
+    assert agent.analysis_version > version
+    assert agent.get_charts() == {}  # charts of the replaced results are gone

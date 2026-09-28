@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Protocol, Tuple
+from typing import Any, Dict, Optional, Protocol, Tuple
 
 from ..agent_reporting import render_tool_error
 
@@ -31,7 +31,9 @@ class AgentProtocol(Protocol):
     def persist_loaded_data(self, analyzer: Any) -> bool:
         ...
 
-    def persist_analysis_outputs(self, results: Any, summary: Any) -> None:
+    def persist_analysis_outputs(
+        self, results: Any, summary: Any, scope: Optional[Dict[str, Any]] = None
+    ) -> None:
         ...
 
 
@@ -66,7 +68,15 @@ class ToolContext:
             default_message=default_message,
         )
 
-    def remember_analysis(self, results: Any, summary: Any) -> None:
-        self.agent.persist_analysis_outputs(results, summary)
+    def remember_analysis(
+        self, results: Any, summary: Any, scope: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Store results as the session's current analysis.
+
+        ``scope`` records how the results were produced so a restart can
+        replay the same run: ``{"mode": "segmented"}`` (default) or
+        ``{"mode": "single", "segment": <filter or None>}``.
+        """
+        self.agent.persist_analysis_outputs(results, summary, scope=scope)
         self.agent._last_results = results
         self.agent._last_summary = summary

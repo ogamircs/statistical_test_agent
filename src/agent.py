@@ -104,6 +104,9 @@ class ABTestingAgent:
         # Analysis state from a previous process, rebuilt lazily on first use
         # (TODO.md #104) so opening or listing a session stays cheap.
         self._pending_analysis_state: Optional[Dict[str, Any]] = self._load_analysis_state()
+        # Bumped whenever the data or the current analysis is replaced; the
+        # API compares it to know when previously shown charts went stale.
+        self.analysis_version = 0
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
@@ -141,7 +144,7 @@ class ABTestingAgent:
             return None
         return state
 
-    def _persist_analysis_state(self) -> None:
+    def _persist_analysis_state(self, scope: Optional[Dict[str, Any]] = None) -> None:
         analyzer: Any = self.runtime.analyzer
         mapping = getattr(analyzer, "column_mapping", None)
         if not mapping or getattr(analyzer, "treatment_label", None) is None:
@@ -152,8 +155,25 @@ class ABTestingAgent:
                 "column_mapping": dict(mapping),
                 "treatment_label": analyzer.treatment_label,
                 "control_label": analyzer.control_label,
+                "scope": dict(scope) if scope else {"mode": "segmented"},
             },
         )
+
+    def _invalidate_analysis(self) -> None:
+        """New data replaced the dataset: drop results, charts and saved state.
+
+        Without this a restart could combine the new dataframe with the
+        previous dataset's mapping/labels and report results nobody asked for.
+        """
+        self._pending_analysis_state = None
+        self.session.state.last_results = None
+        self.session.state.last_summary = None
+        self.session.state.last_charts = {}
+        self.analysis_version += 1
+        try:
+            self.session.query_store.delete_state(self._ANALYSIS_STATE_KEY)
+        except Exception:
+            logger.exception("Failed to clear persisted analysis state")
 
     def _ensure_analysis_restored(self) -> None:
         """Rebuild data, mapping, labels and results saved by a previous process."""
@@ -169,12 +189,22 @@ class ABTestingAgent:
             analyzer.set_dataframe(df)
             analyzer.set_column_mapping(dict(state["column_mapping"]))
             analyzer.set_group_labels(state["treatment_label"], state["control_label"])
-            results = analyzer.run_segmented_analysis()
+            results = self._replay_scope(analyzer, state.get("scope"))
             self.session.state.last_results = results
             self.session.state.last_summary = analyzer.generate_summary(results)
             logger.info("Restored analysis state after restart (segments=%d)", len(results))
         except Exception:
             logger.exception("Failed to restore analysis state; continuing chat-only")
+
+    @staticmethod
+    def _replay_scope(analyzer: Any, scope: Any) -> List[ABTestResult]:
+        """Re-run the analysis the way it was last produced (TODO.md #104)."""
+        if isinstance(scope, dict) and scope.get("mode") == "single":
+            segment = scope.get("segment")
+            if segment is None:
+                return [analyzer.run_ab_test()]
+            return [analyzer.run_ab_test(segment_filter=segment)]
+        return analyzer.run_segmented_analysis()
 
     @property
     def analyzer(self) -> ABAnalyzerProtocol:
@@ -209,6 +239,9 @@ class ABTestingAgent:
     def _last_results(self, value: Optional[List[ABTestResult]]) -> None:
         self._pending_analysis_state = None  # fresh results supersede a restore
         self.session.state.last_results = value
+        # Charts built from the previous results are stale now.
+        self.session.state.last_charts = {}
+        self.analysis_version += 1
 
     @property
     def _last_summary(self) -> Optional[ABTestSummary]:
@@ -253,14 +286,16 @@ class ABTestingAgent:
         logger.info("Persisted raw dataframe to SQLite query store")
         return True
 
-    def persist_analysis_outputs(self, results: Any, summary: Any) -> None:
+    def persist_analysis_outputs(
+        self, results: Any, summary: Any, scope: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Persist analysis outputs (and the state to rebuild them) to the query store."""
         try:
             self.session.persist_analysis_outputs(results, summary)
         except Exception:
             logger.exception("Failed to persist analysis outputs to SQLite query store")
         try:
-            self._persist_analysis_state()
+            self._persist_analysis_state(scope)
         except Exception:
             logger.exception("Failed to persist analysis state; restart recovery will be chat-only")
             return
@@ -294,9 +329,10 @@ class ABTestingAgent:
         Returns:
             (analyzer, info, file_size_mb)
         """
-        # New data supersedes anything a restart would have restored.
-        self._pending_analysis_state = None
-        return self.runtime.load_data(filepath)
+        loaded = self.runtime.load_data(filepath)
+        # Only after a successful load: a failed load leaves the old dataset.
+        self._invalidate_analysis()
+        return loaded
 
     def _create_tools(self) -> List[Any]:
         """Create the tools for the agent."""
