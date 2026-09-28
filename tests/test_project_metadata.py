@@ -71,7 +71,8 @@ def test_curated_docs_cover_architecture_development_and_testing() -> None:
 
     assert "app.py" in architecture
     assert "uv sync --extra dev" in development
-    assert "chainlit" in development.lower() or "python app.py" in development
+    assert "uvicorn app:app" in development
+    assert "npm run dev" in development
     assert "pytest -q" in testing
     for doc in (architecture, development, testing):
         assert "spark" not in doc.lower()
