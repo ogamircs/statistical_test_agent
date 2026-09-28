@@ -9,6 +9,7 @@ Uploaded CSVs live in ``<uploads_dir>/<id>/<file_id>.csv``.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import threading
@@ -74,6 +75,28 @@ class SessionRecord:
     latest_charts: List[Dict[str, Any]] = field(default_factory=list)
 
 
+_LATEST_CHARTS_KEY = "latest_charts"
+_charts_logger = logging.getLogger(__name__)
+
+
+def remember_charts(record: SessionRecord, charts: List[Dict[str, Any]]) -> None:
+    """Set the session's latest charts and persist them for restart recovery."""
+    record.latest_charts = charts
+    try:
+        record.agent.session.query_store.save_state(_LATEST_CHARTS_KEY, charts)
+    except Exception:
+        _charts_logger.exception("Failed to persist latest charts; they will not survive a restart")
+
+
+def _load_persisted_charts(agent: Any) -> List[Dict[str, Any]]:
+    try:
+        charts = agent.session.query_store.load_state(_LATEST_CHARTS_KEY)
+    except Exception:
+        _charts_logger.exception("Failed to read persisted charts")
+        return []
+    return charts if isinstance(charts, list) else []
+
+
 class SessionRegistry:
     """Owns the live agents and the on-disk session/upload layout."""
 
@@ -115,7 +138,8 @@ class SessionRegistry:
             if not create and not self.store_path(session_id).exists():
                 raise SessionNotFoundError(session_id)
             self.store_dir.mkdir(parents=True, exist_ok=True)
-            record = SessionRecord(agent=self.agent_factory(str(self.store_path(session_id))))
+            agent = self.agent_factory(str(self.store_path(session_id)))
+            record = SessionRecord(agent=agent, latest_charts=_load_persisted_charts(agent))
             self._records[session_id] = record
             return record
 

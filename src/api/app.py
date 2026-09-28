@@ -46,6 +46,7 @@ from .sessions import (
     UploadNotFoundError,
     UploadRejectedError,
     compose_agent_message,
+    remember_charts,
 )
 from .tokens import issue_token, verify_token
 
@@ -191,7 +192,7 @@ def create_app(
         with idle_session(record):
             record.agent.clear_memory()
             record.agent.clear_charts()
-            record.latest_charts = []
+            remember_charts(record, [])
 
     @app.post("/api/sessions/{session_id}/upload", dependencies=auth, status_code=201)
     def upload(session_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
@@ -220,7 +221,7 @@ def create_app(
             except UnknownChartTypeError as error:
                 raise _error(400, "UNKNOWN_CHART_TYPE", str(error)) from error
             # Persist the selection so reopening the session shows these charts.
-            record.latest_charts = built
+            remember_charts(record, built)
         return {"charts": built}
 
     @app.post("/api/sessions/{session_id}/chat", dependencies=auth)
@@ -326,7 +327,7 @@ def _finalize_charts(record: Any) -> List[Dict[str, Any]]:
         serialized = []
     record.agent.clear_charts()
     if serialized:
-        record.latest_charts = serialized
+        remember_charts(record, serialized)
     return serialized
 
 

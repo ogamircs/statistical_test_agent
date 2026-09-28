@@ -99,6 +99,9 @@ class ABTestingAgent:
         )
         self.session = AgentAnalysisSession(**session_kwargs)
         self._restore_chat_history_from_store()
+        # Analysis state from a previous process, rebuilt lazily on first use
+        # (TODO.md #104) so opening or listing a session stays cheap.
+        self._pending_analysis_state: Optional[Dict[str, Any]] = self._load_analysis_state()
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
@@ -121,6 +124,55 @@ class ABTestingAgent:
                 self.session.state.chat_history.append(HumanMessage(content=content))
             elif role == "ai":
                 self.session.state.chat_history.append(AIMessage(content=content))
+
+    # -- restart recovery (TODO.md #104) -------------------------------------
+
+    _ANALYSIS_STATE_KEY = "analysis"
+
+    def _load_analysis_state(self) -> Optional[Dict[str, Any]]:
+        try:
+            state = self.session.query_store.load_state(self._ANALYSIS_STATE_KEY)
+        except Exception:
+            logger.exception("Failed to read persisted analysis state; chat-only restore")
+            return None
+        if not isinstance(state, dict) or not isinstance(state.get("column_mapping"), dict):
+            return None
+        return state
+
+    def _persist_analysis_state(self) -> None:
+        analyzer: Any = self.runtime.analyzer
+        mapping = getattr(analyzer, "column_mapping", None)
+        if not mapping or getattr(analyzer, "treatment_label", None) is None:
+            return
+        self.session.query_store.save_state(
+            self._ANALYSIS_STATE_KEY,
+            {
+                "column_mapping": dict(mapping),
+                "treatment_label": analyzer.treatment_label,
+                "control_label": analyzer.control_label,
+            },
+        )
+
+    def _ensure_analysis_restored(self) -> None:
+        """Rebuild data, mapping, labels and results saved by a previous process."""
+        state = self._pending_analysis_state
+        if state is None:
+            return
+        self._pending_analysis_state = None  # one attempt, even if it fails
+        try:
+            df = self.session.query_store.load_raw_dataframe()
+            if df is None:
+                return
+            analyzer: Any = self.runtime.analyzer
+            analyzer.set_dataframe(df)
+            analyzer.set_column_mapping(dict(state["column_mapping"]))
+            analyzer.set_group_labels(state["treatment_label"], state["control_label"])
+            results = analyzer.run_segmented_analysis()
+            self.session.state.last_results = results
+            self.session.state.last_summary = analyzer.generate_summary(results)
+            logger.info("Restored analysis state after restart (segments=%d)", len(results))
+        except Exception:
+            logger.exception("Failed to restore analysis state; continuing chat-only")
 
     @property
     def analyzer(self) -> ABAnalyzerProtocol:
@@ -148,18 +200,22 @@ class ABTestingAgent:
 
     @property
     def _last_results(self) -> Optional[List[ABTestResult]]:
+        self._ensure_analysis_restored()
         return self.session.state.last_results
 
     @_last_results.setter
     def _last_results(self, value: Optional[List[ABTestResult]]) -> None:
+        self._pending_analysis_state = None  # fresh results supersede a restore
         self.session.state.last_results = value
 
     @property
     def _last_summary(self) -> Optional[ABTestSummary]:
+        self._ensure_analysis_restored()
         return self.session.state.last_summary
 
     @_last_summary.setter
     def _last_summary(self, value: Optional[ABTestSummary]) -> None:
+        self._pending_analysis_state = None
         self.session.state.last_summary = value
 
     @property
@@ -196,11 +252,15 @@ class ABTestingAgent:
         return True
 
     def persist_analysis_outputs(self, results: Any, summary: Any) -> None:
-        """Persist analysis outputs to the session query store."""
+        """Persist analysis outputs (and the state to rebuild them) to the query store."""
         try:
             self.session.persist_analysis_outputs(results, summary)
         except Exception:
             logger.exception("Failed to persist analysis outputs to SQLite query store")
+        try:
+            self._persist_analysis_state()
+        except Exception:
+            logger.exception("Failed to persist analysis state; restart recovery will be chat-only")
             return
 
         logger.info("Persisted analysis outputs to SQLite query store")
@@ -219,6 +279,7 @@ class ABTestingAgent:
 
     def _get_active_analyzer(self):
         """Get the active analyzer."""
+        self._ensure_analysis_restored()
         return self.runtime.get_active_analyzer()
 
     def _normalize_shape(self, info: Dict[str, Any]) -> Tuple[int, int]:
@@ -231,6 +292,8 @@ class ABTestingAgent:
         Returns:
             (analyzer, info, file_size_mb)
         """
+        # New data supersedes anything a restart would have restored.
+        self._pending_analysis_state = None
         return self.runtime.load_data(filepath)
 
     def _create_tools(self) -> List[Any]:

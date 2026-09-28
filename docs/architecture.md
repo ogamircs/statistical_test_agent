@@ -23,7 +23,7 @@ pandas analyzer (src/statistics/) ── typed results → markdown reports + Pl
 2. `POST /api/sessions/{id}/chat` starts `ABTestingAgent.run` in a worker thread and streams progress back as SSE (contract below). A per-session lock rejects concurrent runs with `409 SESSION_BUSY`.
 3. `src/agent.py` runs the LangGraph agent. Tools in `src/tooling/` load data through `src/agent_runtime.py` (path confinement + pandas) and run the analyzer.
 4. `src/agent_reporting.py` renders the markdown report. `src/statistics/visualizer.py` + `chart_catalog.py` build Plotly figures, which the API serializes to Plotly JSON.
-5. Chat history persists per session in `output/query_store/session-<id>.sqlite`, so `GET /api/sessions` can list and resume past conversations across restarts.
+5. Each session persists to `output/query_store/session-<id>.sqlite`: chat history, the raw uploaded data (`raw_data`), and a hidden `_session_state` table with the column mapping, group labels and latest charts. `GET /api/sessions` lists past conversations. After a restart, opening a session returns its chat and charts immediately, and the first analysis or chart request lazily reloads the data, reapplies the mapping and labels, and re-runs the analysis.
 
 ## HTTP API
 

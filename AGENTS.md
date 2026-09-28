@@ -92,6 +92,6 @@ docs/TODO.md                The prioritized backlog. Read it before starting non
 - The installed package is literally named `src` (TODO #66). Import as `from src.statistics import ...`.
 - `load_dotenv()` runs in both `app.py` and `src/agent.py`. Tests that depend on env vars should pass an explicit `Config` or mapping instead of mutating `os.environ` globally.
 - Chainlit was removed; do not reintroduce it. UI uploads land in `.uploads/<session>/<file_id>.csv`. Session SQLite stores (`output/query_store/session-<id>.sqlite`) back the history sidebar and are garbage-collected by `src/query_store_gc.py`.
-- Live agents and the latest charts live in server memory (one uvicorn worker); only chat history survives a restart.
+- Live agents live in server memory (one uvicorn worker). Chat history, raw data, mapping/labels and latest charts are persisted per session, and the analysis is rebuilt lazily after a restart (`ABTestingAgent._ensure_analysis_restored`). Anything that sets `_last_results` or loads new data cancels a pending restore.
 - The React layer is presentation-only. Keep analysis logic in Python, and have the UI fetch charts from the API instead of computing them.
 - Plotly is lazy-loaded (`frontend/src/components/PlotlyChart.tsx`); keep it out of the main bundle.
