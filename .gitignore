@@ -39,9 +39,13 @@ env/
 *.swo
 *~
 
-# Chainlit
-.chainlit/translations/
+# Web UI runtime artifacts
+.uploads/
 .files/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
 
 # OS
 .DS_Store
