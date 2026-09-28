@@ -40,7 +40,7 @@ def llm_kwargs(monkeypatch):
 
     monkeypatch.setattr(agent_module, "ChatOpenAI", _fake_chat)
     monkeypatch.setattr(
-        agent_module, "create_agent", lambda _llm, _tools, system_prompt=None: _RecordingGraph()
+        agent_module, "create_agent", lambda _llm, _tools, system_prompt=None, **_kwargs: _RecordingGraph()
     )
     return captured
 

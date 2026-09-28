@@ -63,6 +63,7 @@ All are read by `Config.from_env` (`src/config.py`) and validated at startup.
 | `STATAGENT_SQL_ROW_LIMIT` | `20` | Default row limit for generated SQL. |
 | `STATAGENT_QUERY_TIMEOUT_SECONDS` | `5.0` | SQLite query timeout for data questions. |
 | `STATAGENT_MAX_UPLOAD_MB` | `50` | Largest CSV the upload endpoint accepts. Larger files are rejected with `UPLOAD_REJECTED`; put bigger files under `/app/data` instead. |
+| `STATAGENT_QUERY_STORE_DIR` | `output/query_store` | Directory for per-session SQLite stores (`session-<id>.sqlite`: chat history, uploaded data, audit). The UI lists this directory as conversation history; mount it on a volume to keep history across restarts. |
 
 ### Authentication
 

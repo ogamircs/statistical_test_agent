@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 from langchain_core.messages import BaseMessage
 
 from .query_store import SQLiteQueryStore
-from .query_store_gc import run_startup_gc
+from .query_store_gc import default_query_store_dir, run_startup_gc
 from .sql_query_service import OpenAISQLPlanner, SQLQueryService
 from .statistics.models import ABTestResult, ABTestSummary, to_ab_test_summary
 
@@ -54,7 +54,7 @@ class AgentAnalysisSession:
         self.query_store_path = (
             Path(query_store_path)
             if query_store_path is not None
-            else Path("output") / "query_store" / f"session-{uuid4().hex}.sqlite"
+            else default_query_store_dir() / f"session-{uuid4().hex}.sqlite"
         )
         run_startup_gc(self.query_store_path.parent)
         self.query_store = query_store or SQLiteQueryStore(

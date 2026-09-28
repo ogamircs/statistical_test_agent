@@ -118,7 +118,7 @@ class _DummyGraph:
 def agent(monkeypatch, tmp_path) -> ABTestingAgent:
     monkeypatch.setattr(agent_module, "ChatOpenAI", lambda **_kwargs: object())
     monkeypatch.setattr(
-        agent_module, "create_agent", lambda _llm, _tools, system_prompt=None: _DummyGraph()
+        agent_module, "create_agent", lambda _llm, _tools, system_prompt=None, **_kwargs: _DummyGraph()
     )
     built = ABTestingAgent(query_store_path=str(tmp_path / "store.sqlite"))
     built.analyzer.set_dataframe(_holdout_frame())

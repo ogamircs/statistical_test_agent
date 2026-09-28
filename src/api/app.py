@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from src.auth import is_auth_enabled, verify_credentials
 from src.config import Config
 from src.data_paths import UPLOADS_DIRNAME
+from src.query_store_gc import default_query_store_dir
 
 from .charts import (
     CHART_TYPE_OPTIONS,
@@ -87,7 +88,7 @@ def create_app(
 ) -> FastAPI:
     config = config or Config.from_env()
     registry = SessionRegistry(
-        store_dir=store_dir or Path("output") / "query_store",
+        store_dir=store_dir or default_query_store_dir(),
         uploads_dir=uploads_dir or Path.cwd() / UPLOADS_DIRNAME,
         agent_factory=agent_factory or _default_agent_factory(config),
         max_upload_bytes=int(config.max_upload_mb * 1024 * 1024),

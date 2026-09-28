@@ -8,7 +8,6 @@ Run with ``uvicorn app:app`` (or ``python app.py``).
 
 import logging
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -16,9 +15,16 @@ from src.api import create_app
 from src.auth import is_auth_enabled
 from src.config import Config
 from src.observability import configure_json_logging
-from src.query_store_gc import run_startup_gc
+from src.query_store_gc import default_query_store_dir, run_startup_gc
 
 load_dotenv()
+# uvicorn only configures its own loggers; without a root handler every
+# src.* log (tool timings, token usage, failures) was silently dropped.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    )
 configure_json_logging()
 logger = logging.getLogger(__name__)
 
@@ -38,7 +44,7 @@ except ValueError:
     logger.exception("Startup Config validation failed; continuing with defaults")
     _STARTUP_CONFIG = Config()
 
-run_startup_gc(Path("output") / "query_store")
+run_startup_gc(default_query_store_dir())
 
 if is_auth_enabled():
     logger.info("Password auth ENABLED via STATAGENT_AUTH_* env vars")

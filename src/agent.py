@@ -16,6 +16,7 @@ import openai
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
@@ -33,6 +34,19 @@ from .statistics.analyzer_protocol import ABAnalyzerProtocol
 from .statistics.models import ABTestResult, ABTestSummary
 
 load_dotenv()
+
+
+@wrap_model_call
+def _sequential_tool_calls(request: ModelRequest, handler) -> ModelResponse:
+    """Ask the model for one tool call at a time.
+
+    Tools share mutable analyzer state (column mapping, labels, last results),
+    so parallel calls race: e.g. generate_charts reading stale results while
+    run_full_analysis is still re-running. Set per agent model call only; the
+    SQL planner reuses the same LLM without tools, where OpenAI rejects it.
+    """
+    settings = {**request.model_settings, "parallel_tool_calls": False}
+    return handler(request.override(model_settings=settings))
 logger = logging.getLogger(__name__)
 
 
@@ -224,7 +238,9 @@ class ABTestingAgent:
         tools = self._create_tools()
         system_prompt = load_system_prompt()
         logger.info("System prompt loaded (version=%s)", PROMPT_VERSION)
-        return create_agent(self.llm, tools, system_prompt=system_prompt)
+        return create_agent(
+            self.llm, tools, system_prompt=system_prompt, middleware=[_sequential_tool_calls]
+        )
 
     def _model_bound_history(self) -> List[BaseMessage]:
         """Return the most recent slice of chat history to send to the model.
