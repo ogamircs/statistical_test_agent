@@ -68,6 +68,17 @@ describe("MessageItem", () => {
 });
 
 describe("Composer", () => {
+  it("moves focus to the message box once a file is attached", () => {
+    const file = new File(["a,b\n1,2\n"], "exp.csv", { type: "text/csv" });
+    const props = { disabled: false, onAttach: vi.fn(), onDetach: vi.fn(), onSend: vi.fn() };
+    const { rerender } = render(<Composer {...props} attached={null} />);
+    expect(screen.getByLabelText("Message")).not.toHaveFocus();
+
+    rerender(<Composer {...props} attached={file} />);
+
+    expect(screen.getByLabelText("Message")).toHaveFocus();
+  });
+
   it("sends on Enter, inserts a newline on Shift+Enter", async () => {
     const onSend = vi.fn();
     render(<Composer disabled={false} attached={null} onAttach={vi.fn()} onDetach={vi.fn()} onSend={onSend} />);

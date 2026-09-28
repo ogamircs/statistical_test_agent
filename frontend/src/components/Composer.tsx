@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { formatBytes } from "../lib/upload";
 
 interface Props {
@@ -12,6 +12,13 @@ interface Props {
 export function Composer({ disabled, attached, onAttach, onDetach, onSend }: Props) {
   const [text, setText] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
+  const textInput = useRef<HTMLTextAreaElement>(null);
+
+  // After picking or dropping a CSV, the natural next step is typing what to
+  // do with it; without this, focus stayed on the file button / drop target.
+  useEffect(() => {
+    if (attached) textInput.current?.focus();
+  }, [attached]);
 
   const send = () => {
     if (disabled || (!text.trim() && !attached)) return;
@@ -70,6 +77,7 @@ export function Composer({ disabled, attached, onAttach, onDetach, onSend }: Pro
           Message
         </label>
         <textarea
+          ref={textInput}
           id="composer-input"
           value={text}
           rows={1}

@@ -794,3 +794,48 @@ button:disabled {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- overflow fixes (found in browser testing) ---------- */
+
+/* Flex children default to min-width:auto, so one wide preformatted block
+   stretched its message card and made the whole chat pane scroll sideways. */
+.messages > *,
+.msg {
+  min-width: 0;
+}
+
+.markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.chat-scroll {
+  overflow-x: hidden;
+}
+
+/* Plotly briefly renders wider than the panel before its resize pass. */
+.chart-card,
+.chart-grid {
+  overflow-x: hidden;
+}
+
+.charts-toggle {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Keep the footer pinned to the bottom even when the history list is empty. */
+.sidebar-footer {
+  margin-top: auto;
+}
