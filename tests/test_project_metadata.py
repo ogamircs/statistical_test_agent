@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -131,3 +132,15 @@ def test_agents_md_is_tracked_and_documents_ci_gates() -> None:
     agents = _read("AGENTS.md")
     for gate in ("ruff check .", "mypy src app.py", "--cov-fail-under=78"):
         assert gate in agents, f"AGENTS.md must document the CI gate: {gate}"
+
+
+def test_gitignore_does_not_swallow_frontend_source() -> None:
+    # A bare `lib/` rule (Python packaging template) silently ignored
+    # frontend/src/lib/*, so CI failed on files that existed only locally.
+    result = subprocess.run(
+        ["git", "check-ignore", "frontend/src/lib/types.ts", "frontend/src/lib/api.ts"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "", f"frontend source is gitignored: {result.stdout}"
