@@ -362,3 +362,74 @@ def test_app_module_exposes_fastapi_app() -> None:
     from app import app
 
     assert TestClient(app).get("/api/health").status_code == 200
+
+
+# -- review fixes: session lock covers every state-touching endpoint --------
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("DELETE", "/api/sessions/{id}"),
+        ("DELETE", "/api/sessions/{id}/messages"),
+        ("GET", "/api/sessions/{id}/charts"),
+    ],
+)
+def test_state_endpoints_reject_while_a_run_is_active(
+    client: TestClient, agents, tmp_path, method: str, path: str
+) -> None:
+    session_id = _new_session(client)
+    client.post(f"/api/sessions/{session_id}/chat", json={"message": "hello"})
+    registry = client.app.state.registry  # type: ignore[attr-defined]
+    record = registry.get(session_id)
+    assert record.lock.acquire(blocking=False)  # simulate an in-flight run
+    try:
+        response = client.request(method, path.format(id=session_id))
+    finally:
+        record.lock.release()
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SESSION_BUSY"
+    # Nothing was cleared or deleted underneath the run.
+    assert agents[0].cleared is False
+    assert registry.store_path(session_id).exists()
+    assert client.get(f"/api/sessions/{session_id}/messages").json()["messages"]
+
+
+def test_on_demand_charts_become_the_sessions_latest_charts(client: TestClient, agents) -> None:
+    session_id = _new_session(client)
+    analyzer = ABTestAnalyzer()
+    analyzer.load_data(str(SAMPLE_CSV))
+    analyzer.auto_configure()
+    results = analyzer.run_segmented_analysis()
+    agents[0]._last_results = results
+    agents[0]._last_summary = analyzer.generate_summary(results)
+
+    client.get(f"/api/sessions/{session_id}/charts", params={"type": "bayesian"})
+
+    reopened = client.get(f"/api/sessions/{session_id}/messages").json()["charts"]
+    assert len(reopened) == 3
+    assert all(chart["name"].startswith("bayesian") for chart in reopened)
+
+
+def test_charts_are_finalized_even_if_the_client_disconnects(client: TestClient, agents) -> None:
+    session_id = _new_session(client)
+    agent = agents[0]
+    agent.release.clear()  # hold the run until the client has gone away
+
+    with client.stream("POST", f"/api/sessions/{session_id}/chat", json={"message": "go"}) as stream:
+        first = next(stream.iter_lines())
+        assert first.startswith("event: status")
+    agent.release.set()
+
+    record = client.app.state.registry.get(session_id)  # type: ignore[attr-defined]
+    for _ in range(100):
+        if record.lock.acquire(blocking=False):
+            record.lock.release()
+            if record.latest_charts:
+                break
+        threading.Event().wait(0.05)
+
+    assert [chart["name"] for chart in record.latest_charts] == ["dashboard"]
+    # Cleared from the agent, so a later text-only turn cannot re-emit them.
+    assert agent.charts == {}

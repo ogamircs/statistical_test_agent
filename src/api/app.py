@@ -19,8 +19,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -29,7 +30,6 @@ from pydantic import BaseModel, Field
 from src.auth import is_auth_enabled, verify_credentials
 from src.config import Config
 from src.data_paths import UPLOADS_DIRNAME
-from src.query_store_gc import default_query_store_dir
 
 from .charts import (
     CHART_TYPE_OPTIONS,
@@ -88,7 +88,7 @@ def create_app(
 ) -> FastAPI:
     config = config or Config.from_env()
     registry = SessionRegistry(
-        store_dir=store_dir or default_query_store_dir(),
+        store_dir=store_dir or Path(config.query_store_dir),
         uploads_dir=uploads_dir or Path.cwd() / UPLOADS_DIRNAME,
         agent_factory=agent_factory or _default_agent_factory(config),
         max_upload_bytes=int(config.max_upload_mb * 1024 * 1024),
@@ -105,6 +105,22 @@ def create_app(
         if user is None:
             raise _error(401, "AUTH_REQUIRED", "Sign in to use the agent.")
         return user
+
+    @contextmanager
+    def idle_session(record: Any) -> Iterator[None]:
+        """Hold the session lock, or fail fast with SESSION_BUSY.
+
+        Every endpoint that mutates or reads the agent's analysis state takes
+        the same lock as an active chat run, so clearing, deleting or charting
+        can never interleave with a run (orphaned turns, deleted uploads mid
+        run, charts mixing a new dataframe with old results).
+        """
+        if not record.lock.acquire(blocking=False):
+            raise _error(409, "SESSION_BUSY", "This session is still working on a request.")
+        try:
+            yield
+        finally:
+            record.lock.release()
 
     def session_or_404(session_id: str) -> Any:
         try:
@@ -150,10 +166,12 @@ def create_app(
 
     @app.delete("/api/sessions/{session_id}", dependencies=auth, status_code=204)
     def delete_session(session_id: str) -> None:
-        try:
-            registry.delete(session_id)
-        except SessionNotFoundError as error:
-            raise _error(404, "SESSION_NOT_FOUND", "Unknown session.") from error
+        record = session_or_404(session_id)
+        with idle_session(record):
+            try:
+                registry.delete(session_id)
+            except SessionNotFoundError as error:
+                raise _error(404, "SESSION_NOT_FOUND", "Unknown session.") from error
 
     @app.get("/api/sessions/{session_id}/messages", dependencies=auth)
     def get_messages(session_id: str) -> Dict[str, Any]:
@@ -163,9 +181,10 @@ def create_app(
     @app.delete("/api/sessions/{session_id}/messages", dependencies=auth, status_code=204)
     def clear_messages(session_id: str) -> None:
         record = session_or_404(session_id)
-        record.agent.clear_memory()
-        record.agent.clear_charts()
-        record.latest_charts = []
+        with idle_session(record):
+            record.agent.clear_memory()
+            record.agent.clear_charts()
+            record.latest_charts = []
 
     @app.post("/api/sessions/{session_id}/upload", dependencies=auth, status_code=201)
     def upload(session_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
@@ -186,12 +205,15 @@ def create_app(
     @app.get("/api/sessions/{session_id}/charts", dependencies=auth)
     def charts(session_id: str, type: str = Query("dashboard", max_length=64)) -> Dict[str, Any]:
         record = session_or_404(session_id)
-        try:
-            built = build_charts_for_agent(record.agent, type)
-        except NoAnalysisError as error:
-            raise _error(409, "NO_ANALYSIS", str(error)) from error
-        except UnknownChartTypeError as error:
-            raise _error(400, "UNKNOWN_CHART_TYPE", str(error)) from error
+        with idle_session(record):
+            try:
+                built = build_charts_for_agent(record.agent, type)
+            except NoAnalysisError as error:
+                raise _error(409, "NO_ANALYSIS", str(error)) from error
+            except UnknownChartTypeError as error:
+                raise _error(400, "UNKNOWN_CHART_TYPE", str(error)) from error
+            # Persist the selection so reopening the session shows these charts.
+            record.latest_charts = built
         return {"charts": built}
 
     @app.post("/api/sessions/{session_id}/chat", dependencies=auth)
@@ -215,9 +237,13 @@ def create_app(
         def emit(event: str, data: Dict[str, Any]) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, (event, data))
 
-        def run() -> str:
+        def run() -> Tuple[str, List[Dict[str, Any]]]:
             try:
-                return str(record.agent.run(agent_message, callbacks=[ToolProgressHandler(emit)]))
+                response = str(record.agent.run(agent_message, callbacks=[ToolProgressHandler(emit)]))
+                # Finalize charts here, still under the lock, so a client that
+                # disconnects mid-stream cannot strand them in the agent (where
+                # a later turn would re-emit them as its own).
+                return response, _finalize_charts(record)
             finally:
                 record.lock.release()
 
@@ -234,7 +260,7 @@ def create_app(
     async def _chat_events(
         record: Any,
         queue: "asyncio.Queue[tuple[str, Dict[str, Any]]]",
-        task: "asyncio.Future[str]",
+        task: "asyncio.Future[Tuple[str, List[Dict[str, Any]]]]",
     ) -> AsyncIterator[str]:
         yield format_sse("status", {"state": "started"})
         while True:
@@ -252,7 +278,7 @@ def create_app(
             yield format_sse(event, data)
 
         try:
-            response = task.result()
+            response, serialized = task.result()
         except Exception:
             logger.exception("Agent run crashed")
             yield format_sse(
@@ -264,11 +290,6 @@ def create_app(
 
         match = _ERROR_CODE.search(response)
         yield format_sse("message", {"content": response, "error_code": match.group(1) if match else None})
-        charts = record.agent.get_charts()
-        serialized = serialize_charts(charts) if charts else []
-        if serialized:
-            record.latest_charts = serialized
-            record.agent.clear_charts()
         yield format_sse("charts", {"charts": serialized})
         yield format_sse("done", {})
 
@@ -284,6 +305,22 @@ def create_app(
         return JSONResponse(status_code=exc.status_code, content={"error": detail})
 
     return app
+
+
+def _finalize_charts(record: Any) -> List[Dict[str, Any]]:
+    """Move charts the run generated into the session record (worker thread)."""
+    charts = record.agent.get_charts()
+    if not charts:
+        return []
+    try:
+        serialized = serialize_charts(charts)
+    except Exception:
+        logger.exception("Chart serialization failed; sending the reply without charts")
+        serialized = []
+    record.agent.clear_charts()
+    if serialized:
+        record.latest_charts = serialized
+    return serialized
 
 
 def _mount_frontend(app: FastAPI, dist: Path) -> None:
