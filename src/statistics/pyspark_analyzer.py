@@ -565,6 +565,12 @@ class PySparkABTestAnalyzer:
         if suggestions["customer_id"]:
             config["mapping"]["customer_id"] = suggestions["customer_id"][0]
 
+        # Keep a previously declared allocation (TODO.md #40); re-detecting
+        # columns must not silently reset the SRM check to 50/50.
+        previous_ratio = (self.column_mapping or {}).get("expected_treatment_ratio")
+        if previous_ratio is not None:
+            config["mapping"]["expected_treatment_ratio"] = previous_ratio
+
         self.set_column_mapping(config["mapping"])
 
         # Auto-detect treatment/control labels using Spark collect

@@ -294,9 +294,9 @@ def _render_ab_results_section(summary: Any) -> str:
             else result.proportion_is_significant
         )
 
-        t_total = t_effect * result.treatment_size if t_significant else 0
-        prop_total = prop_effect_per_cust * result.control_size if prop_significant else 0
-        total_effect = t_total + prop_total
+        # Single source of truth: the backend's non-double-counted total,
+        # already recomputed from the adjusted calls when FDR ran (TODO.md #42).
+        total_effect = result.total_effect
 
         t_sig_marker = "*" if t_significant else ""
         p_sig_marker = "*" if prop_significant else ""

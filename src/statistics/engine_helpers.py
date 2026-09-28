@@ -131,3 +131,23 @@ def apply_fdr_correction(results: Sequence[Any], *, significance_level: float) -
         result.proportion_is_significant_adjusted = (
             bool(reject_prop[idx]) and not prop_blocks and not srm_blocks
         )
+        if getattr(result, "sequential_mode_enabled", False):
+            # The alpha-spending decision governs under sequential monitoring;
+            # a fixed-alpha BH rejection must not override a "continue".
+            result.is_significant_adjusted = (
+                result.is_significant_adjusted and bool(result.is_significant)
+            )
+
+        # Keep the headline impact consistent with the adjusted calls, so the
+        # combined total never counts a segment the report shows as not
+        # significant (TODO.md #42, #92).
+        result.total_effect_per_customer = combine_total_effect_per_customer(
+            effect_size=result.effect_size,
+            is_significant=result.is_significant_adjusted,
+            proportion_effect_per_customer=(
+                result.proportion_effect_per_customer
+                if result.proportion_is_significant_adjusted
+                else 0.0
+            ),
+        )
+        result.total_effect = result.total_effect_per_customer * result.treatment_size

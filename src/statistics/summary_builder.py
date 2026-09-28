@@ -50,6 +50,13 @@ class ABTestSummaryBuilder:
             r for r in results if r.proportion_is_significant_adjusted
         ]
         bayesian_significant_results = [r for r in results if r.bayesian_is_significant]
+        # Effect totals follow the FDR-adjusted calls when segment-level
+        # correction ran, so they agree with the stars in the report (TODO.md #92).
+        fdr_applied = any(r.multiple_testing_applied for r in results)
+        t_effect_results = t_significant_adjusted_results if fdr_applied else t_significant_results
+        prop_effect_results = (
+            prop_significant_adjusted_results if fdr_applied else prop_significant_results
+        )
         inference_guardrailed = [r for r in results if r.inference_guardrail_triggered]
         proportion_guardrailed = [r for r in results if r.proportion_guardrail_triggered]
         srm_mismatch_results = [
@@ -95,21 +102,21 @@ class ABTestSummaryBuilder:
             )
         ]
 
-        t_test_total_effect = sum(r.effect_size * r.treatment_size for r in t_significant_results)
+        t_test_total_effect = sum(r.effect_size * r.treatment_size for r in t_effect_results)
         avg_t_test_effect = (
-            float(np.mean([r.effect_size for r in t_significant_results]))
-            if t_significant_results
+            float(np.mean([r.effect_size for r in t_effect_results]))
+            if t_effect_results
             else 0.0
         )
-        total_treatment_in_t_significant = sum(r.treatment_size for r in t_significant_results)
+        total_treatment_in_t_significant = sum(r.treatment_size for r in t_effect_results)
 
-        prop_total_effect = sum(r.proportion_effect for r in prop_significant_results)
+        prop_total_effect = sum(r.proportion_effect for r in prop_effect_results)
         avg_prop_effect = (
-            float(np.mean([r.proportion_effect_per_customer for r in prop_significant_results]))
-            if prop_significant_results
+            float(np.mean([r.proportion_effect_per_customer for r in prop_effect_results]))
+            if prop_effect_results
             else 0.0
         )
-        total_treatment_in_prop_significant = sum(r.treatment_size for r in prop_significant_results)
+        total_treatment_in_prop_significant = sum(r.treatment_size for r in prop_effect_results)
 
         combined_total_effect = sum(r.total_effect for r in results)
 
