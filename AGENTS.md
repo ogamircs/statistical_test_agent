@@ -76,7 +76,7 @@ docs/TODO.md                The prioritized backlog. Read it before starting non
 8. **Configuration.** New knobs go on `Config` in `src/config.py` with a `STATAGENT_*` env var, validation in `Config.validate()`, and a row in `docs/deployment.md`. Do not scatter module-level constants.
 9. **Types.** mypy is blocking. The `[[tool.mypy.overrides]]` list in `pyproject.toml` is a burn-down list. Remove modules from it as you fix them, and never add to it.
 10. **Markdown files are gitignored by default** (`*.md` in `.gitignore`). To track a new doc, add an explicit `!path` allowlist entry.
-11. **API/UI contract.** The SSE event sequence (`status`, `tool_start`/`tool_end`, `message`, `charts`, `done`, or `error`) is documented in `src/api/app.py` and `docs/architecture.md`, and typed in `frontend/src/lib/types.ts`. Change all three together, with tests in `tests/test_api.py` and `frontend/src/lib/sse.test.ts`.
+11. **API/UI contract.** The SSE event sequence (`status`, `tool_start`/`tool_end` and `token` interleaved, `message`, `charts`, `done`, or `error`) is documented in `src/api/app.py` and `docs/architecture.md`, and typed in `frontend/src/lib/types.ts`. Change all three together, with tests in `tests/test_api.py` and `frontend/src/lib/sse.test.ts`.
 12. **No external assets in the UI.** No CDN scripts, fonts or images: the UI must work air-gapped (a metadata test enforces it).
 
 ## Workflow conventions

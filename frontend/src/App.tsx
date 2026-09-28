@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { ApiError, api, storeToken } from "./lib/api";
+import { TokenBuffer } from "./lib/tokenBuffer";
 import type { ChartSpec, ChatMessage, PublicConfig, SessionSummary } from "./lib/types";
 import { prefersReducedMotion, useTheme } from "./lib/theme";
 import { validateCsvFile } from "./lib/upload";
@@ -116,10 +117,18 @@ export default function App() {
         { id: assistantId, role: "assistant", content: "", steps: [], pending: true },
       ]);
 
+      // Live answer text, flushed once per frame; `message` replaces it.
+      const live = new TokenBuffer((streamed) =>
+        updateAssistant(assistantId, (m) => ({ ...m, content: streamed })),
+      );
       try {
         for await (const event of api.chat(sessionId, text, fileId)) {
           switch (event.event) {
+            case "token":
+              live.append(event.data.text);
+              break;
             case "tool_start":
+              live.reset();
               updateAssistant(assistantId, (m) => ({
                 ...m,
                 steps: [
@@ -137,6 +146,7 @@ export default function App() {
               }));
               break;
             case "message":
+              live.stop();
               updateAssistant(assistantId, (m) => ({
                 ...m,
                 content: event.data.content,
@@ -151,6 +161,7 @@ export default function App() {
               }
               break;
             case "error":
+              live.stop();
               updateAssistant(assistantId, (m) => ({
                 ...m,
                 content: event.data.message,
@@ -162,6 +173,7 @@ export default function App() {
           }
         }
       } finally {
+        live.stop();
         updateAssistant(assistantId, (m) => ({
           ...m,
           pending: false,

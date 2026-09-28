@@ -11,7 +11,7 @@ An intelligent agent that can:
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 import openai
@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 
@@ -83,6 +83,8 @@ class ABTestingAgent:
             temperature=resolved_temperature,
             timeout=self.config.llm_request_timeout_seconds,
             max_retries=self.config.llm_max_retries,
+            # Usage totals still arrive when the web UI streams tokens.
+            stream_usage=True,
             callbacks=[self.token_usage],
         )
         self.runtime = AgentRuntime(analyzer=ABTestAnalyzer())
@@ -365,12 +367,19 @@ class ABTestingAgent:
             )
         return error
 
-    def run(self, message: str, callbacks: Optional[Sequence[Any]] = None) -> str:
+    def run(
+        self,
+        message: str,
+        callbacks: Optional[Sequence[Any]] = None,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> str:
         """Run the agent synchronously.
 
         The web API runs this in a worker thread. ``callbacks`` are extra
         LangChain callback handlers for this run only (the API uses one to
-        stream tool progress to the browser).
+        stream tool progress to the browser). ``on_token`` receives the
+        model's text as it is generated; the full final answer is still
+        returned and persisted exactly as without it.
         """
         try:
             self.token_usage.reset()
@@ -380,10 +389,11 @@ class ABTestingAgent:
             run_config: Dict[str, Any] = {"recursion_limit": self.config.agent_recursion_limit}
             if callbacks:
                 run_config["callbacks"] = list(callbacks)
-            result = self.agent.invoke(
-                {"messages": self._model_bound_history()},
-                config=run_config,
-            )
+            graph_input = {"messages": self._model_bound_history()}
+            if on_token is None:
+                result = self.agent.invoke(graph_input, config=run_config)
+            else:
+                result = self._stream_run(graph_input, run_config, on_token)
             response = result["messages"][-1].content
             self.chat_history.append(AIMessage(content=response))
             self.session.query_store.save_chat_message("ai", str(response))
@@ -407,6 +417,28 @@ class ABTestingAgent:
                 default_message="Unable to process your request right now.",
             )
 
+    def _stream_run(
+        self,
+        graph_input: Dict[str, Any],
+        run_config: Dict[str, Any],
+        on_token: Callable[[str], None],
+    ) -> Dict[str, Any]:
+        """Run the graph, forwarding model text chunks; return the final state."""
+        final_state: Dict[str, Any] = {}
+        for mode, payload in self.agent.stream(
+            graph_input, config=run_config, stream_mode=["messages", "values"]
+        ):
+            if mode == "values":
+                final_state = payload
+                continue
+            chunk, _metadata = payload
+            text = _chunk_text(chunk)
+            if text:
+                on_token(text)
+        if not final_state.get("messages"):
+            raise RuntimeError("Agent stream ended without a final state")
+        return final_state
+
     def clear_memory(self):
         """Clear conversation memory (both in-memory and persisted SQLite).
 
@@ -420,3 +452,18 @@ class ABTestingAgent:
         except Exception:
             logger.exception("Failed to wipe persisted chat history")
 
+
+def _chunk_text(chunk: Any) -> str:
+    """Visible text from a streamed model chunk (never tool-call arguments)."""
+    if not isinstance(chunk, AIMessageChunk) or chunk.tool_call_chunks:
+        return ""
+    content = chunk.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):  # content blocks
+        return "".join(
+            str(block.get("text", "")) if isinstance(block, dict) else str(block)
+            for block in content
+            if not isinstance(block, dict) or block.get("type") in (None, "text")
+        )
+    return ""

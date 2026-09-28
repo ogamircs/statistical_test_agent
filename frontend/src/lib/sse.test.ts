@@ -66,3 +66,16 @@ describe("api.chat", () => {
     await expect(iterate()).rejects.toMatchObject({ status: 409, code: "SESSION_BUSY" });
   });
 });
+
+describe("SseParser token events", () => {
+  it("parses streamed token frames split across chunks", () => {
+    const parser = new SseParser();
+    const first = parser.push('event: token\ndata: {"text":"Prem');
+    const rest = parser.push('ium"}\n\nevent: token\ndata: {"text":" won"}\n\n');
+    expect(first).toEqual([]);
+    expect(rest).toEqual([
+      { event: "token", data: { text: "Premium" } },
+      { event: "token", data: { text: " won" } },
+    ]);
+  });
+});

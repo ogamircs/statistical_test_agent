@@ -45,7 +45,7 @@ class StubAgent:
         self.response = "## Result\n\n| a | b |\n|---|---|\n| 1 | 2 |"
         self.raise_error = False
 
-    def run(self, message: str, callbacks: Any = None) -> str:
+    def run(self, message: str, callbacks: Any = None, on_token: Any = None) -> str:
         self.release.wait(5)
         if self.raise_error:
             raise RuntimeError("boom")
@@ -54,6 +54,9 @@ class StubAgent:
         for handler in callbacks or []:
             handler.on_tool_start({"name": "load_and_auto_analyze"}, "{}", run_id=run_id)
             handler.on_tool_end("ok", run_id=run_id)
+        if on_token is not None:
+            for piece in ("## Res", "ult"):
+                on_token(piece)
         self.session.query_store.save_chat_message("human", message)
         self.session.query_store.save_chat_message("ai", self.response)
         self.charts = {"dashboard": go.Figure(layout={"title": {"text": "<b>Dash</b>"}})}
@@ -130,11 +133,12 @@ def test_chat_streams_progress_message_charts_and_done(client: TestClient, agent
     assert response.headers["content-type"].startswith("text/event-stream")
     events = _events(response.text)
     names = [name for name, _ in events]
-    assert names == ["status", "tool_start", "tool_end", "message", "charts", "done"]
+    assert names == ["status", "tool_start", "tool_end", "token", "token", "message", "charts", "done"]
     assert events[1][1]["label"] == "Loading data and running the analysis"
     assert events[2][1]["ok"] is True
-    assert events[3][1] == {"content": agents[0].response, "error_code": None}
-    chart = events[4][1]["charts"][0]
+    assert [data["text"] for name, data in events if name == "token"] == ["## Res", "ult"]
+    assert events[5][1] == {"content": agents[0].response, "error_code": None}
+    chart = events[6][1]["charts"][0]
     assert chart["name"] == "dashboard" and chart["title"] == "Dash"
     assert "layout" in chart["figure"]
 

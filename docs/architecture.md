@@ -51,7 +51,8 @@ Events arrive in this order; each `data` line is one JSON object:
 | `status` | `{"state": "started"}` |
 | `tool_start` | `{"id", "name", "label"}`, zero or more, from a LangChain callback on the agent run |
 | `tool_end` | `{"id", "name", "ok"}` (`ok` is false when the tool reported an `[error_code=…]`) |
-| `message` | `{"content": markdown, "error_code": string or null}` |
+| `token` | `{"text": string}`, zero or more, interleaved with tool events: the model's visible text as it is generated (never tool-call arguments or tool output). Text before a tool call is a preamble; the UI clears its live buffer on each `tool_start`. |
+| `message` | `{"content": markdown, "error_code": string or null}`, the complete final answer; clients replace any streamed text with it |
 | `charts` | `{"charts": [{"name", "title", "figure"}]}` (`figure` is Plotly JSON; empty when the turn made no charts) |
 | `done` | `{}` |
 

@@ -6,7 +6,10 @@ in order:
 - ``status``      ``{"state": "started"}``
 - ``tool_start``  ``{"id", "name", "label"}`` (zero or more)
 - ``tool_end``    ``{"id", "name", "ok"}``    (zero or more)
-- ``message``     ``{"content": markdown, "error_code": str | null}``
+- ``token``       ``{"text": str}`` (zero or more, interleaved with tool events;
+  model text as generated, reset by the client on each ``tool_start``)
+- ``message``     ``{"content": markdown, "error_code": str | null}`` (the full
+  final answer; replaces any streamed text)
 - ``charts``      ``{"charts": [{"name", "title", "figure"}]}`` (figure = Plotly JSON)
 - ``done``        ``{}``
 
@@ -247,7 +250,13 @@ def create_app(
 
         def run() -> Tuple[str, List[Dict[str, Any]]]:
             try:
-                response = str(record.agent.run(agent_message, callbacks=[ToolProgressHandler(emit)]))
+                response = str(
+                    record.agent.run(
+                        agent_message,
+                        callbacks=[ToolProgressHandler(emit)],
+                        on_token=lambda text: emit("token", {"text": text}),
+                    )
+                )
                 # Finalize charts here, still under the lock, so a client that
                 # disconnects mid-stream cannot strand them in the agent (where
                 # a later turn would re-emit them as its own).

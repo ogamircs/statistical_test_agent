@@ -65,6 +65,14 @@ class TokenUsageCallback(BaseCallbackHandler):
                     candidate = metadata.get("token_usage") or metadata.get("usage")
                     if candidate:
                         return candidate
+                # Streamed responses (stream_usage=True) report usage here instead.
+                streamed = getattr(message, "usage_metadata", None) if message else None
+                if isinstance(streamed, dict) and streamed:
+                    return {
+                        "prompt_tokens": streamed.get("input_tokens"),
+                        "completion_tokens": streamed.get("output_tokens"),
+                        "total_tokens": streamed.get("total_tokens"),
+                    }
         return None
 
     def snapshot(self) -> Dict[str, int]:

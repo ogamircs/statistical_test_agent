@@ -66,6 +66,7 @@ export type StreamEvent =
   | { event: "status"; data: { state: string } }
   | { event: "tool_start"; data: { id: string; name: string; label: string } }
   | { event: "tool_end"; data: { id: string; name: string; ok: boolean } }
+  | { event: "token"; data: { text: string } }
   | { event: "message"; data: { content: string; error_code: string | null } }
   | { event: "charts"; data: { charts: ChartSpec[] } }
   | { event: "error"; data: { code: string; message: string } }
