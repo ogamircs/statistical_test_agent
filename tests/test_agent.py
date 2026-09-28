@@ -12,11 +12,11 @@ from src.statistics.models import ABTestSummary
 
 
 class _DummyGraphAgent:
-    def invoke(self, _payload):
+    def invoke(self, _payload, config=None):
         return {"messages": [AIMessage(content="dummy response")]}
 
 class _FailingGraphAgent:
-    def invoke(self, _payload):
+    def invoke(self, _payload, config=None):
         raise RuntimeError("boom")
 
 
@@ -237,8 +237,8 @@ def stubbed_agent(monkeypatch):
     monkeypatch.setattr(agent_module, "ChatOpenAI", lambda **_kwargs: object())
     monkeypatch.setattr(
         agent_module,
-        "create_react_agent",
-        lambda _llm, _tools, prompt=None: _DummyGraphAgent(),
+        "create_agent",
+        lambda _llm, _tools, system_prompt=None: _DummyGraphAgent(),
     )
     return ABTestingAgent()
 

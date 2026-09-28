@@ -9,17 +9,18 @@ An intelligent agent that can:
 - Generate interactive visualizations
 """
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+import openai
 import plotly.graph_objects as go
 from dotenv import load_dotenv
+from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+from langgraph.errors import GraphRecursionError
 
-from .agent_reporting import render_tool_error
+from .agent_reporting import AgentUserFacingError, render_tool_error
 from .agent_runtime import AgentRuntime
 from .agent_session import AgentAnalysisSession
 from .agent_tools import create_agent_tools
@@ -81,6 +82,8 @@ class ABTestingAgent:
         self.llm = ChatOpenAI(
             model=resolved_model,
             temperature=resolved_temperature,
+            timeout=self.config.llm_request_timeout_seconds,
+            max_retries=self.config.llm_max_retries,
             callbacks=[self.token_usage],
         )
         self.runtime = AgentRuntime(
@@ -279,7 +282,62 @@ class ABTestingAgent:
         tools = self._create_tools()
         system_prompt = load_system_prompt()
         logger.info("System prompt loaded (version=%s)", PROMPT_VERSION)
-        return create_react_agent(self.llm, tools, prompt=system_prompt)
+        return create_agent(self.llm, tools, system_prompt=system_prompt)
+
+    def _model_bound_history(self) -> List[BaseMessage]:
+        """Return the most recent slice of chat history to send to the model.
+
+        The full history stays in session state and SQLite; only the window
+        re-sent each turn is bounded so long sessions don't grow cost
+        linearly or overflow the context window. The window always starts on
+        a human turn so the model never sees a dangling AI reply.
+        """
+        history = self.chat_history
+        limit = self.config.max_history_messages
+        if len(history) <= limit:
+            return list(history)
+        window = history[-limit:]
+        for index, message in enumerate(window):
+            if isinstance(message, HumanMessage):
+                return list(window[index:])
+        return list(history[-1:])
+
+    @staticmethod
+    def _classify_run_error(error: Exception) -> Exception:
+        """Map LLM/graph failures to user-facing errors with distinct codes."""
+        if isinstance(error, GraphRecursionError):
+            return AgentUserFacingError(
+                "AGENT_STEP_LIMIT_REACHED",
+                "The request needed more reasoning/tool steps than allowed and was "
+                "stopped. Try a narrower question or break it into smaller steps.",
+            )
+        if isinstance(error, openai.RateLimitError):
+            return AgentUserFacingError(
+                "LLM_RATE_LIMITED",
+                "The language model provider is rate-limiting requests or the API "
+                "quota is exhausted. Please wait a moment and try again.",
+            )
+        if isinstance(error, openai.APITimeoutError):
+            return AgentUserFacingError(
+                "LLM_TIMEOUT",
+                "The language model did not respond in time. Please try again.",
+            )
+        if isinstance(error, openai.AuthenticationError):
+            return AgentUserFacingError(
+                "LLM_AUTH_FAILED",
+                "The language model API key was rejected. Check OPENAI_API_KEY.",
+            )
+        if isinstance(error, openai.APIConnectionError):
+            return AgentUserFacingError(
+                "LLM_UNAVAILABLE",
+                "Could not reach the language model provider. Please try again.",
+            )
+        if isinstance(error, openai.InternalServerError):
+            return AgentUserFacingError(
+                "LLM_UNAVAILABLE",
+                "The language model provider returned a server error. Please try again.",
+            )
+        return error
 
     def run(self, message: str) -> str:
         """Run the agent synchronously.
@@ -291,7 +349,10 @@ class ABTestingAgent:
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
             self.session.query_store.save_chat_message("human", message)
-            result = self.agent.invoke({"messages": self.chat_history})
+            result = self.agent.invoke(
+                {"messages": self._model_bound_history()},
+                config={"recursion_limit": self.config.agent_recursion_limit},
+            )
             response = result["messages"][-1].content
             self.chat_history.append(AIMessage(content=response))
             self.session.query_store.save_chat_message("ai", str(response))
@@ -310,18 +371,10 @@ class ABTestingAgent:
             logger.exception("Agent run failed")
             return render_tool_error(
                 "Error processing request",
-                e,
+                self._classify_run_error(e),
                 default_code="AGENT_EXECUTION_FAILED",
                 default_message="Unable to process your request right now.",
             )
-
-    async def arun(self, message: str) -> str:
-        """Run the agent asynchronously.
-
-        Thin wrapper kept for backward compatibility with notebooks, async
-        tests, and background workers that call ``await agent.arun(...)``.
-        """
-        return await asyncio.to_thread(self.run, message)
 
     def clear_memory(self):
         """Clear conversation memory (both in-memory and persisted SQLite).
@@ -336,16 +389,3 @@ class ABTestingAgent:
         except Exception:
             logger.exception("Failed to wipe persisted chat history")
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    agent = ABTestingAgent()
-    logger.info("A/B Testing Agent CLI initialized. Type 'quit' to exit.")
-
-    while True:
-        user_input = input("\nYou: ").strip()
-        if user_input.lower() in ['quit', 'exit', 'q']:
-            break
-
-        response = agent.run(user_input)
-        logger.info("Agent: %s", response)
