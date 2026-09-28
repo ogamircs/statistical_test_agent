@@ -240,3 +240,23 @@ def test_replay_state_is_not_saved_when_raw_data_persistence_fails(tmp_path, mon
     # The stale raw_data table must not be paired with this analysis on restart.
     restarted = ABTestingAgent(query_store_path=store)
     assert restarted._pending_analysis_state is None
+
+
+def test_analysis_synthesized_for_charts_survives_a_restart(tmp_path) -> None:
+    """generate_charts on configured-but-unanalyzed data must persist its analysis."""
+    store = str(tmp_path / "session.sqlite")
+    agent = ABTestingAgent(query_store_path=store)
+    _tool(agent, "load_csv").func(SAMPLE_CSV)
+    _tool(agent, "set_column_mapping").func(
+        group="experiment_group", effect_value="post_effect", segment="customer_segment"
+    )
+    _tool(agent, "set_group_labels").func(treatment_label="treatment", control_label="control")
+    assert agent._last_results is None  # no analysis tool has run
+
+    _tool(agent, "generate_charts").func("dashboard")
+    assert agent._last_results
+
+    restarted = ABTestingAgent(query_store_path=store)
+    assert restarted._pending_analysis_state is not None
+    restarted._get_active_analyzer()  # triggers the lazy restore
+    assert restarted._last_results and len(restarted._last_results) == len(agent._last_results)

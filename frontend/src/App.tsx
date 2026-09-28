@@ -108,6 +108,7 @@ export default function App() {
     setBusy(true);
     setNotice(null);
     const file = attached;
+    let turnShown = false;
     try {
       const sessionId = activeId ?? (await api.createSession());
       if (!activeId) setActiveId(sessionId);
@@ -122,6 +123,7 @@ export default function App() {
         setAttached(null);
       }
       const assistantId = newId();
+      turnShown = true;
       setMessages((current) => [
         ...current,
         userMessage,
@@ -209,7 +211,9 @@ export default function App() {
       return true;
     } catch (error) {
       handleError(error);
-      return true; // the turn was shown with its error; do not restore the draft
+      // Failed before the turn appeared (session create, upload/preview):
+      // nothing on screen holds the text, so let the composer restore it.
+      return turnShown;
     } finally {
       setBusy(false);
     }
@@ -255,13 +259,18 @@ export default function App() {
 
   const clearSession = async () => {
     if (!activeId || busy) return;
+    const clearedId = activeId;
     try {
-      await api.clearMessages(activeId);
-      setMessages([]);
-      setCharts([]);
+      await api.clearMessages(clearedId);
+      // The sidebar stays usable during the request: never empty a session
+      // the user switched to meanwhile.
+      if (activeSession.isCurrent(clearedId)) {
+        setMessages([]);
+        setCharts([]);
+      }
       await refreshSessions();
     } catch (error) {
-      handleError(error);
+      if (activeSession.isCurrent(clearedId)) handleError(error);
     }
   };
 
