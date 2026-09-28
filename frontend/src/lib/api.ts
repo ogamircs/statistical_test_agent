@@ -20,20 +20,26 @@ export class ApiError extends Error {
   }
 }
 
-function readToken(): string | null {
+// In-memory copy: when sessionStorage throws (some private modes, sandboxed
+// iframes) the token must still live for this page, or every request after
+// login would 401 and bounce the user back to the sign-in form.
+let memoryToken: string | null = null;
+
+export function readToken(): string | null {
   try {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return sessionStorage.getItem(TOKEN_KEY) ?? memoryToken;
   } catch {
-    return null;
+    return memoryToken;
   }
 }
 
 export function storeToken(token: string | null): void {
+  memoryToken = token;
   try {
     if (token) sessionStorage.setItem(TOKEN_KEY, token);
     else sessionStorage.removeItem(TOKEN_KEY);
   } catch {
-    // Storage unavailable (private mode); the token lives for this page only.
+    // Storage unavailable; memoryToken keeps the token for this page only.
   }
 }
 
