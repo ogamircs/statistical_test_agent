@@ -1,4 +1,4 @@
-"""Protocol defining the shared public interface for A/B test analyzer backends."""
+"""Protocol defining the public analyzer interface used by the agent and tools."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 @runtime_checkable
 class ABAnalyzerProtocol(Protocol):
-    """Structural interface satisfied by both ABTestAnalyzer and PySparkABTestAnalyzer."""
+    """Structural interface satisfied by ABTestAnalyzer (and test doubles)."""
 
     def load_data(self, filepath: str, **kwargs: Any) -> Dict[str, Any]: ...
 

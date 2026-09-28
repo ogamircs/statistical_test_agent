@@ -62,8 +62,7 @@ def combine_total_effect_per_customer(
     incremental converters, so adding the proportion-based estimate on top
     counts that value twice. Use the significant mean difference when there
     is one; fall back to the proportion-based estimate only when the mean
-    test is not significant but the conversion-rate test is. Shared by the
-    pandas and Spark backends.
+    test is not significant but the conversion-rate test is.
     """
     if is_significant:
         return float(effect_size)
@@ -91,7 +90,7 @@ def _blocks(result: Any, *path: str) -> bool:
 def apply_fdr_correction(results: Sequence[Any], *, significance_level: float) -> None:
     """Benjamini-Hochberg correction across segment results, in place.
 
-    Shared by the pandas and Spark backends. Guardrail blocks (t-test,
+    Guardrail blocks (t-test,
     proportion test) and sample-ratio mismatch keep a segment
     non-significant after adjustment, matching the unadjusted call.
     """

@@ -1,13 +1,7 @@
-"""Regression tests for statistical-correctness fixes (TODO.md #37-#43, #88, #89).
-
-Spark coverage here is driver-only: ``PySparkABTestAnalyzer.run_ab_test`` is
-fed fake aggregate rows, so the Spark decision logic runs without a JVM.
-The real-Spark parity suite (``test_parity_pandas_spark.py``) still gates CI.
-"""
+"""Regression tests for statistical-correctness fixes (TODO.md #37-#43, #88, #89)."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, Dict
 
 import numpy as np
@@ -21,7 +15,7 @@ from src.statistics.diagnostics import (
     validate_expected_treatment_ratio,
 )
 from src.statistics.engine_helpers import combine_total_effect_per_customer
-from src.statistics.pyspark_analyzer import PySparkABTestAnalyzer
+from src.statistics.statsmodels_engine import run_two_proportion_test
 from src.statistics.summary_builder import ABTestSummaryBuilder
 
 
@@ -276,91 +270,23 @@ class TestFallbackWarnings:
 
 
 # ---------------------------------------------------------------------------
-# Spark driver logic (#37, #39, #40, #42, #43) without a JVM
+# #37 — count-based proportion test and its guardrails
 # ---------------------------------------------------------------------------
-class _FakeRow(dict):
-    def asDict(self) -> Dict[str, Any]:  # noqa: N802 - mirrors pyspark.sql.Row
-        return dict(self)
-
-
-def _row_from(values: np.ndarray) -> _FakeRow:
-    return _FakeRow(
-        n=int(values.size),
-        mean=float(values.mean()),
-        variance=float(values.var(ddof=1)),
-        conversions=int(np.sum(values != 0)),
-    )
-
-
-def _spark_stub(t: np.ndarray, c: np.ndarray, **mapping_extra: Any) -> PySparkABTestAnalyzer:
-    analyzer = PySparkABTestAnalyzer.__new__(PySparkABTestAnalyzer)
-    analyzer.significance_level = 0.05
-    analyzer.power_threshold = 0.8
-    analyzer.seed = 42
-    analyzer.expected_treatment_ratio = 0.5
-    analyzer.target_effect_size = power_analysis.DEFAULT_TARGET_EFFECT_SIZE
-    analyzer.column_mapping = {"group": "group", "effect_value": "post_effect", **mapping_extra}
-    analyzer.segment_failures = []
-    t_rows = SimpleNamespace(first=lambda: _row_from(t))
-    c_rows = SimpleNamespace(first=lambda: _row_from(c))
-    analyzer._calculate_segment_statistics = lambda segment_filter=None: (t_rows, c_rows)  # type: ignore[method-assign]
-    analyzer._compute_covariate_adjustment = lambda **kw: {  # type: ignore[method-assign]
-        "covariate_adjustment_applied": False,
-        "covariates_used": [],
-        "covariate_adjusted_effect": kw["effect_size"],
-        "covariate_adjusted_p_value": kw["p_value"],
-        "covariate_adjusted_confidence_interval": kw["confidence_interval"],
-        "covariate_adjusted_model_type": "none",
-        "covariate_adjusted_effect_scale": "mean_difference",
-        "covariate_adjusted_effect_exponentiated": 1.0,
-    }
-    return analyzer
-
-
-class TestSparkDriverParity:
-    def test_proportion_test_matches_pandas_score_method(self) -> None:
-        pandas_engine = ABTestAnalyzer().stats_engine
+class TestCountBasedProportionTest:
+    def test_counts_match_array_based_score_test(self) -> None:
+        engine = ABTestAnalyzer().stats_engine
         t = np.r_[np.ones(50), np.zeros(50)]
         c = np.r_[np.ones(30), np.zeros(70)]
-        pandas_result = pandas_engine.run_proportion_test(t, c)
-        spark_result = PySparkABTestAnalyzer._run_proportion_test_counts(
-            SimpleNamespace(), 50, 100, 30, 100
+        from_arrays = engine.run_proportion_test(t, c)
+        from_counts = run_two_proportion_test(
+            treatment_conversions=50, n_treatment=100, control_conversions=30, n_control=100
         )
-        assert spark_result["p_value"] == pytest.approx(pandas_result["p_value"])
-        assert spark_result["z_stat"] == pytest.approx(pandas_result["z_stat"])
+        assert from_counts["p_value"] == pytest.approx(from_arrays["p_value"])
+        assert from_counts["z_stat"] == pytest.approx(from_arrays["z_stat"])
 
-    def test_proportion_guardrails_block_significance(self) -> None:
+    def test_small_expected_cells_block_significance(self) -> None:
         # 3 vs 0 conversions: expected cell counts too small.
-        result = PySparkABTestAnalyzer._run_proportion_test_counts(
-            SimpleNamespace(), 3, 1000, 0, 1000
+        result = run_two_proportion_test(
+            treatment_conversions=3, n_treatment=1000, control_conversions=0, n_control=1000
         )
         assert result["diagnostics"]["blocks_significance"] is True
-
-    def test_run_ab_test_matches_pandas_on_decisions(self) -> None:
-        df = _revenue_frame(2000, 2000)
-        t = df.loc[df.group == "treatment", "post_effect"].to_numpy()
-        c = df.loc[df.group == "control", "post_effect"].to_numpy()
-
-        pandas_result = _analyzer_for(df).run_ab_test()
-        spark_result = _spark_stub(t, c).run_ab_test()
-
-        assert spark_result.proportion_p_value == pytest.approx(pandas_result.proportion_p_value)
-        assert spark_result.is_significant == pandas_result.is_significant
-        assert spark_result.total_effect == pytest.approx(pandas_result.total_effect)
-        assert spark_result.total_effect_per_customer == pytest.approx(spark_result.effect_size)
-        assert spark_result.achieved_mde == pytest.approx(pandas_result.achieved_mde)
-        assert spark_result.is_sample_adequate == pandas_result.is_sample_adequate
-        assert spark_result.required_sample_size == pandas_result.required_sample_size
-
-    def test_spark_srm_uses_declared_ratio(self) -> None:
-        rng = np.random.default_rng(3)
-        t = rng.normal(12, 2, 900)
-        c = rng.normal(10, 2, 100)
-
-        default = _spark_stub(t, c).run_ab_test()
-        declared = _spark_stub(t, c, expected_treatment_ratio=0.9).run_ab_test()
-
-        assert default.diagnostics["experiment_quality"]["srm"]["is_sample_ratio_mismatch"]
-        assert default.is_significant is False
-        assert not declared.diagnostics["experiment_quality"]["srm"]["is_sample_ratio_mismatch"]
-        assert declared.is_significant is True

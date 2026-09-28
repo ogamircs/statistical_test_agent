@@ -107,9 +107,8 @@ def test_compute_ratio_metric_tool_returns_markdown() -> None:
         _last_results = None
         _last_summary = None
         _last_charts = {}
-        FILE_SIZE_THRESHOLD_MB = 2.0
 
-        def _load_data_with_backend(self, filepath):
+        def _load_data(self, filepath):
             raise NotImplementedError
 
         def _normalize_shape(self, info):
@@ -144,9 +143,8 @@ def test_ratio_metric_tool_invalid_input_returns_structured_error() -> None:
         _last_results = None
         _last_summary = None
         _last_charts = {}
-        FILE_SIZE_THRESHOLD_MB = 2.0
 
-        def _load_data_with_backend(self, filepath):
+        def _load_data(self, filepath):
             raise NotImplementedError
 
         def _normalize_shape(self, info):
@@ -179,9 +177,8 @@ def test_ratio_metric_tool_registered_in_agent_tools() -> None:
         _last_results = None
         _last_summary = None
         _last_charts = {}
-        FILE_SIZE_THRESHOLD_MB = 2.0
 
-        def _load_data_with_backend(self, filepath):
+        def _load_data(self, filepath):
             raise NotImplementedError
 
         def _normalize_shape(self, info):

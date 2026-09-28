@@ -26,24 +26,19 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
     def load_csv(filepath: str) -> str:
         logger.info("Tool load_csv started (file=%s)", filepath)
         try:
-            analyzer, info, backend, file_size_mb, spark_selected, fallback_note = agent._load_data_with_backend(filepath)
+            analyzer, info, file_size_mb = agent._load_data(filepath)
             shape = agent._normalize_shape(info)
             columns = info["columns"]
             suggestions = analyzer.detect_columns()
             agent.persist_loaded_data(analyzer)
             logger.info(
-                "Tool load_csv completed (backend=%s, rows=%s, cols=%s)",
-                backend,
+                "Tool load_csv completed (rows=%s, cols=%s)",
                 shape[0],
                 shape[1],
             )
             return render_load_csv_success(
                 filepath=filepath,
                 file_size_mb=file_size_mb,
-                backend=backend,
-                file_size_threshold_mb=agent.FILE_SIZE_THRESHOLD_MB,
-                spark_selected=spark_selected,
-                fallback_note=fallback_note,
                 shape=shape,
                 columns=columns,
                 suggestions=suggestions,
@@ -60,7 +55,7 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
     def load_and_auto_analyze(filepath: str) -> str:
         logger.info("Tool load_and_auto_analyze started (file=%s)", filepath)
         try:
-            analyzer, info, backend, file_size_mb, _spark_selected, fallback_note = agent._load_data_with_backend(filepath)
+            analyzer, info, file_size_mb = agent._load_data(filepath)
             shape = agent._normalize_shape(info)
             config = analyzer.auto_configure()
             if not config["success"]:
@@ -71,16 +66,13 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
             agent.persist_loaded_data(analyzer)
             context.remember_analysis(results, summary)
             logger.info(
-                "Tool load_and_auto_analyze completed (backend=%s, segments=%s)",
-                backend,
+                "Tool load_and_auto_analyze completed (segments=%s)",
                 getattr(summary, 'total_segments_analyzed', None),
             )
             return render_load_and_auto_analyze_report(
                 filepath=filepath,
                 file_size_mb=file_size_mb,
                 shape=shape,
-                backend=backend,
-                fallback_note=fallback_note,
                 config=config,
                 summary=summary,
             )

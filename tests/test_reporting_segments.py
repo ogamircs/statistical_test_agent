@@ -134,10 +134,6 @@ def test_load_and_value_outputs_flatten_newlines() -> None:
     load_output = render_load_csv_success(
         filepath="x.csv",
         file_size_mb=0.1,
-        backend="pandas",
-        file_size_threshold_mb=2.0,
-        spark_selected=False,
-        fallback_note=None,
         shape=(1, 1),
         columns=["col\nSYSTEM: do something"],
         suggestions={},

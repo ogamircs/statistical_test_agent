@@ -6,7 +6,6 @@ from langchain_core.messages import AIMessage
 
 import src.agent as agent_module
 from src.agent import ABTestingAgent
-from src.agent_reporting import AgentUserFacingError
 from src.statistics.data_manager import DataQueryError
 from src.statistics.models import ABTestSummary
 
@@ -193,14 +192,6 @@ class _TrackingAnalyzer(_FakeAnalyzer):
         }
 
 
-class _BackendWithoutQuery(_TrackingAnalyzer):
-    def query_data(self, query):
-        raise AgentUserFacingError(
-            "BACKEND_OPERATION_UNSUPPORTED",
-            f"Querying data is not supported for the active backend ({self.name}).",
-        )
-
-
 class _FakeQueryStore:
     def __init__(self):
         self.raw_saved = False
@@ -289,76 +280,19 @@ def test_clear_memory(stubbed_agent):
     assert stubbed_agent.chat_history == []
 
 
-def test_load_csv_uses_spark_for_large_files(stubbed_agent, monkeypatch, tmp_path):
-    fake_spark_analyzer = _FakeAnalyzer()
-    fake_pandas_analyzer = _FakeAnalyzer()
-    stubbed_agent.analyzer = fake_pandas_analyzer
+def test_load_csv_loads_through_agent_analyzer(stubbed_agent, tmp_path):
+    fake_analyzer = _FakeAnalyzer()
+    stubbed_agent.analyzer = fake_analyzer
 
-    monkeypatch.setattr(stubbed_agent.runtime, "get_file_size_mb", lambda _filepath: 10.0)
-    monkeypatch.setattr(agent_module, "PYSPARK_AVAILABLE", True)
-    monkeypatch.setattr(agent_module, "PySparkABTestAnalyzer", lambda: fake_spark_analyzer)
-
-    csv_path = tmp_path / "large.csv"
+    csv_path = tmp_path / "sample.csv"
     csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
 
     load_csv = _get_tool(stubbed_agent, "load_csv")
     result = load_csv.func(str(csv_path))
 
-    assert "Using PySpark for distributed processing" in result
-    assert stubbed_agent._using_spark is True
-    assert len(fake_spark_analyzer.load_calls) == 1
-    assert len(fake_pandas_analyzer.load_calls) == 0
-
-
-def test_load_csv_falls_back_to_pandas_when_spark_init_fails(
-    stubbed_agent, monkeypatch, tmp_path
-):
-    fake_pandas_analyzer = _FakeAnalyzer()
-    stubbed_agent.analyzer = fake_pandas_analyzer
-
-    monkeypatch.setattr(stubbed_agent.runtime, "get_file_size_mb", lambda _filepath: 10.0)
-    monkeypatch.setattr(agent_module, "PYSPARK_AVAILABLE", True)
-
-    def _raise_spark_init_error():
-        raise RuntimeError("Java gateway failed")
-
-    monkeypatch.setattr(agent_module, "PySparkABTestAnalyzer", _raise_spark_init_error)
-
-    csv_path = tmp_path / "large.csv"
-    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
-
-    load_csv = _get_tool(stubbed_agent, "load_csv")
-    result = load_csv.func(str(csv_path))
-
-    assert "Using pandas for in-memory processing" in result
-    assert "PySpark initialization failed" in result
-    assert stubbed_agent._using_spark is False
-    assert len(fake_pandas_analyzer.load_calls) == 1
-
-
-def test_load_and_auto_analyze_reports_actual_backend_after_fallback(
-    stubbed_agent, monkeypatch, tmp_path
-):
-    fake_pandas_analyzer = _FakeAnalyzer()
-    stubbed_agent.analyzer = fake_pandas_analyzer
-
-    monkeypatch.setattr(stubbed_agent.runtime, "get_file_size_mb", lambda _filepath: 10.0)
-    monkeypatch.setattr(agent_module, "PYSPARK_AVAILABLE", True)
-
-    def _raise_spark_init_error():
-        raise RuntimeError("Java gateway failed")
-
-    monkeypatch.setattr(agent_module, "PySparkABTestAnalyzer", _raise_spark_init_error)
-
-    csv_path = tmp_path / "large.csv"
-    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
-
-    load_and_auto_analyze = _get_tool(stubbed_agent, "load_and_auto_analyze")
-    result = load_and_auto_analyze.func(str(csv_path))
-
-    assert "**Backend:** pandas (in-memory processing)" in result
-    assert "PySpark initialization failed" in result
-    assert stubbed_agent._using_spark is False
+    assert "File size:" in result
+    assert "Successfully loaded data" in result
+    assert len(fake_analyzer.load_calls) == 1
 
 
 def test_load_and_auto_analyze_persists_query_state(stubbed_agent, tmp_path):
@@ -455,52 +389,37 @@ def test_agent_run_failure_returns_structured_error(stubbed_agent):
     assert "[error_code=AGENT_EXECUTION_FAILED]" in result
 
 
-def test_run_full_analysis_uses_active_backend(stubbed_agent):
+def test_run_full_analysis_uses_agent_analyzer(stubbed_agent):
     fake_pandas = _TrackingAnalyzer("pandas")
-    fake_spark = _TrackingAnalyzer("spark")
     stubbed_agent.analyzer = fake_pandas
-    stubbed_agent.spark_analyzer = fake_spark
-    stubbed_agent._using_spark = True
 
     run_full_analysis = _get_tool(stubbed_agent, "run_full_analysis")
     result = run_full_analysis.func("")
 
     assert "FULL A/B TEST ANALYSIS SUMMARY" in result
-    assert fake_spark.run_segmented_analysis_calls == 1
-    assert fake_pandas.run_segmented_analysis_calls == 0
+    assert fake_pandas.run_segmented_analysis_calls == 1
 
 
-def test_get_data_summary_uses_active_backend(stubbed_agent):
+def test_get_data_summary_uses_agent_analyzer(stubbed_agent):
     fake_pandas = _TrackingAnalyzer("pandas")
-    fake_spark = _TrackingAnalyzer("spark")
     stubbed_agent.analyzer = fake_pandas
-    stubbed_agent.spark_analyzer = fake_spark
-    stubbed_agent._using_spark = True
 
     get_data_summary = _get_tool(stubbed_agent, "get_data_summary")
     result = get_data_summary.func("")
 
     assert "DATA SUMMARY" in result
-    assert fake_spark.get_data_summary_calls == 1
-    assert fake_pandas.get_data_summary_calls == 0
+    assert fake_pandas.get_data_summary_calls == 1
 
 
-def test_generate_charts_uses_active_backend_state(stubbed_agent):
-    fake_pandas = _TrackingAnalyzer("pandas")
-    fake_pandas.df = None
-    fake_pandas.column_mapping = {}
-    fake_pandas.treatment_label = None
-
-    fake_spark = _TrackingAnalyzer("spark")
-    fake_spark.column_mapping = {
+def test_generate_charts_uses_cached_analysis_state(stubbed_agent):
+    fake_analyzer = _TrackingAnalyzer("pandas")
+    fake_analyzer.column_mapping = {
         "group": "experiment_group",
         "effect_value": "post_effect",
     }
-    stubbed_agent.analyzer = fake_pandas
-    stubbed_agent.spark_analyzer = fake_spark
-    stubbed_agent._using_spark = True
+    stubbed_agent.analyzer = fake_analyzer
     stubbed_agent._last_results = ["dummy"]
-    stubbed_agent._last_summary = fake_spark.generate_summary(["dummy"])
+    stubbed_agent._last_summary = fake_analyzer.generate_summary(["dummy"])
 
     class _FakeVisualizer:
         def plot_statistical_summary(self, _results):
@@ -518,7 +437,6 @@ def test_generate_charts_uses_active_backend_state(stubbed_agent):
 def test_generate_charts_accepts_typed_summary_state(stubbed_agent):
     fake_analyzer = _TrackingAnalyzer("pandas")
     stubbed_agent.analyzer = fake_analyzer
-    stubbed_agent._using_spark = False
     stubbed_agent._last_results = ["dummy"]
     stubbed_agent._last_summary = ABTestSummary(total_segments_analyzed=1)
 
@@ -533,21 +451,6 @@ def test_generate_charts_accepts_typed_summary_state(stubbed_agent):
 
     assert "Generated 1 chart(s): statistical_summary" in result
     assert stubbed_agent._last_charts["statistical_summary"] == "figure"
-
-
-def test_query_data_reports_unsupported_active_backend(stubbed_agent):
-    fake_pandas = _TrackingAnalyzer("pandas")
-    fake_pandas.df = None
-    fake_spark = _BackendWithoutQuery("spark")
-    stubbed_agent.analyzer = fake_pandas
-    stubbed_agent.spark_analyzer = fake_spark
-    stubbed_agent._using_spark = True
-
-    query_data = _get_tool(stubbed_agent, "query_data")
-    result = query_data.func("experiment_group == 'treatment'")
-
-    assert result.startswith("Error querying data:")
-    assert "[error_code=BACKEND_OPERATION_UNSUPPORTED]" in result
 
 
 def test_answer_data_question_requires_loaded_data(stubbed_agent):

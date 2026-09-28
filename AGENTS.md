@@ -6,10 +6,7 @@ Guidance for AI coding agents (Claude Code, Codex, Cursor, etc.) working in this
 
 A conversational A/B-test analysis agent. Users upload a CSV in a Chainlit chat UI; a LangGraph ReAct agent (OpenAI model, default `gpt-5.2`) calls Python tools that run frequentist, Bayesian, CUPED/covariate-adjusted, segmented, sequential, and ratio-metric analyses, then renders markdown reports and Plotly charts.
 
-Two interchangeable analysis backends implement one protocol:
-
-- **pandas** (`src/statistics/analyzer.py`): the default, for files at or below `STATAGENT_FILE_SIZE_THRESHOLD_MB` (2 MB).
-- **PySpark** (`src/statistics/pyspark_analyzer.py`): for larger files when Spark and Java are available. It falls back to pandas on init or load failure.
+All analysis is pure Python: CSVs are loaded into pandas and analyzed in memory by `src/statistics/analyzer.py` (statsmodels, scipy, numpy). There is no distributed backend.
 
 **Statistical correctness comes first.** A polished answer that misreports a significance call is worse than a rough one that gets it right.
 
@@ -18,7 +15,7 @@ Two interchangeable analysis backends implement one protocol:
 Always use the project venv via `uv run` (or `./.venv/bin/...`).
 
 ```bash
-uv sync --extra dev                  # install (add --extra spark for the Spark backend; needs Java 17)
+uv sync --extra dev                                       # install
 uv run chainlit run app.py --host 127.0.0.1 --port 8010   # run the UI
 uv run python scripts/generate_sample_data.py             # regenerate data/sample_ab_data*.csv
 
@@ -28,8 +25,6 @@ uv run mypy src app.py
 uv run pytest -q -ra --cov=src --cov-fail-under=78
 ```
 
-The Spark suites skip when PySpark or Java is missing. CI sets `STATAGENT_REQUIRE_SPARK=1`, which turns those skips into failures, so a Spark change you could not run locally will still be exercised in CI. Say so explicitly when you hand off unverified Spark edits.
-
 Live LLM evals (`tests/eval/test_live_tools.py`) run only with `STATAGENT_RUN_LIVE_EVAL=1` and a real `OPENAI_API_KEY`. Every other test must stay offline. Mock the LLM.
 
 ## Code map
@@ -37,7 +32,7 @@ Live LLM evals (`tests/eval/test_live_tools.py`) run only with `STATAGENT_RUN_LI
 ```text
 app.py                      Chainlit entry: upload handling, auth hook, chat start/resume
 src/agent.py                ABTestingAgent: LLM construction, LangGraph agent, run loop, history
-src/agent_runtime.py        Backend selection (pandas vs Spark) and fallback
+src/agent_runtime.py        CSV loading (path confinement + pandas analyzer)
 src/agent_session.py        Per-session state (loaded data, results, chat history, query store)
 src/agent_tools.py          Tool registry facade -> src/tooling/{loading,analysis,visualization}.py
 src/tooling/common.py       ToolContext / AgentProtocol shared by all tools
@@ -50,9 +45,8 @@ src/data_paths.py           CSV path confinement (allowed roots only, no URLs)
 src/auth.py                 Optional password auth (STATAGENT_AUTH_USERNAME/PASSWORD)
 src/statistics/
   analyzer.py               pandas facade: load, auto-configure, run_ab_test, segmented/full analysis
-  pyspark_analyzer.py       Spark backend (must match analyzer.py behavior)
-  analyzer_protocol.py      The shared backend contract
-  models.py                 ABTestResult and canonical, backend-agnostic result schema
+  analyzer_protocol.py      The analyzer interface the agent and tools depend on
+  models.py                 ABTestResult and the canonical typed result schema
   statsmodels_engine.py     Inference facade (t-test, proportion test, SRM, sequential)
   model_families.py         GLM family selection (Gaussian/Binomial/Poisson/heavy-tail) + DiD
   diagnostics.py            SRM, duplicate units, normality/variance checks, guardrails
@@ -65,7 +59,7 @@ docs/TODO.md                The prioritized backlog. Read it before starting non
 
 ## Rules and invariants
 
-1. **Backend parity.** Any change to statistical behavior in `analyzer.py` or its helpers must be mirrored in `pyspark_analyzer.py`, with a test in `tests/test_parity_pandas_spark.py` when feasible. Prefer shared pure-Python helpers that work on collected aggregates over duplicating math in Spark.
+1. **Pure Python.** Keep the stack pandas/statsmodels/scipy/numpy. Do not add JVM or distributed backends (PySpark was removed deliberately). Put reusable statistical math in small pure functions (e.g. `engine_helpers.py`, `statsmodels_engine.py`) with direct unit tests.
 2. **Never degrade silently.** When a statistical fallback fires (model-fit fallback, test exception, power/MDE sentinel), append to `ABTestResult.statistical_warnings` so it reaches the report. Do not return plausible-looking defaults.
 3. **Report on consistent scales.** Effect sizes, CIs, and chart error bars must use the same scale (see TODO #36).
 4. **Tool contract.** Tools are built in `src/tooling/` and receive a `ToolContext`. Prefer `StructuredTool` with typed args over hand-parsed JSON or comma-split strings. The schema is what the LLM sees. Tool errors go through `render_tool_error` with a stable error code.

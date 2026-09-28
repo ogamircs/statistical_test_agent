@@ -81,9 +81,8 @@ def test_tool_registered() -> None:
         _last_results = None
         _last_summary = None
         _last_charts: dict = {}
-        FILE_SIZE_THRESHOLD_MB = 2.0
 
-        def _load_data_with_backend(self, filepath):
+        def _load_data(self, filepath):
             raise NotImplementedError
 
         def _normalize_shape(self, info):

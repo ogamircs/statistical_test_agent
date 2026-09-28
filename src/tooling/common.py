@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Protocol, Tuple
+from typing import Any, Dict, Protocol, Tuple
 
-from ..agent_reporting import AgentUserFacingError, render_tool_error
+from ..agent_reporting import render_tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,8 @@ class AgentProtocol(Protocol):
     _last_results: Any
     _last_summary: Any
     _last_charts: Dict[str, Any]
-    FILE_SIZE_THRESHOLD_MB: float
 
-    def _load_data_with_backend(self, filepath: str) -> Tuple[Any, Dict[str, Any], str, float, bool, Optional[str]]:
+    def _load_data(self, filepath: str) -> Tuple[Any, Dict[str, Any], float]:
         ...
 
     def _normalize_shape(self, info: Dict[str, Any]) -> Tuple[int, int]:
@@ -44,22 +43,10 @@ class ToolContext:
         return self.agent._get_active_analyzer()
 
     @staticmethod
-    def backend_label(analyzer: Any) -> str:
-        analyzer_name = type(analyzer).__name__.lower()
-        return "spark" if "spark" in analyzer_name else "pandas"
-
-    def unsupported(self, operation: str, analyzer: Any) -> AgentUserFacingError:
-        return AgentUserFacingError(
-            "BACKEND_OPERATION_UNSUPPORTED",
-            f"{operation} is not supported for the active backend ({self.backend_label(analyzer)}).",
-        )
-
-    def require_pandas_dataframe(self, analyzer: Any, operation: str) -> Any:
+    def require_dataframe(analyzer: Any) -> Any:
         df = getattr(analyzer, "df", None)
         if df is None:
             raise ValueError("No data loaded")
-        if hasattr(df, "groupBy") and hasattr(df, "select"):
-            raise self.unsupported(operation, analyzer)
         return df
 
     def handle_tool_error(

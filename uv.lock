@@ -2862,15 +2862,6 @@ wheels = [
 ]
 
 [[package]]
-name = "py4j"
-version = "0.10.9.9"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/38/31/0b210511177070c8d5d3059556194352e5753602fa64b85b7ab81ec1a009/py4j-0.10.9.9.tar.gz", hash = "sha256:f694cad19efa5bd1dee4f3e5270eb406613c974394035e5bfc4ec1aba870b879", size = 761089, upload-time = "2025-01-15T03:53:18.624Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bd/db/ea0203e495be491c85af87b66e37acfd3bf756fd985f87e46fc5e3bf022c/py4j-0.10.9.9-py2.py3-none-any.whl", hash = "sha256:c7c26e4158defb37b0bb124933163641a2ff6e3a3913f7811b0ddbe07ed61533", size = 203008, upload-time = "2025-01-15T03:53:15.648Z" },
-]
-
-[[package]]
 name = "pycparser"
 version = "3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3027,15 +3018,6 @@ wheels = [
 crypto = [
     { name = "cryptography" },
 ]
-
-[[package]]
-name = "pyspark"
-version = "3.5.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "py4j" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/5a/3806f44eb47387e8af803508cdd6bbc0df784febf4dc010700be04a1ff89/pyspark-3.5.8.tar.gz", hash = "sha256:54cca0767b21b40e3953ad1d30f8601c53abf9cbda763653289cdcfcac52313c", size = 317817299, upload-time = "2026-01-15T11:46:14.487Z" }
 
 [[package]]
 name = "pytest"
@@ -3659,9 +3641,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
-spark = [
-    { name = "pyspark" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -3675,7 +3654,6 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0.0,<3.0" },
     { name = "plotly", specifier = ">=5.18.0,<7.0" },
     { name = "pydantic", specifier = ">=2.0.0,<3.0" },
-    { name = "pyspark", marker = "extra == 'spark'", specifier = ">=3.5.0,<4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0,<9.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0,<8.0" },
     { name = "python-dotenv", specifier = ">=1.0.1,<2.0" },
@@ -3684,7 +3662,7 @@ requires-dist = [
     { name = "statsmodels", specifier = ">=0.14.0,<0.16" },
     { name = "tabulate", specifier = ">=0.9.0,<0.10" },
 ]
-provides-extras = ["dev", "spark"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "statsmodels"

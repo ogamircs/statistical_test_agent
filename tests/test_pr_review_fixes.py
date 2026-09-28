@@ -42,9 +42,8 @@ def test_ratio_tool_drops_rows_with_null_in_either_column(tmp_path) -> None:
         _last_results = None
         _last_summary = None
         _last_charts = {}
-        FILE_SIZE_THRESHOLD_MB = 2.0
 
-        def _load_data_with_backend(self, filepath): raise NotImplementedError
+        def _load_data(self, filepath): raise NotImplementedError
         def _normalize_shape(self, info): raise NotImplementedError
         def _get_active_analyzer(self): return bound_analyzer
         def persist_loaded_data(self, x): return False

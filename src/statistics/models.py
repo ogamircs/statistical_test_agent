@@ -463,7 +463,7 @@ def to_canonical_ab_test_result(result: Any) -> ABTestResult:
 
     Supports:
     - Native ABTestResult objects
-    - Spark result objects/dataclasses with lower/upper interval keys
+    - Result objects/dataclasses with lower/upper interval keys
     - Dict payloads using either canonical or legacy field aliases
     """
     if isinstance(result, ABTestResult) and type(result) is ABTestResult:

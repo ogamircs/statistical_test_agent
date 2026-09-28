@@ -420,8 +420,8 @@ def run_two_proportion_test(
 ) -> Dict[str, Any]:
     """Two-proportion score test on aggregate counts, with guardrails.
 
-    Shared by the pandas and Spark backends (TODO.md #37) so the same counts
-    always yield the same p-value, CI and guardrail decisions. Small-n,
+    Operates on aggregate counts so every caller gets the same p-value, CI
+    and guardrail decisions for the same data. Small-n,
     small expected-cell and degenerate inputs block significance.
     """
     p_treatment = treatment_conversions / n_treatment if n_treatment > 0 else 0.0

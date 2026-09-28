@@ -32,16 +32,6 @@ from .statistics import ABTestAnalyzer, ABTestVisualizer
 from .statistics.analyzer_protocol import ABAnalyzerProtocol
 from .statistics.models import ABTestResult, ABTestSummary
 
-# Try to import PySpark analyzer (optional dependency)
-try:
-    from .statistics.pyspark_analyzer import PySparkABTestAnalyzer
-    PYSPARK_AVAILABLE = True
-except (ImportError, AttributeError):
-    # ImportError: pyspark not installed
-    # AttributeError: pyspark installed but not compatible (e.g., Windows)
-    PYSPARK_AVAILABLE = False
-    PySparkABTestAnalyzer = None  # type: ignore[assignment, misc]
-
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -57,13 +47,6 @@ class ABTestingAgent:
     - Answering data-related questions
     - Generating interactive visualizations
     """
-
-    @staticmethod
-    def _create_spark_backend():
-        """Create the optional Spark backend using the current module import state."""
-        if PySparkABTestAnalyzer is None:
-            raise RuntimeError("PySpark is not available in this environment")
-        return PySparkABTestAnalyzer()
 
     def __init__(
         self,
@@ -86,12 +69,7 @@ class ABTestingAgent:
             max_retries=self.config.llm_max_retries,
             callbacks=[self.token_usage],
         )
-        self.runtime = AgentRuntime(
-            analyzer=ABTestAnalyzer(),
-            spark_factory=self._create_spark_backend,
-            spark_available=lambda: PYSPARK_AVAILABLE,
-            file_size_threshold_mb=self.config.file_size_threshold_mb,
-        )
+        self.runtime = AgentRuntime(analyzer=ABTestAnalyzer())
         self.visualizer = ABTestVisualizer()
         session_kwargs: dict[str, Any] = {
             "llm": self.llm,
@@ -105,12 +83,9 @@ class ABTestingAgent:
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
-            "ABTestingAgent initialized (model=%s, temperature=%s, spark_available=%s, "
-            "file_size_threshold_mb=%.2f, restored_history=%d)",
+            "ABTestingAgent initialized (model=%s, temperature=%s, restored_history=%d)",
             resolved_model,
             resolved_temperature,
-            PYSPARK_AVAILABLE,
-            self.config.file_size_threshold_mb,
             len(self.session.state.chat_history),
         )
 
@@ -135,30 +110,6 @@ class ABTestingAgent:
     @analyzer.setter
     def analyzer(self, value: ABAnalyzerProtocol) -> None:
         self.runtime.analyzer = value
-
-    @property
-    def spark_analyzer(self) -> Optional[ABAnalyzerProtocol]:
-        return self.runtime.spark_analyzer
-
-    @spark_analyzer.setter
-    def spark_analyzer(self, value: Optional[ABAnalyzerProtocol]) -> None:
-        self.runtime.spark_analyzer = value
-
-    @property
-    def _using_spark(self) -> bool:
-        return self.runtime.using_spark
-
-    @_using_spark.setter
-    def _using_spark(self, value: bool) -> None:
-        self.runtime.using_spark = value
-
-    @property
-    def FILE_SIZE_THRESHOLD_MB(self) -> float:
-        return self.runtime.file_size_threshold_mb
-
-    @FILE_SIZE_THRESHOLD_MB.setter
-    def FILE_SIZE_THRESHOLD_MB(self, value: float) -> None:
-        self.runtime.file_size_threshold_mb = value
 
     @property
     def chat_history(self) -> List[BaseMessage]:
@@ -247,30 +198,21 @@ class ABTestingAgent:
         """Get file size in megabytes."""
         return self.runtime.get_file_size_mb(filepath)
 
-    def _should_use_spark(self, filepath: str) -> bool:
-        """Determine if PySpark should be used based on file size."""
-        return self.runtime.should_use_spark(filepath)
-
     def _get_active_analyzer(self):
-        """Get the currently active analyzer (pandas or PySpark)."""
+        """Get the active analyzer."""
         return self.runtime.get_active_analyzer()
-
-    def _init_spark_analyzer(self):
-        """Initialize the Spark analyzer lazily."""
-        return self.runtime.init_spark_analyzer()
 
     def _normalize_shape(self, info: Dict[str, Any]) -> Tuple[int, int]:
         """Normalize load_data metadata to (rows, columns)."""
         return self.runtime.normalize_shape(info)
 
-    def _load_data_with_backend(self, filepath: str):
-        """
-        Load data using Spark when appropriate, with automatic pandas fallback.
+    def _load_data(self, filepath: str):
+        """Load a CSV into the pandas analyzer.
 
         Returns:
-            (analyzer, info, backend_name, file_size_mb, spark_selected, fallback_note)
+            (analyzer, info, file_size_mb)
         """
-        return self.runtime.load_data_with_backend(filepath)
+        return self.runtime.load_data(filepath)
 
     def _create_tools(self) -> List[Any]:
         """Create the tools for the agent."""

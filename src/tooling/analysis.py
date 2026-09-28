@@ -59,7 +59,7 @@ def _ratio_metric_impl(context: ToolContext, payload: str | Dict[str, Any]) -> s
             )
 
         analyzer = context.active_analyzer()
-        df = context.require_pandas_dataframe(analyzer, "compute_ratio_metric")
+        df = context.require_dataframe(analyzer)
         mapping = getattr(analyzer, "column_mapping", {}) or {}
         group_col = mapping.get("group")
         treatment_label = getattr(analyzer, "treatment_label", None)
@@ -362,8 +362,6 @@ def create_analysis_tools(context: ToolContext) -> List[BaseTool]:
             analyzer = context.active_analyzer()
             if getattr(analyzer, "df", None) is None:
                 return "No data loaded. Please load a CSV file first."
-            if not hasattr(analyzer, "query_data"):
-                raise context.unsupported("Querying data", analyzer)
 
             result = analyzer.query_data(query)
             logger.info("Tool query_data completed (rows=%s)", len(result))
@@ -381,8 +379,6 @@ def create_analysis_tools(context: ToolContext) -> List[BaseTool]:
         logger.info("Tool get_data_summary started")
         try:
             analyzer = context.active_analyzer()
-            if not hasattr(analyzer, "get_data_summary"):
-                raise context.unsupported("Getting a data summary", analyzer)
 
             summary = analyzer.get_data_summary()
             logger.info("Tool get_data_summary completed")
@@ -400,8 +396,6 @@ def create_analysis_tools(context: ToolContext) -> List[BaseTool]:
         logger.info("Tool get_segment_distribution started")
         try:
             analyzer = context.active_analyzer()
-            if not hasattr(analyzer, "get_segment_distribution"):
-                raise context.unsupported("Getting the segment distribution", analyzer)
 
             dist = analyzer.get_segment_distribution()
             logger.info("Tool get_segment_distribution completed")
@@ -419,7 +413,7 @@ def create_analysis_tools(context: ToolContext) -> List[BaseTool]:
         logger.info("Tool get_column_values started (column=%s)", column_name)
         try:
             analyzer = context.active_analyzer()
-            df = context.require_pandas_dataframe(analyzer, "Listing column values")
+            df = context.require_dataframe(analyzer)
             if column_name not in df.columns:
                 return f"Column '{column_name}' not found. Available columns: {list(df.columns)}"
 
@@ -440,7 +434,7 @@ def create_analysis_tools(context: ToolContext) -> List[BaseTool]:
         logger.info("Tool calculate_statistics started (column=%s)", column_name)
         try:
             analyzer = context.active_analyzer()
-            df = context.require_pandas_dataframe(analyzer, "Calculating column statistics")
+            df = context.require_dataframe(analyzer)
             if column_name not in df.columns:
                 return f"Column '{column_name}' not found."
 

@@ -143,32 +143,12 @@ def render_load_csv_success(
     *,
     filepath: str,
     file_size_mb: float,
-    backend: str,
-    file_size_threshold_mb: float,
-    spark_selected: bool,
-    fallback_note: Optional[str],
     shape: Tuple[int, int],
     columns: Sequence[str],
     suggestions: Mapping[str, Sequence[str]],
 ) -> str:
     """Render successful load_csv output."""
-    result = f"File size: {file_size_mb:.2f} MB\n"
-
-    if backend == "spark":
-        result += (
-            f"[LARGE FILE DETECTED] Using PySpark for distributed processing "
-            f"(file size > {file_size_threshold_mb}MB)\n\n"
-        )
-    else:
-        if spark_selected:
-            result += (
-                f"[LARGE FILE DETECTED] PySpark requested for files > "
-                f"{file_size_threshold_mb}MB\n"
-            )
-        result += "Using pandas for in-memory processing\n"
-        if fallback_note:
-            result += f"{fallback_note}\n"
-        result += "\n"
+    result = f"File size: {file_size_mb:.2f} MB\n\n"
 
     result += f"Successfully loaded data from '{filepath}'\n"
     result += f"Shape: {shape[0]:,} rows, {shape[1]} columns\n\n"
@@ -371,20 +351,11 @@ def render_load_and_auto_analyze_report(
     filepath: str,
     file_size_mb: float,
     shape: Tuple[int, int],
-    backend: str,
-    fallback_note: Optional[str],
     config: Dict[str, Any],
     summary: Any,
 ) -> str:
     """Render load_and_auto_analyze output."""
     output = "## Best Guess Mode - Analysis Complete\n\n"
-
-    if backend == "spark":
-        output += "**Backend:** PySpark (distributed processing for large files)\n"
-    else:
-        output += "**Backend:** pandas (in-memory processing)\n"
-    if fallback_note:
-        output += f"**Backend Note:** {fallback_note}\n"
 
     output += f"**File:** {filepath.split('/')[-1].split(chr(92))[-1]}\n"
     output += f"**File Size:** {file_size_mb:.2f} MB\n"

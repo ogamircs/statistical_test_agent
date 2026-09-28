@@ -8,12 +8,6 @@ source .venv/bin/activate
 uv sync --extra dev
 ```
 
-Install the optional Spark path when you need local large-file verification:
-
-```bash
-uv sync --extra dev --extra spark
-```
-
 Add your API key to `.env`:
 
 ```dotenv
@@ -38,7 +32,7 @@ Generate the default small sample dataset:
 ./.venv/bin/python scripts/generate_sample_data.py
 ```
 
-Generate a large CSV for Spark-path testing:
+Generate a large CSV (~500k rows) for pandas performance checks:
 
 ```bash
 ./.venv/bin/python scripts/generate_large_sample_data.py
