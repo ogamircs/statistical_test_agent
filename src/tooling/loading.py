@@ -102,7 +102,10 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
         expected_treatment_ratio: Optional[float] = None,
     ) -> str:
         logger.info("Tool set_column_mapping started")
-        mapping: dict = {}
+        # Partial update: fields not passed keep their current value. The model
+        # naturally calls this with only expected_treatment_ratio to declare an
+        # allocation, which previously wiped group/effect and broke the session.
+        mapping: dict = dict(getattr(context.active_analyzer(), "column_mapping", None) or {})
         if customer_id:
             mapping["customer_id"] = customer_id
         if group:
@@ -158,21 +161,39 @@ def create_loading_tools(context: ToolContext) -> List[BaseTool]:
         segment_column: Optional[str] = None,
         customer_id_column: Optional[str] = None,
         expected_treatment_ratio: Optional[float] = None,
+        pre_effect_column: Optional[str] = None,
     ) -> str:
         logger.info("Tool configure_and_analyze started")
         try:
             analyzer = context.active_analyzer()
-            mapping: dict = {"group": group_column, "effect_value": effect_column}
+            previous: dict = dict(getattr(analyzer, "column_mapping", None) or {})
+            same_metric = effect_column in (
+                previous.get("effect_value"),
+                previous.get("post_effect"),
+            )
+            # Re-running the same metric (e.g. after declaring the allocation)
+            # must keep the detected pre-period column, duration and analysis
+            # options; otherwise the AA check and DiD silently disappear.
+            # Segment and customer ID follow the explicit arguments only, so
+            # omitting segment_column still means "no segmentation".
+            mapping: dict = (
+                {k: v for k, v in previous.items() if k not in ("segment", "customer_id")}
+                if same_metric
+                else {}
+            )
+            mapping.update({"group": group_column, "effect_value": effect_column})
+            if not same_metric:
+                mapping.pop("post_effect", None)
             if segment_column:
                 mapping["segment"] = segment_column
             if customer_id_column:
                 mapping["customer_id"] = customer_id_column
+            if pre_effect_column:
+                mapping["pre_effect"] = pre_effect_column
             # An explicit ratio wins; otherwise keep one declared earlier via
             # set_column_mapping instead of silently resetting to 50/50 (TODO.md #40).
             if expected_treatment_ratio is None:
-                expected_treatment_ratio = (
-                    getattr(analyzer, "column_mapping", None) or {}
-                ).get("expected_treatment_ratio")
+                expected_treatment_ratio = previous.get("expected_treatment_ratio")
             if expected_treatment_ratio is not None:
                 mapping["expected_treatment_ratio"] = validate_expected_treatment_ratio(
                     expected_treatment_ratio
@@ -248,7 +269,7 @@ Input: file path. This is the FASTEST way to get results.""",
         StructuredTool.from_function(
             func=set_column_mapping,
             name="set_column_mapping",
-            description="Set the column mapping for A/B test analysis. Specify which columns contain customer ID, group indicator, effect value, segments, and duration. If the experiment intentionally uses an unequal split, pass expected_treatment_ratio (treatment share, e.g. 0.1 for a 90/10 holdout) so the sample-ratio-mismatch check uses the designed split.",
+            description="Set the column mapping for A/B test analysis. Specify which columns contain customer ID, group indicator, effect value, segments, and duration. This is a partial update: fields you omit keep their current value. If the experiment intentionally uses an unequal split, pass expected_treatment_ratio (treatment share, e.g. 0.1 for a 90/10 holdout) so the sample-ratio-mismatch check uses the designed split.",
         ),
         StructuredTool.from_function(
             func=set_group_labels,
@@ -261,7 +282,7 @@ Input: file path. This is the FASTEST way to get results.""",
             description="""Configure column mappings, set treatment/control labels, and run full A/B test analysis in ONE step.
 Use this tool to quickly set up and analyze data without multiple separate steps.
 Required: group_column, effect_column, treatment_label, control_label
-Optional: segment_column, customer_id_column, expected_treatment_ratio (designed treatment share for an intentionally unequal split, e.g. 0.1 for a 90/10 holdout; default 0.5)""",
+Optional: segment_column, customer_id_column, pre_effect_column (pre-period metric for the AA check and DiD; kept automatically when re-running the same effect column), expected_treatment_ratio (designed treatment share for an intentionally unequal split, e.g. 0.1 for a 90/10 holdout; default 0.5)""",
         ),
         Tool(
             name="auto_configure_and_analyze",

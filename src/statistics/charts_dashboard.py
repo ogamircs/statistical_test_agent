@@ -169,7 +169,7 @@ class DashboardChartsMixin:
             rows=2, cols=2,
             subplot_titles=(
                 '<b>Treatment vs Control Means</b>',
-                '<b>Combined Effects (T-test + Proportion)</b>',
+                '<b>Total Effect (headline vs proportion-based)</b>',
                 '<b>Conversion Rates</b>',
                 '<b>P-Values (T-test)</b>'
             ),
@@ -194,13 +194,14 @@ class DashboardChartsMixin:
             showlegend=True,
         )
 
-        # Plot 2: Combined Effects (stacked T-test + Proportion)
-        t_test_effects = [r.effect_size * r.treatment_size if r.is_significant else 0 for r in results]
+        # Plot 2: headline total (never summed with the proportion estimate,
+        # TODO.md #42) next to the proportion-based estimate for reference.
+        t_test_effects = [r.total_effect for r in results]
         prop_effects = [r.proportion_effect for r in results]
 
         fig.add_trace(
             make_bar_trace(
-                name='T-test Effect',
+                name='Headline Total Effect',
                 x=segments,
                 y=t_test_effects,
                 marker_color=self.colors['t_test'],
@@ -211,7 +212,7 @@ class DashboardChartsMixin:
         )
         fig.add_trace(
             make_bar_trace(
-                name='Proportion Effect',
+                name='Proportion-based Estimate',
                 x=segments,
                 y=prop_effects,
                 marker_color=self.colors['proportion'],
@@ -300,10 +301,9 @@ class DashboardChartsMixin:
         fig.update_yaxes(title_text='Conv Rate %', row=2, col=1, title_font=dict(size=11))
         fig.update_yaxes(title_text='P-Value', row=2, col=2, title_font=dict(size=11))
 
-        # Make effect chart stacked
+        # Side by side, not stacked: stacking would visually add the two
+        # estimates, re-creating the double count fixed in TODO.md #42.
         fig.update_layout(barmode='group')
-        fig.data[2].offsetgroup = 0  # T-test effect
-        fig.data[3].offsetgroup = 0  # Proportion effect (stack on top)
 
         style_subplot_axes(fig, rows=2, cols=2, grid_color=self.colors['grid'], tickfont_size=10)
         style_subplot_titles(fig, text_color=self.colors['text'], size=12)

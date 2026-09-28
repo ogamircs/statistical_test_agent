@@ -172,3 +172,80 @@ def test_auto_configure_keeps_declared_ratio() -> None:
     analyzer.auto_configure()
 
     assert analyzer.column_mapping["expected_treatment_ratio"] == pytest.approx(0.1)
+
+
+def _frame_with_pre() -> pd.DataFrame:
+    rng = np.random.default_rng(1)
+    n_t, n_c = 600, 400
+    return pd.DataFrame(
+        {
+            "experiment_group": ["treatment"] * n_t + ["control"] * n_c,
+            "customer_segment": rng.choice(["A", "B"], n_t + n_c),
+            "pre_effect": np.concatenate([rng.normal(12, 1, n_t), rng.normal(10, 1, n_c)]),
+            "post_effect": np.concatenate([rng.normal(13, 1, n_t), rng.normal(10, 1, n_c)]),
+        }
+    )
+
+
+def _rerun_same_metric(agent: ABTestingAgent, **extra) -> None:
+    agent.analyzer.set_dataframe(_frame_with_pre())
+    agent.analyzer.auto_configure()
+    assert agent.analyzer.column_mapping.get("pre_effect") == "pre_effect"
+    _tool(agent, "configure_and_analyze").func(
+        group_column="experiment_group",
+        effect_column="post_effect",
+        treatment_label="treatment",
+        control_label="control",
+        expected_treatment_ratio=0.6,
+        **extra,
+    )
+
+
+def test_configure_and_analyze_rerun_keeps_pre_period_column(agent) -> None:
+    # Regression from a live run: re-running with a declared allocation
+    # dropped pre_effect, so the failed AA check and DiD silently vanished.
+    _rerun_same_metric(agent, segment_column="customer_segment")
+
+    assert agent.analyzer.column_mapping["pre_effect"] == "pre_effect"
+    result = agent.analyzer.run_ab_test()
+    assert result.aa_test_passed is False
+    assert result.treatment_pre_mean > 0
+
+
+def test_configure_and_analyze_omitting_segment_disables_segmentation(agent) -> None:
+    _rerun_same_metric(agent)
+
+    assert "segment" not in agent.analyzer.column_mapping
+
+
+def test_configure_and_analyze_new_metric_starts_fresh(agent) -> None:
+    agent.analyzer.set_dataframe(_frame_with_pre())
+    agent.analyzer.auto_configure()
+    _tool(agent, "configure_and_analyze").func(
+        group_column="experiment_group",
+        effect_column="pre_effect",
+        treatment_label="treatment",
+        control_label="control",
+    )
+
+    mapping = agent.analyzer.column_mapping
+    assert mapping["effect_value"] == "pre_effect"
+    assert "post_effect" not in mapping
+    assert "pre_effect" not in mapping
+
+
+def test_set_column_mapping_with_only_ratio_keeps_existing_columns(agent) -> None:
+    # Regression from a live run: the model declared the allocation with
+    # set_column_mapping(expected_treatment_ratio=0.6) alone, which replaced
+    # the whole mapping and wiped group/effect/pre_effect.
+    agent.analyzer.set_dataframe(_frame_with_pre())
+    agent.analyzer.auto_configure()
+    before = dict(agent.analyzer.column_mapping)
+
+    output = _tool(agent, "set_column_mapping").func(expected_treatment_ratio=0.6)
+
+    assert "error_code" not in output
+    mapping = agent.analyzer.column_mapping
+    for key in ("group", "effect_value", "pre_effect", "segment"):
+        assert mapping[key] == before[key]
+    assert mapping["expected_treatment_ratio"] == pytest.approx(0.6)

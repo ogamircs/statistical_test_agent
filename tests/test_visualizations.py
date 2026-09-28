@@ -87,8 +87,8 @@ def test_plot_summary_dashboard_semantics() -> None:
     assert {trace.name for trace in fig.data if trace.name} >= {
         "Treatment",
         "Control",
-        "T-test Effect",
-        "Proportion Effect",
+        "Headline Total Effect",
+        "Proportion-based Estimate",
     }
     assert {
         fig.layout.yaxis.title.text,
@@ -97,11 +97,9 @@ def test_plot_summary_dashboard_semantics() -> None:
         fig.layout.yaxis4.title.text,
     } == {"Mean", "Total Effect", "Conv Rate %", "P-Value"}
     assert fig.data[0].y[0] == results[0].treatment_mean
-    assert fig.data[2].y[0] == (
-        results[0].effect_size * results[0].treatment_size
-        if results[0].is_significant
-        else 0
-    )
+    # Headline total, never stacked on the proportion estimate (TODO.md #42).
+    assert fig.data[2].y[0] == results[0].total_effect
+    assert fig.data[2].offsetgroup is None and fig.data[3].offsetgroup is None
     assert any(shape["y0"] == shape["y1"] == 0 for shape in fig.layout.shapes)
     assert any(shape["y0"] == shape["y1"] == 0.05 for shape in fig.layout.shapes)
 
