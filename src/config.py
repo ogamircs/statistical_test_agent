@@ -25,6 +25,8 @@ _DEFAULT_AGENT_RECURSION_LIMIT = 25
 _DEFAULT_MAX_HISTORY_MESSAGES = 40
 # Largest CSV accepted by the web upload endpoint.
 _DEFAULT_MAX_UPLOAD_MB = 50.0
+# Per-session SQLite stores (session-<id>.sqlite); the UI lists them as history.
+_DEFAULT_QUERY_STORE_DIR = "output/query_store"
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class Config:
     agent_recursion_limit: int = _DEFAULT_AGENT_RECURSION_LIMIT
     max_history_messages: int = _DEFAULT_MAX_HISTORY_MESSAGES
     max_upload_mb: float = _DEFAULT_MAX_UPLOAD_MB
+    query_store_dir: str = _DEFAULT_QUERY_STORE_DIR
 
     @classmethod
     def from_env(cls, environ: dict | None = None) -> "Config":
@@ -76,6 +79,7 @@ class Config:
             max_upload_mb=_coerce_float(
                 env.get("STATAGENT_MAX_UPLOAD_MB"), _DEFAULT_MAX_UPLOAD_MB
             ),
+            query_store_dir=env.get("STATAGENT_QUERY_STORE_DIR") or _DEFAULT_QUERY_STORE_DIR,
         )
 
     def validate(self) -> None:
@@ -98,6 +102,8 @@ class Config:
             raise ValueError("Config.max_history_messages must be >= 1")
         if self.max_upload_mb <= 0:
             raise ValueError("Config.max_upload_mb must be > 0")
+        if not self.query_store_dir.strip():
+            raise ValueError("Config.query_store_dir must be a non-empty path")
 
 
 def _coerce_float(value: object, default: float) -> float:

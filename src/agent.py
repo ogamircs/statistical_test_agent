@@ -10,7 +10,9 @@ An intelligent agent that can:
 """
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from uuid import uuid4
 
 import openai
 import plotly.graph_objects as go
@@ -90,8 +92,11 @@ class ABTestingAgent:
             "query_timeout_seconds": self.config.query_timeout_seconds,
             "sql_default_row_limit": self.config.sql_default_row_limit,
         }
-        if query_store_path is not None:
-            session_kwargs["query_store_path"] = query_store_path
+        session_kwargs["query_store_path"] = (
+            query_store_path
+            if query_store_path is not None
+            else Path(self.config.query_store_dir) / f"session-{uuid4().hex}.sqlite"
+        )
         self.session = AgentAnalysisSession(**session_kwargs)
         self._restore_chat_history_from_store()
         self.agent = self._create_agent()

@@ -8,22 +8,9 @@ on app/session startup.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Dict, List
-
-QUERY_STORE_DIR_ENV = "STATAGENT_QUERY_STORE_DIR"
-
-
-def default_query_store_dir() -> Path:
-    """Directory holding per-session SQLite stores (``session-<id>.sqlite``).
-
-    Single source for the agent default, the API session registry and startup
-    GC. Override with STATAGENT_QUERY_STORE_DIR (the test suite points it at a
-    temp dir so test runs never show up as UI history).
-    """
-    return Path(os.environ.get(QUERY_STORE_DIR_ENV) or Path("output") / "query_store")
 
 logger = logging.getLogger(__name__)
 
