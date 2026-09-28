@@ -160,6 +160,9 @@ class ABTestSummaryBuilder:
             )
 
         analysis_warnings: List[str] = []
+        for result in results:
+            for warning in getattr(result, "statistical_warnings", None) or []:
+                analysis_warnings.append(f"[{result.segment}] {warning}")
         if failures:
             failed_segments = ", ".join(failure.segment for failure in failures[:5])
             suffix = "" if len(failures) <= 5 else ", ..."
@@ -226,8 +229,9 @@ class ABTestSummaryBuilder:
             ),
             combined_total_effect=combined_total_effect,
             combined_effect_calculation=(
-                f"T-test ({t_test_total_effect:.2f}) + Proportion ({prop_total_effect:.2f}) = "
-                f"{combined_total_effect:.2f}"
+                f"{combined_total_effect:.2f} (per segment: significant mean difference × "
+                "treatment N; proportion-based estimate only where the mean test is not "
+                "significant — never summed, since the mean already includes converters)"
             ),
             bayesian_significant_segments=len(bayesian_significant_results),
             bayesian_significance_rate=(
@@ -409,20 +413,17 @@ class ABTestSummaryBuilder:
 
         if inadequate_samples:
             segments = [
-                f"{r.segment} (needs ~{r.required_sample_size} per group)"
+                f"{r.segment} (MDE d={r.achieved_mde:.3f} vs target d={r.target_effect_size:.3f}; "
+                f"needs ~{r.required_sample_size} per group)"
                 for r in inadequate_samples[:3]
             ]
             recommendations.append(
-                f"SAMPLE SIZE: {len(inadequate_samples)} segment(s) have insufficient statistical power. "
+                f"SAMPLE SIZE: {len(inadequate_samples)} segment(s) are too small to reliably detect "
+                "the target effect (minimum detectable effect exceeds the target). "
                 f"Examples: {'; '.join(segments)}"
             )
 
-        imbalanced = [
-            r
-            for r in results
-            if (r.control_size > 0 and r.treatment_size / r.control_size > 2)
-            or (r.treatment_size > 0 and r.control_size / r.treatment_size > 2)
-        ]
+        imbalanced = [r for r in results if _allocation_deviates(r)]
         if imbalanced:
             recommendations.append(
                 f"GROUP IMBALANCE: {len(imbalanced)} segment(s) have imbalanced treatment/control ratios. "
@@ -430,3 +431,27 @@ class ABTestSummaryBuilder:
             )
 
         return recommendations
+
+
+def _allocation_deviates(result: Any, factor: float = 2.0) -> bool:
+    """True when the observed treatment:control odds differ from the design by > factor.
+
+    Compares against the SRM check's expected ratio so an intentional
+    90/10 holdout is not flagged as imbalance (TODO.md #40).
+    """
+    if result.treatment_size <= 0 or result.control_size <= 0:
+        return False
+    expected_ratio = (
+        result.diagnostics.get("experiment_quality", {})
+        .get("srm", {})
+        .get("expected_treatment_ratio", 0.5)
+    )
+    try:
+        expected_ratio = float(expected_ratio)
+    except (TypeError, ValueError):
+        expected_ratio = 0.5
+    if not 0.0 < expected_ratio < 1.0:
+        expected_ratio = 0.5
+    expected_odds = expected_ratio / (1.0 - expected_ratio)
+    observed_odds = result.treatment_size / result.control_size
+    return observed_odds / expected_odds > factor or expected_odds / observed_odds > factor

@@ -41,10 +41,25 @@ except ImportError:  # pragma: no cover - exercised only in non-Spark CI envs
     PYSPARK_RUNTIME_AVAILABLE = False
 
 from ..agent_reporting import AgentUserFacingError
-from .diagnostics import run_srm_diagnostics
+from .diagnostics import (
+    DEFAULT_EXPECTED_TREATMENT_RATIO,
+    describe_statistical_fallbacks,
+    resolve_expected_treatment_ratio,
+    run_srm_diagnostics,
+    validate_expected_treatment_ratio,
+)
+from .engine_helpers import apply_fdr_correction, combine_total_effect_per_customer
 from .label_inference import infer_group_labels
 from .models import ABTestResult
+from .power_analysis import (
+    DEFAULT_TARGET_EFFECT_SIZE,
+    calculate_minimum_detectable_effect,
+    calculate_power,
+    calculate_required_sample_size,
+    is_sample_adequate,
+)
 from .sequential_config import sequential_config_enabled
+from .statsmodels_engine import StatsmodelsABTestEngine, run_two_proportion_test
 from .summary_builder import ABTestSummaryBuilder
 
 logger = logging.getLogger(__name__)
@@ -248,6 +263,8 @@ class PySparkABTestAnalyzer:
         significance_level: float = 0.05,
         power_threshold: float = 0.8,
         seed: int = 42,
+        expected_treatment_ratio: float = DEFAULT_EXPECTED_TREATMENT_RATIO,
+        target_effect_size: float = DEFAULT_TARGET_EFFECT_SIZE,
     ):
         """
         Initialize the PySpark analyzer
@@ -257,6 +274,12 @@ class PySparkABTestAnalyzer:
             significance_level: Alpha for hypothesis tests (default: 0.05)
             power_threshold: Minimum statistical power (default: 0.8)
             seed: Driver-side RNG seed for the Monte Carlo Bayesian sampler.
+            expected_treatment_ratio: Designed treatment share for the SRM
+                check (default 0.5); overridable per experiment through
+                ``column_mapping["expected_treatment_ratio"]``.
+            target_effect_size: Standardized effect (Cohen's d) the sample
+                must be able to detect to count as adequate; overridable via
+                ``column_mapping["target_effect_size"]``.
         """
         if not PYSPARK_RUNTIME_AVAILABLE:
             raise RuntimeError(
@@ -267,6 +290,10 @@ class PySparkABTestAnalyzer:
         self.significance_level = significance_level
         self.power_threshold = power_threshold
         self.seed = seed
+        self.expected_treatment_ratio = validate_expected_treatment_ratio(
+            expected_treatment_ratio
+        )
+        self.target_effect_size = float(target_effect_size)
         self.df: Optional[DataFrame] = None
         self.column_mapping: Dict[str, str] = {}
         self.treatment_label: Optional[str] = None
@@ -667,92 +694,90 @@ class PySparkABTestAnalyzer:
 
         return float(t_stat), float(p_value), (float(ci_lower), float(ci_upper))
 
+    def _run_proportion_test_counts(
+        self,
+        conversions1: int, n1: int,
+        conversions2: int, n2: int,
+    ) -> Dict[str, Any]:
+        """Two-proportion score test on aggregate counts.
+
+        Delegates to the same helper as the pandas backend (TODO.md #37), so
+        identical counts give identical p-values and guardrail decisions
+        (small-n, small expected cells, degenerate proportions).
+        """
+        return run_two_proportion_test(
+            treatment_conversions=int(conversions1),
+            n_treatment=int(n1),
+            control_conversions=int(conversions2),
+            n_control=int(n2),
+            min_recommended_sample_size=StatsmodelsABTestEngine.MIN_RECOMMENDED_SAMPLE_SIZE,
+            min_expected_cell=StatsmodelsABTestEngine.MIN_EXPECTED_PROPORTION_CELL,
+        )
+
     def _calculate_proportion_test(
         self,
         conversions1: int, n1: int,
         conversions2: int, n2: int
     ) -> Tuple[float, float, float, float]:
         """
-        Two-proportion z-test using statsmodels test_proportions_2indep
+        Two-proportion score test (compatibility wrapper).
         Returns (z_stat, p_value, prop_diff, pooled_proportion)
         """
         if n1 == 0 or n2 == 0:
             return 0.0, 1.0, 0.0, 0.0
-
-        p1 = conversions1 / n1
-        p2 = conversions2 / n2
-        p_diff = p1 - p2
-
-        # Pooled proportion
+        result = self._run_proportion_test_counts(conversions1, n1, conversions2, n2)
         p_pooled = (conversions1 + conversions2) / (n1 + n2)
+        return (
+            float(result["z_stat"]),
+            float(result["p_value"]),
+            float(result["proportion_diff"]),
+            float(p_pooled),
+        )
 
-        # Use statsmodels test_proportions_2indep for two-proportion z-test
+    def _calculate_power(
+        self,
+        effect_size: float,
+        n1: int,
+        n2: int,
+        warnings_sink: Optional[List[str]] = None,
+    ) -> float:
+        """Observed (post-hoc) power; informational only, never used for adequacy."""
+        return calculate_power(
+            effect_size=effect_size,
+            n_treatment=n1,
+            n_control=n2,
+            significance_level=self.significance_level,
+            warnings_sink=warnings_sink,
+        )
+
+    def _calculate_required_sample_size(
+        self,
+        effect_size: float,
+        ratio: float = 1.0,
+        warnings_sink: Optional[List[str]] = None,
+    ) -> int:
+        """Required sample size per group (shared helper and sentinel with pandas)."""
+        return calculate_required_sample_size(
+            effect_size=effect_size,
+            ratio=ratio,
+            power_threshold=self.power_threshold,
+            significance_level=self.significance_level,
+            warnings_sink=warnings_sink,
+        )
+
+    def _resolve_target_effect_size(self) -> float:
+        raw: Any = (self.column_mapping or {}).get("target_effect_size")
+        if raw in (None, ""):
+            return abs(float(getattr(self, "target_effect_size", DEFAULT_TARGET_EFFECT_SIZE)))
         try:
-            from statsmodels.stats.proportion import test_proportions_2indep
-
-            # Returns (z_stat, p_value) tuple
-            z_stat, p_value = test_proportions_2indep(
-                conversions1, n1,
-                conversions2, n2,
-                method='wald',
-                alternative='two-sided'
-            )
-
-            return float(z_stat), float(p_value), float(p_diff), float(p_pooled)
-        except Exception:
-            # Fallback to manual calculation if statsmodels not available
-            se = np.sqrt(p_pooled * (1 - p_pooled) * (1/n1 + 1/n2))
-
-            if se == 0:
-                return 0.0, 1.0, p_diff, p_pooled
-
-            z_stat = p_diff / se
-
-            from scipy import stats
-            p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))
-
-            return float(z_stat), float(p_value), float(p_diff), float(p_pooled)
-
-    def _calculate_power(self, effect_size: float, n1: int, n2: int) -> float:
-        """Calculate statistical power"""
-        if effect_size == 0 or n1 < 2 or n2 < 2:
-            return 0.0
-
-        from statsmodels.stats.power import TTestIndPower
-
-        power_analysis = TTestIndPower()
-        ratio = n2 / n1 if n1 > 0 else 1
-
-        try:
-            power = power_analysis.solve_power(
-                effect_size=abs(effect_size),
-                nobs1=n1,
-                ratio=ratio,
-                alpha=self.significance_level
-            )
-            return min(float(power), 1.0)
-        except Exception:
-            return 0.0
-
-    def _calculate_required_sample_size(self, effect_size: float) -> int:
-        """Calculate required sample size per group"""
-        if effect_size == 0:
-            return 999999
-
-        from statsmodels.stats.power import TTestIndPower
-
-        power_analysis = TTestIndPower()
-
-        try:
-            n = power_analysis.solve_power(
-                effect_size=abs(effect_size),
-                power=self.power_threshold,
-                ratio=1.0,
-                alpha=self.significance_level
-            )
-            return int(np.ceil(n))
-        except Exception:
-            return 999999
+            value = abs(float(raw))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"target_effect_size must be a positive number; got {raw!r}"
+            ) from error
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"target_effect_size must be a positive number; got {raw!r}")
+        return value
 
     def _run_bayesian_test_montecarlo(
         self,
@@ -822,6 +847,7 @@ class PySparkABTestAnalyzer:
         n_c: int,
         var_t: float,
         var_c: float,
+        expected_treatment_ratio: float = DEFAULT_EXPECTED_TREATMENT_RATIO,
     ) -> Dict[str, Any]:
         """Compute scalar-only experiment-quality diagnostics for the Spark backend.
 
@@ -834,7 +860,7 @@ class PySparkABTestAnalyzer:
             treatment_size=int(n_t),
             control_size=int(n_c),
             significance_level=float(self.significance_level),
-            expected_treatment_ratio=0.5,
+            expected_treatment_ratio=float(expected_treatment_ratio),
         )
 
         var_t_safe = max(float(var_t), 0.0)
@@ -1057,11 +1083,27 @@ class PySparkABTestAnalyzer:
             mean_t, mean_c, var_t, var_c, n_t, n_c
         )
         is_significant = p_value < self.significance_level
+        statistical_warnings: List[str] = []
 
-        # === POWER ANALYSIS ===
-        power = self._calculate_power(cohens_d, n_t, n_c)
-        required_n = self._calculate_required_sample_size(cohens_d)
-        is_sample_adequate = power >= self.power_threshold
+        # === POWER / ADEQUACY (MDE-based, TODO.md #39) ===
+        power = self._calculate_power(cohens_d, n_t, n_c, warnings_sink=statistical_warnings)
+        target_effect_size = self._resolve_target_effect_size()
+        achieved_mde = calculate_minimum_detectable_effect(
+            n_treatment=n_t,
+            n_control=n_c,
+            significance_level=self.significance_level,
+            power_threshold=self.power_threshold,
+            warnings_sink=statistical_warnings,
+        )
+        sample_adequate = is_sample_adequate(
+            achieved_mde=achieved_mde,
+            target_effect_size=target_effect_size,
+        )
+        required_n = self._calculate_required_sample_size(
+            target_effect_size,
+            ratio=(n_c / n_t) if n_t > 0 else 1.0,
+            warnings_sink=statistical_warnings,
+        )
 
         # === AA TEST (on pre-effect if available) ===
         aa_test_passed = True
@@ -1071,6 +1113,12 @@ class PySparkABTestAnalyzer:
                 pre_mean_t, pre_mean_c, pre_var_t, pre_var_c, n_t, n_c
             )
             aa_test_passed = aa_p_value > self.significance_level
+            if not aa_test_passed:
+                statistical_warnings.append(
+                    f"Pre-period balance (AA) check failed (p={aa_p_value:.4f}): "
+                    "arms differed before the experiment. Prefer the CUPED, DiD or "
+                    "covariate-adjusted estimate over the raw post-period difference."
+                )
 
         # === DIFFERENCE-IN-DIFFERENCES ===
         if has_pre:
@@ -1081,25 +1129,27 @@ class PySparkABTestAnalyzer:
             did_treatment_change = did_control_change = 0.0
             did_effect = effect_size
 
-        # === PROPORTION TEST ===
-        z_stat, prop_p_value, prop_diff, _ = self._calculate_proportion_test(
-            conversions_t, n_t, conversions_c, n_c
+        # === PROPORTION TEST (score method + guardrails, shared with pandas) ===
+        prop_results = self._run_proportion_test_counts(conversions_t, n_t, conversions_c, n_c)
+        z_stat = float(prop_results["z_stat"])
+        prop_p_value = float(prop_results["p_value"])
+        prop_diff = float(prop_results["proportion_diff"])
+        proportion_diagnostics = prop_results.get("diagnostics", {})
+        proportion_blocks_significance = bool(
+            proportion_diagnostics.get("blocks_significance", False)
         )
-        prop_is_significant = prop_p_value < self.significance_level
+        proportion_guardrail_triggered = bool(
+            proportion_diagnostics.get("guardrail_triggered", False)
+        )
+        prop_is_significant = (
+            prop_p_value < self.significance_level and not proportion_blocks_significance
+        )
+        statistical_warnings.extend(
+            describe_statistical_fallbacks("Proportion test", proportion_diagnostics)
+        )
 
         p_t = conversions_t / n_t if n_t > 0 else 0.0
         p_c = conversions_c / n_c if n_c > 0 else 0.0
-
-        if prop_is_significant and prop_diff > 0:
-            prop_effect_per_customer = prop_diff * mean_c
-            prop_effect = prop_effect_per_customer * n_t
-        else:
-            prop_effect_per_customer = prop_effect = 0.0
-
-        # === COMBINED EFFECT ===
-        t_test_total = effect_size * n_t if is_significant else 0.0
-        total_effect = t_test_total + prop_effect
-        total_effect_per_customer = (effect_size if is_significant else 0.0) + prop_effect_per_customer
 
         # === BAYESIAN TEST ===
         bayesian_results = self._run_bayesian_test_montecarlo(
@@ -1113,14 +1163,35 @@ class PySparkABTestAnalyzer:
         pooled_std = np.sqrt(((n_t - 1) * var_t + (n_c - 1) * var_c) / (n_t + n_c - 2))
 
         diagnostics_payload = self._build_diagnostics_payload(
-            n_t=n_t, n_c=n_c, var_t=var_t, var_c=var_c
+            n_t=n_t,
+            n_c=n_c,
+            var_t=var_t,
+            var_c=var_c,
+            expected_treatment_ratio=resolve_expected_treatment_ratio(
+                self.column_mapping,
+                getattr(self, "expected_treatment_ratio", DEFAULT_EXPECTED_TREATMENT_RATIO),
+            ),
         )
+        diagnostics_payload["frequentist"]["proportion_test"] = proportion_diagnostics
         srm_mismatch = bool(
             diagnostics_payload["experiment_quality"]["srm"].get("is_sample_ratio_mismatch", False)
         )
         if srm_mismatch:
             is_significant = False
             prop_is_significant = False
+
+        # === COMBINED EFFECT (no double counting, TODO.md #42) ===
+        if prop_is_significant and prop_diff > 0:
+            prop_effect_per_customer = prop_diff * mean_c
+            prop_effect = prop_effect_per_customer * n_t
+        else:
+            prop_effect_per_customer = prop_effect = 0.0
+        total_effect_per_customer = combine_total_effect_per_customer(
+            effect_size=effect_size,
+            is_significant=is_significant,
+            proportion_effect_per_customer=prop_effect_per_customer,
+        )
+        total_effect = total_effect_per_customer * n_t
 
         post_col = self.column_mapping.get(
             "post_effect", self.column_mapping.get("effect_value")
@@ -1152,7 +1223,9 @@ class PySparkABTestAnalyzer:
             pooled_std=pooled_std,
             power=power,
             required_sample_size=required_n,
-            is_sample_adequate=is_sample_adequate,
+            is_sample_adequate=sample_adequate,
+            achieved_mde=achieved_mde,
+            target_effect_size=target_effect_size,
             did_treatment_change=did_treatment_change,
             did_control_change=did_control_change,
             did_effect=did_effect,
@@ -1166,6 +1239,12 @@ class PySparkABTestAnalyzer:
             proportion_z_stat=z_stat,
             proportion_p_value=prop_p_value,
             proportion_is_significant=prop_is_significant,
+            proportion_p_value_adjusted=prop_p_value,
+            proportion_is_significant_adjusted=prop_is_significant,
+            proportion_guardrail_triggered=proportion_guardrail_triggered,
+            p_value_adjusted=p_value,
+            is_significant_adjusted=is_significant,
+            statistical_warnings=list(dict.fromkeys(statistical_warnings)),
             proportion_effect=prop_effect,
             proportion_effect_per_customer=prop_effect_per_customer,
             total_effect=total_effect,
@@ -1254,6 +1333,9 @@ class PySparkABTestAnalyzer:
                     "Skipping segment during Spark segmented analysis",
                     extra={"segment": str(segment), "error": str(e)},
                 )
+
+        if len(results) > 1:
+            apply_fdr_correction(results, significance_level=self.significance_level)
 
         return results
 

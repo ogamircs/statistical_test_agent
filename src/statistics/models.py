@@ -107,7 +107,10 @@ class ABTestResult(LegacyMappingMixin):
     covariate_adjusted_effect_scale: str = "mean_difference"
     covariate_adjusted_effect_exponentiated: float = 1.0
     power: float = 0.0
-    required_sample_size: int = 0
+    required_sample_size: int = 0  # per group, to detect target_effect_size
+    # True when achieved_mde <= target_effect_size (design sensitivity), not
+    # when observed power clears a threshold (TODO.md #39). ``power`` above is
+    # post-hoc power on the observed effect and is informational only.
     is_sample_adequate: bool = False
 
     # Difference-in-Differences (DiD) effect
@@ -151,14 +154,17 @@ class ABTestResult(LegacyMappingMixin):
     sequential_rationale: str = ""
     sequential_thresholds: Dict[str, Any] = field(default_factory=dict)
 
-    # Proportion-based effect (incremental conversions * control mean)
-    # This represents value from customers who converted ONLY because of treatment
+    # Proportion-based effect (incremental conversions * control mean).
+    # Informational only: the mean difference already includes the value of
+    # incremental converters, so this is NOT added on top of it (TODO.md #42).
     proportion_effect: float = 0.0     # Additional proportion × control mean × treatment N
     proportion_effect_per_customer: float = 0.0  # proportion_diff × control_mean
 
-    # Combined effects
-    total_effect: float = 0.0          # T-test effect + proportion effect
-    total_effect_per_customer: float = 0.0  # Combined per-customer effect
+    # Headline effect: significant mean difference × treatment N; the
+    # proportion-based estimate is used only when the mean test is not
+    # significant but the conversion-rate test is. Never the sum of both.
+    total_effect: float = 0.0
+    total_effect_per_customer: float = 0.0
 
     # Bayesian test results (now using DiD for total effect calculation)
     bayesian_prob_treatment_better: float = 0.5  # P(treatment > control)
@@ -175,11 +181,17 @@ class ABTestResult(LegacyMappingMixin):
     # Data-quality and sample-planning fields (Wave 2 #7, #9)
     rows_dropped: int = 0  # rows removed by NaN filtering during preparation
     achieved_mde: float = 0.0  # smallest detectable effect at current sample + alpha + power
+    target_effect_size: float = 0.0  # standardized (Cohen's d) effect adequacy is judged against
 
     # CUPED variance reduction (Wave 4 #3)
     cuped_applied: bool = False
     cuped_theta: float = 0.0
     cuped_variance_reduction: float = 0.0  # 0.0–1.0 fraction of variance removed
+
+    # Human-readable notes whenever a statistical routine degraded to a
+    # fallback or placeholder value, or a data-quality check failed, so a
+    # silently failing model cannot masquerade as a clean null (TODO.md #43).
+    statistical_warnings: List[str] = field(default_factory=list)
 
     def to_legacy_dict(self) -> Dict[str, Any]:
         """Expose the legacy mapping payload used by reports and external callers."""
@@ -270,6 +282,7 @@ class ABTestResult(LegacyMappingMixin):
             "bayesian_significant": self.bayesian_is_significant,
             "bayesian_total_effect": self.bayesian_total_effect,
             "bayesian_total_effect_per_customer": self.bayesian_total_effect_per_customer,
+            "statistical_warnings": list(self.statistical_warnings),
         }
 
 

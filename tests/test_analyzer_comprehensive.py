@@ -845,31 +845,40 @@ class TestAnalysisStages:
         assert len(prepared.control_post_aligned) == 2
 
 
-class TestBootstrapping:
-    """Test bootstrap balancing for imbalanced groups"""
+class TestNoBootstrapRebalancing:
+    """AA failures are reported, never 'fixed' by outcome-conditional resampling (TODO.md #88)."""
 
-    def test_bootstrap_balanced_control(self, analyzer):
-        """Test bootstrapping to find balanced control group"""
-        np.random.seed(42)
+    def test_bootstrap_helper_removed(self, analyzer):
+        assert not hasattr(analyzer, "bootstrap_balanced_control")
+        assert not hasattr(analyzer.stats_engine, "bootstrap_balanced_control")
 
-        # Create imbalanced groups
-        treatment_pre = np.random.normal(50, 10, 100)
-        control_df = pd.DataFrame({
-            'pre_effect': np.random.normal(60, 10, 200),  # Different mean
-            'post_effect': np.random.normal(60, 10, 200)
+    def test_aa_failure_keeps_all_control_rows_and_warns(self, analyzer):
+        rng = np.random.default_rng(7)
+        n_t, n_c = 150, 300
+        df = pd.DataFrame({
+            "customer_id": range(n_t + n_c),
+            "group": ["treatment"] * n_t + ["control"] * n_c,
+            "pre_effect": np.concatenate([rng.normal(50, 5, n_t), rng.normal(60, 5, n_c)]),
+            "post_effect": np.concatenate([rng.normal(55, 5, n_t), rng.normal(60, 5, n_c)]),
         })
+        analyzer.set_dataframe(df)
+        analyzer.set_column_mapping({
+            "customer_id": "customer_id",
+            "group": "group",
+            "effect_value": "post_effect",
+            "pre_effect": "pre_effect",
+            "post_effect": "post_effect",
+            "expected_treatment_ratio": n_t / (n_t + n_c),
+        })
+        analyzer.set_group_labels("treatment", "control")
 
-        balanced_df, aa_result = analyzer.bootstrap_balanced_control(
-            treatment_pre,
-            control_df,
-            'pre_effect',
-            max_iterations=100
-        )
+        result = analyzer.run_ab_test()
 
-        assert isinstance(balanced_df, pd.DataFrame)
-        assert isinstance(aa_result, AATestResult)
-        assert aa_result.bootstrapping_applied is True
-        assert len(balanced_df) <= len(control_df)
+        assert result.aa_test_passed is False
+        assert result.bootstrapping_applied is False
+        assert result.control_size == n_c
+        assert result.original_control_size == n_c
+        assert any("AA" in warning for warning in result.statistical_warnings)
 
 
 class TestDataQueries:
