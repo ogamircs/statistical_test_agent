@@ -40,7 +40,7 @@ def llm_kwargs(monkeypatch):
 
     monkeypatch.setattr(agent_module, "ChatOpenAI", _fake_chat)
     monkeypatch.setattr(
-        agent_module, "create_agent", lambda _llm, _tools, system_prompt=None: _RecordingGraph()
+        agent_module, "create_agent", lambda _llm, _tools, system_prompt=None, **_kwargs: _RecordingGraph()
     )
     return captured
 
@@ -160,3 +160,21 @@ def test_config_from_env_reads_new_agent_knobs():
 def test_config_validate_rejects_bad_agent_knobs(overrides):
     with pytest.raises(ValueError):
         Config(**overrides).validate()
+
+
+def test_failed_run_persists_its_error_reply(llm_kwargs, tmp_path, monkeypatch):
+    """A classified error is a real turn: reload must not show a dangling prompt."""
+    agent = _make_agent(tmp_path)
+
+    class _Boom:
+        def invoke(self, *_args, **_kwargs):
+            raise RuntimeError("provider exploded")
+
+    agent.agent = _Boom()
+    reply = agent.run("analyze please")
+
+    assert "error_code=" in reply
+    assert [type(m).__name__ for m in agent.chat_history[-2:]] == ["HumanMessage", "AIMessage"]
+    persisted = agent.session.query_store.load_chat_messages()
+    assert [m["role"] for m in persisted[-2:]] == ["human", "ai"]
+    assert persisted[-1]["content"] == reply

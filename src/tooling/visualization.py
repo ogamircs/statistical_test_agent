@@ -36,8 +36,9 @@ def create_visualization_tools(context: ToolContext) -> List[Tool]:
                 if not results:
                     return "No results from analysis. Please check your data configuration."
                 summary = analyzer.generate_summary(results)
-                agent._last_results = results
-                agent._last_summary = summary
+                # Same path as the analysis tools: persists replay state, so a
+                # restart can rebuild what these charts were drawn from.
+                context.remember_analysis(results, summary)
 
             normalized_summary = to_ab_test_summary(summary)
             agent._last_summary = normalized_summary

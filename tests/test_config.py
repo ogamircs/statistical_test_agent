@@ -58,11 +58,90 @@ def test_validate_rejects_empty_model() -> None:
         Config(llm_model="").validate()
 
 
-def test_agent_picks_up_injected_config(monkeypatch) -> None:
+def test_agent_picks_up_injected_config(monkeypatch, tmp_path) -> None:
     """Agent should use the injected Config rather than re-reading the env."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
     from src.agent import ABTestingAgent
 
-    cfg = Config(agent_recursion_limit=7)
+    cfg = Config(agent_recursion_limit=7, query_store_dir=str(tmp_path))
     agent = ABTestingAgent(config=cfg)
     assert agent.config.agent_recursion_limit == 7
+    # The injected Config (not the env) decides where the session store lives.
+    assert agent.session.query_store_path.parent == tmp_path
+
+
+def test_query_store_dir_comes_from_env_and_is_validated() -> None:
+    assert Config.from_env({"STATAGENT_QUERY_STORE_DIR": "/data/stores"}).query_store_dir == "/data/stores"
+    assert Config.from_env({}).query_store_dir == "output/query_store"
+    with pytest.raises(ValueError):
+        Config(query_store_dir="  ").validate()
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("false", False), ("", False)],
+)
+def test_require_auth_parses_truthy_env_values(raw: str, expected: bool) -> None:
+    assert Config.from_env({"STATAGENT_REQUIRE_AUTH": raw}).require_auth is expected
+
+
+@pytest.mark.parametrize("raw", ["maybe", "tru", "enabled", "2"])
+def test_require_auth_rejects_unrecognized_values(raw: str) -> None:
+    # PR #10 review: a typo must stop the app, never silently disable the guard.
+    with pytest.raises(ValueError, match="STATAGENT_REQUIRE_AUTH"):
+        Config.from_env({"STATAGENT_REQUIRE_AUTH": raw})
+
+
+def test_auth_settings_come_from_env() -> None:
+    config = Config.from_env(
+        {
+            "STATAGENT_AUTH_USERNAME": "ana",
+            "STATAGENT_AUTH_PASSWORD": "pw",
+            "STATAGENT_AUTH_SECRET": "x" * 32,
+        }
+    )
+    assert config.auth_enabled is True
+    assert config.auth_secret == "x" * 32
+
+
+def test_validate_security_rejects_short_secret_and_open_require_auth() -> None:
+    with pytest.raises(ValueError, match="STATAGENT_AUTH_SECRET"):
+        Config(auth_secret="short").validate_security()
+    with pytest.raises(ValueError, match="STATAGENT_REQUIRE_AUTH"):
+        Config(require_auth=True).validate_security()
+    with pytest.raises(ValueError):
+        Config(require_auth=True).validate()
+    Config(require_auth=True, auth_username="a", auth_password="b", auth_secret="k" * 16).validate()
+
+
+def test_require_auth_defaults_off() -> None:
+    assert Config.from_env({}).require_auth is False
+
+
+def test_default_tuning_fallback_keeps_every_non_tuning_field() -> None:
+    """Inverted allowlist: any setting that is not a tuning knob survives.
+
+    Guards against the fallback silently dropping a setting added later
+    (data_roots was lost this way).
+    """
+    import dataclasses
+
+    custom = Config(
+        llm_temperature=9.0,  # invalid tuning value that triggers the fallback
+        query_store_dir="/srv/stores",
+        require_auth=True,
+        auth_username="ana",
+        auth_password="pw",
+        auth_secret="s" * 32,
+        data_roots=("/srv/data",),
+    )
+
+    fallback = custom.with_default_tuning()
+
+    defaults = Config()
+    for f in dataclasses.fields(Config):
+        if f.name in Config.TUNING_FIELDS:
+            assert getattr(fallback, f.name) == getattr(defaults, f.name), f.name
+        else:
+            assert getattr(fallback, f.name) == getattr(custom, f.name), f.name
+    fallback.validate()

@@ -298,13 +298,18 @@ def create_analysis_tools(context: ToolContext) -> List[BaseTool]:
         logger.info("Tool run_ab_test started (segment=%s)", segment or "overall")
         try:
             analyzer = context.active_analyzer()
-            if segment and segment.lower() not in ["none", "overall", "all", ""]:
-                result = analyzer.run_ab_test(segment_filter=segment)
+            segment_filter = (
+                segment if segment and segment.lower() not in ["none", "overall", "all", ""] else None
+            )
+            if segment_filter is not None:
+                result = analyzer.run_ab_test(segment_filter=segment_filter)
             else:
                 result = analyzer.run_ab_test()
 
             summary = analyzer.generate_summary([result])
-            context.remember_analysis([result], summary)
+            context.remember_analysis(
+                [result], summary, scope={"mode": "single", "segment": segment_filter}
+            )
             logger.info("Tool run_ab_test completed (segment=%s)", result.segment)
             return render_run_ab_test_output(result)
         except Exception as error:

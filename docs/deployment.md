@@ -1,9 +1,10 @@
 # Deployment
 
-The repository ships a multi-stage `Dockerfile` that bundles the Chainlit UI
-and LangGraph agent into a single image. The image is slim (pure
-Python, no Java runtime) and is suitable for a single-container
-deployment behind a reverse proxy or PaaS such as Railway or Fly.io.
+The repository ships a multi-stage `Dockerfile` that bundles the React UI,
+the FastAPI server and the LangGraph agent into a single image. The image is
+slim (pure Python at runtime, no Node or Java) and is suitable for a
+single-container deployment behind a reverse proxy or PaaS such as Railway or
+Fly.io.
 
 ## Build
 
@@ -11,9 +12,11 @@ deployment behind a reverse proxy or PaaS such as Railway or Fly.io.
 docker build -t statistical-test-agent:latest .
 ```
 
-The build uses `uv` inside the builder stage to sync the locked dependency
-set (`uv sync --extra dev --frozen`). The runtime stage copies only the
-resolved virtualenv and project source, then runs as a non-root `appuser`.
+The build has three stages: a Node stage runs `npm ci && npm run build` for
+`frontend/dist`; a builder stage uses `uv sync --frozen` to install the locked
+**runtime** dependencies only (no dev extra); the runtime stage copies just the
+virtualenv, `src/`, `app.py`, the sample CSVs and the built UI, then runs as a
+non-root `appuser`.
 
 ## Run
 
@@ -26,27 +29,24 @@ docker run --rm \
 
 Then open <http://localhost:8000> in a browser.
 
-The container starts Chainlit with:
+The container starts the server with:
 
 ```bash
-chainlit run app.py --host 0.0.0.0 --port 8000 --headless
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-### Why port 8000 in the container?
+FastAPI serves both the API (`/api/*`) and the built UI on that port; map it
+to whatever you like on the host (`-p 8080:8000`, `-p 80:8000`, etc.).
 
-The repository's local development workflow (see `README.md`) launches
-Chainlit via `python app.py`, which uses Chainlit's default port `8000`.
-Other internal docs (e.g. some plan notes referencing port `8010`) describe
-side-by-side dev runs where the default port may be in use; the container
-has no such conflict, so it stays on `8000` and you map it to whatever you
-like on the host (`-p 8080:8000`, `-p 80:8000`, etc.).
+The image defines a `HEALTHCHECK` that polls `GET /api/health`, so Docker,
+Compose and most orchestrators can detect a wedged container.
 
 ## Required environment variables
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | Yes | Used by `langchain-openai` for the agent LLM calls. |
-| `STATAGENT_DATA_ROOTS` | No | Extra directories (`os.pathsep`-separated) that CSV loading may read from. By default only `<app>/data`, `<app>/.files` (chat uploads), and the system temp directory are allowed; all other paths and every URL scheme are rejected. |
+| `STATAGENT_DATA_ROOTS` | No | Extra directories (`os.pathsep`-separated) that CSV loading may read from. By default only `<app>/data`, the UI uploads directory, and the system temp directory are allowed; all other paths and every URL scheme are rejected. Read once into `Config.data_roots`. |
 
 ### Optional tuning variables
 
@@ -62,17 +62,32 @@ All are read by `Config.from_env` (`src/config.py`) and validated at startup.
 | `STATAGENT_MAX_HISTORY_MESSAGES` | `40` | Prior chat messages re-sent to the model each turn. Full history is still persisted. |
 | `STATAGENT_SQL_ROW_LIMIT` | `20` | Default row limit for generated SQL. |
 | `STATAGENT_QUERY_TIMEOUT_SECONDS` | `5.0` | SQLite query timeout for data questions. |
+| `STATAGENT_MAX_UPLOAD_MB` | `50` | Largest CSV the upload endpoint accepts. Larger files are rejected with `UPLOAD_REJECTED`; put bigger files under `/app/data` instead. |
+| `STATAGENT_QUERY_STORE_DIR` | `output/query_store` | Directory for per-session SQLite stores (`session-<id>.sqlite`: chat history, uploaded data, audit). The UI lists this directory as conversation history; mount it on a volume to keep history across restarts. |
 
-Additional Chainlit / LangChain environment variables (e.g. `CHAINLIT_AUTH_SECRET`,
-`LANGCHAIN_TRACING_V2`) can be passed through with extra `-e` flags.
+### Authentication
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `STATAGENT_AUTH_USERNAME` / `STATAGENT_AUTH_PASSWORD` | unset | When both are set, the UI shows a sign-in form and every `/api` route except health/config/login requires a bearer token. |
+| `STATAGENT_AUTH_SECRET` | random per process | HMAC key for bearer tokens (12 h lifetime), at least 16 characters (shorter values stop startup). Set it so tokens survive restarts and work across replicas. |
+| `STATAGENT_REQUIRE_AUTH` | `false` | Set to `true` in any shared deployment. The server then refuses to start unless `STATAGENT_AUTH_USERNAME` and `STATAGENT_AUTH_PASSWORD` are both set, so a missing secret can never leave it running open. Pair it with `STATAGENT_AUTH_SECRET`. Only `1/true/yes/on` or `0/false/no/off` are accepted; any other value stops startup instead of disabling the guard. |
+
+Serve the app over HTTPS (reverse proxy or PaaS TLS) whenever auth is enabled:
+the password and bearer token otherwise travel in clear text.
+
+Additional LangChain environment variables (e.g. `LANGCHAIN_TRACING_V2`) can
+be passed through with extra `-e` flags.
 
 Do **not** bake secrets into the image — `.env` files are excluded by
 `.dockerignore`.
 
 ## Exposed port
 
-- `8000/tcp` — Chainlit web UI and websocket endpoint. This is the only
-  port the image exposes.
+- `8000/tcp` — the web UI, the JSON API and the SSE chat stream. This is
+  the only port the image exposes. If a reverse proxy sits in front, disable
+  response buffering for `/api/sessions/*/chat` so progress events stream
+  (the server already sends `X-Accel-Buffering: no` for nginx).
 
 ## Volumes
 
@@ -87,10 +102,12 @@ docker run --rm \
   statistical-test-agent:latest
 ```
 
-- `/app/data` — input CSVs (drop your experiment files here, or upload via
-  the UI; uploads land in Chainlit's tmp area inside the container).
-- `/app/output` — generated reports and chart artifacts. Without a mount,
-  these are lost when the container exits.
+- `/app/data` — input CSVs you want the agent to read by path (the bundled
+  sample CSVs live here too). UI uploads are stored separately in
+  `/app/.uploads`; mount that as well if uploads should survive restarts.
+- `/app/output` — per-session SQLite stores (chat history for the history
+  sidebar, raw data, results). Without a mount, conversations are lost when
+  the container exits.
 
 Both directories are owned by the non-root `appuser` (UID 1001) inside the
 image. If your host bind-mount has different ownership, either run with
@@ -100,10 +117,10 @@ image. If your host bind-mount has different ownership, either run with
 
 - **In-memory analysis.** CSVs are analyzed with pandas in the container's
   memory; very large inputs may exhaust it. Size the container accordingly.
-- **Single-process deployment.** Chainlit is started in `--headless` mode
-  with one worker. For higher concurrency, run multiple replicas behind a
-  load balancer with sticky sessions (Chainlit holds session state in
-  memory).
+- **Single-process deployment.** uvicorn runs one worker. Live agents (and
+  the latest charts) are held in that process's memory, while chat history is
+  on disk. For more capacity, run replicas behind a load balancer with sticky
+  sessions and a shared `STATAGENT_AUTH_SECRET`.
 - **Stateless filesystem.** Anything written outside `/app/data` and
   `/app/output` is ephemeral.
 
@@ -113,8 +130,8 @@ Railway can build the repository's Dockerfile directly: create a new
 service from the GitHub repo, set the `OPENAI_API_KEY` variable in the
 service's *Variables* tab, and configure the public port to `8000`.
 Railway's persistent-volume feature can be attached at `/app/output` if you
-want generated reports to survive restarts; CSV uploads go through the
-Chainlit UI, so a `/app/data` volume is optional.
+want conversation history to survive restarts; CSV uploads go through the
+UI, so a `/app/data` volume is optional.
 
 ## Fly.io
 

@@ -4,7 +4,7 @@ Guidance for AI coding agents (Claude Code, Codex, Cursor, etc.) working in this
 
 ## What this project is
 
-A conversational A/B-test analysis agent. Users upload a CSV in a Chainlit chat UI; a LangGraph ReAct agent (OpenAI model, default `gpt-5.2`) calls Python tools that run frequentist, Bayesian, CUPED/covariate-adjusted, segmented, sequential, and ratio-metric analyses, then renders markdown reports and Plotly charts.
+A conversational A/B-test analysis agent. Users upload a CSV in a React chat UI (`frontend/`) served by a FastAPI backend (`src/api/`); a LangGraph ReAct agent (OpenAI model, default `gpt-5.2`) calls Python tools that run frequentist, Bayesian, CUPED/covariate-adjusted, segmented, sequential, and ratio-metric analyses, then renders markdown reports and Plotly charts.
 
 All analysis is pure Python: CSVs are loaded into pandas and analyzed in memory by `src/statistics/analyzer.py` (statsmodels, scipy, numpy). There is no distributed backend.
 
@@ -15,14 +15,16 @@ All analysis is pure Python: CSVs are loaded into pandas and analyzed in memory 
 Always use the project venv via `uv run` (or `./.venv/bin/...`).
 
 ```bash
-uv sync --extra dev                                       # install
-uv run chainlit run app.py --host 127.0.0.1 --port 8010   # run the UI
-uv run python scripts/generate_sample_data.py             # regenerate data/sample_ab_data*.csv
+uv sync --extra dev && npm ci --prefix frontend          # install
+uv run uvicorn app:app --reload --port 8000              # API (dev)
+npm run dev --prefix frontend                            # UI on :5173, proxies /api -> :8000
+uv run python scripts/generate_sample_data.py            # regenerate data/sample_ab_data*.csv
 
 # The CI gates. Run all of them before calling a change done:
 uv run ruff check .
 uv run mypy src app.py
 uv run pytest -q -ra --cov=src --cov-fail-under=78
+npm run typecheck --prefix frontend && npm test --prefix frontend && npm run build --prefix frontend
 ```
 
 Live LLM evals (`tests/eval/test_live_tools.py`) run only with `STATAGENT_RUN_LIVE_EVAL=1` and a real `OPENAI_API_KEY`. Every other test must stay offline. Mock the LLM.
@@ -30,7 +32,12 @@ Live LLM evals (`tests/eval/test_live_tools.py`) run only with `STATAGENT_RUN_LI
 ## Code map
 
 ```text
-app.py                      Chainlit entry: upload handling, auth hook, chat start/resume
+app.py                      uvicorn entrypoint: config validation, startup GC, create_app()
+src/api/app.py              FastAPI routes + the SSE chat stream (contract in its docstring)
+src/api/sessions.py         SessionRegistry: per-session agents, history listing, uploads + preview
+src/api/progress.py         LangChain callback -> SSE tool_start/tool_end events
+src/api/charts.py, tokens.py  Plotly JSON serialization / on-demand charts; bearer tokens
+frontend/src/               React UI: App.tsx (state), lib/api.ts + lib/sse.ts (client), components/
 src/agent.py                ABTestingAgent: LLM construction, LangGraph agent, run loop, history
 src/agent_runtime.py        CSV loading (path confinement + pandas analyzer)
 src/agent_session.py        Per-session state (loaded data, results, chat history, query store)
@@ -65,10 +72,12 @@ docs/TODO.md                The prioritized backlog. Read it before starting non
 4. **Tool contract.** Tools are built in `src/tooling/` and receive a `ToolContext`. Prefer `StructuredTool` with typed args over hand-parsed JSON or comma-split strings. The schema is what the LLM sees. Tool errors go through `render_tool_error` with a stable error code.
 5. **Prompt changes.** When you materially edit `src/prompts/system.md`, bump `PROMPT_VERSION` and update the tests that pin it. Keep golden tasks in `tests/eval/golden_tasks.py` in sync with tool names.
 6. **Untrusted data.** CSV column names and values are data, not instructions. Never interpolate them into prompts unless they are delimited.
-7. **Security guardrails.** CSV loading stays confined to allowed roots (`src/data_paths.py`). SQL runs on a read-only SQLite connection (`mode=ro`). Do not weaken either.
+7. **Security guardrails.** CSV loading stays confined to allowed roots (`src/data_paths.py`); UI uploads go only to `.uploads/<session>/`. SQL runs on a read-only SQLite connection (`mode=ro`). Do not weaken either.
 8. **Configuration.** New knobs go on `Config` in `src/config.py` with a `STATAGENT_*` env var, validation in `Config.validate()`, and a row in `docs/deployment.md`. Do not scatter module-level constants.
 9. **Types.** mypy is blocking. The `[[tool.mypy.overrides]]` list in `pyproject.toml` is a burn-down list. Remove modules from it as you fix them, and never add to it.
 10. **Markdown files are gitignored by default** (`*.md` in `.gitignore`). To track a new doc, add an explicit `!path` allowlist entry.
+11. **API/UI contract.** The SSE event sequence (`status`, `tool_start`/`tool_end` and `token` interleaved, `message`, `charts`, `done`, or `error`) is documented in `src/api/app.py` and `docs/architecture.md`, and typed in `frontend/src/lib/types.ts`. Change all three together, with tests in `tests/test_api.py` and `frontend/src/lib/sse.test.ts`. The `charts` event's `state` (`updated`/`cleared`/`unchanged`) is authoritative for what the chart workspace shows; see `frontend/src/lib/charts.ts`.
+12. **No external assets in the UI.** No CDN scripts, fonts or images: the UI must work air-gapped (a metadata test enforces it).
 
 ## Workflow conventions
 
@@ -82,5 +91,7 @@ docs/TODO.md                The prioritized backlog. Read it before starting non
 
 - The installed package is literally named `src` (TODO #66). Import as `from src.statistics import ...`.
 - `load_dotenv()` runs in both `app.py` and `src/agent.py`. Tests that depend on env vars should pass an explicit `Config` or mapping instead of mutating `os.environ` globally.
-- Chainlit uploads land in `.files/`. Session SQLite stores live under the query-store directory and are garbage-collected by `src/query_store_gc.py`.
-- The browser layer (`public/custom.js`, `public/custom.css`) is intentionally thin. Keep analysis logic in Python.
+- Chainlit was removed; do not reintroduce it. UI uploads land in `.uploads/<session>/<file_id>.csv`. Session SQLite stores (`output/query_store/session-<id>.sqlite`) back the history sidebar and are garbage-collected by `src/query_store_gc.py`.
+- Live agents live in server memory (one uvicorn worker). Chat history, raw data, mapping/labels and latest charts are persisted per session, and the analysis is rebuilt lazily after a restart (`ABTestingAgent._ensure_analysis_restored`). Anything that sets `_last_results` or loads new data cancels a pending restore.
+- The React layer is presentation-only. Keep analysis logic in Python, and have the UI fetch charts from the API instead of computing them.
+- Plotly is lazy-loaded (`frontend/src/components/PlotlyChart.tsx`); keep it out of the main bundle.

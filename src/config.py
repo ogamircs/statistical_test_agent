@@ -9,8 +9,9 @@ defaults preserve current behavior so existing callers can adopt
 
 from __future__ import annotations
 
+import dataclasses
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 _DEFAULT_LLM_MODEL = "gpt-5.2"
 _DEFAULT_LLM_TEMPERATURE = 0.0
@@ -23,6 +24,12 @@ _DEFAULT_AGENT_RECURSION_LIMIT = 25
 # Prior chat messages (human + AI) re-sent to the model each turn. The full
 # history stays persisted; only the model-bound window is bounded.
 _DEFAULT_MAX_HISTORY_MESSAGES = 40
+# Largest CSV accepted by the web upload endpoint.
+_DEFAULT_MAX_UPLOAD_MB = 50.0
+# Per-session SQLite stores (session-<id>.sqlite); the UI lists them as history.
+_DEFAULT_QUERY_STORE_DIR = "output/query_store"
+# HMAC key for UI bearer tokens; shorter keys are rejected by validate().
+MIN_AUTH_SECRET_LENGTH = 16
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,21 @@ class Config:
     llm_max_retries: int = _DEFAULT_LLM_MAX_RETRIES
     agent_recursion_limit: int = _DEFAULT_AGENT_RECURSION_LIMIT
     max_history_messages: int = _DEFAULT_MAX_HISTORY_MESSAGES
+    max_upload_mb: float = _DEFAULT_MAX_UPLOAD_MB
+    query_store_dir: str = _DEFAULT_QUERY_STORE_DIR
+    # Refuse to start unless password auth is configured (TODO.md #49).
+    require_auth: bool = False
+    # Optional password auth for the web UI; enabled only when both are set.
+    auth_username: str | None = field(default=None, repr=False)
+    auth_password: str | None = field(default=None, repr=False)
+    # Token signing key; None means a random per-app key (tokens die on restart).
+    auth_secret: str | None = field(default=None, repr=False)
+    # Extra directories CSV loading may read from (beyond data/, .uploads/, tmp).
+    data_roots: tuple[str, ...] = ()
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.auth_username) and bool(self.auth_password)
 
     @classmethod
     def from_env(cls, environ: dict | None = None) -> "Config":
@@ -70,10 +92,68 @@ class Config:
                 env.get("STATAGENT_MAX_HISTORY_MESSAGES"),
                 _DEFAULT_MAX_HISTORY_MESSAGES,
             ),
+            max_upload_mb=_coerce_float(
+                env.get("STATAGENT_MAX_UPLOAD_MB"), _DEFAULT_MAX_UPLOAD_MB
+            ),
+            query_store_dir=env.get("STATAGENT_QUERY_STORE_DIR") or _DEFAULT_QUERY_STORE_DIR,
+            require_auth=_parse_bool(env.get("STATAGENT_REQUIRE_AUTH"), "STATAGENT_REQUIRE_AUTH"),
+            auth_username=env.get("STATAGENT_AUTH_USERNAME") or None,
+            auth_password=env.get("STATAGENT_AUTH_PASSWORD") or None,
+            auth_secret=env.get("STATAGENT_AUTH_SECRET") or None,
+            data_roots=tuple(
+                entry.strip()
+                for entry in env.get("STATAGENT_DATA_ROOTS", "").split(os.pathsep)
+                if entry.strip()
+            ),
+        )
+
+    def validate_security(self) -> None:
+        """Raise ValueError for invalid security settings.
+
+        Separate from ``validate`` because callers that fall back to defaults
+        on a bad numeric knob must never fall back on these: an invalid
+        security setting has to stop the app, not open it.
+        """
+        if self.require_auth and not self.auth_enabled:
+            raise ValueError(
+                "STATAGENT_REQUIRE_AUTH is set but password auth is not configured: set both "
+                "STATAGENT_AUTH_USERNAME and STATAGENT_AUTH_PASSWORD (and STATAGENT_AUTH_SECRET "
+                "so tokens survive restarts and work across replicas)."
+            )
+        if self.auth_secret is not None and len(self.auth_secret) < MIN_AUTH_SECRET_LENGTH:
+            raise ValueError(
+                f"STATAGENT_AUTH_SECRET must be at least {MIN_AUTH_SECRET_LENGTH} characters"
+            )
+
+    # Performance/behaviour knobs that may safely fall back to defaults when a
+    # value is invalid. Everything else is kept by with_default_tuning().
+    TUNING_FIELDS = (
+        "llm_model",
+        "llm_temperature",
+        "sql_default_row_limit",
+        "query_timeout_seconds",
+        "llm_request_timeout_seconds",
+        "llm_max_retries",
+        "agent_recursion_limit",
+        "max_history_messages",
+        "max_upload_mb",
+    )
+
+    def with_default_tuning(self) -> "Config":
+        """Copy with every tuning knob reset to its default.
+
+        An inverted allowlist on purpose: security, storage and data-path
+        settings (and any field added later) survive a bad tuning value, so
+        the fallback can never open auth or drop configured data roots.
+        """
+        defaults = Config()
+        return dataclasses.replace(
+            self, **{name: getattr(defaults, name) for name in self.TUNING_FIELDS}
         )
 
     def validate(self) -> None:
-        """Raise ValueError when a numeric knob is out of range."""
+        """Raise ValueError when a knob is out of range (security checks included)."""
+        self.validate_security()
         if not self.llm_model:
             raise ValueError("Config.llm_model must be a non-empty string")
         if self.llm_temperature < 0 or self.llm_temperature > 2:
@@ -90,6 +170,10 @@ class Config:
             raise ValueError("Config.agent_recursion_limit must be >= 2")
         if self.max_history_messages < 1:
             raise ValueError("Config.max_history_messages must be >= 1")
+        if self.max_upload_mb <= 0:
+            raise ValueError("Config.max_upload_mb must be > 0")
+        if not self.query_store_dir.strip():
+            raise ValueError("Config.query_store_dir must be a non-empty path")
 
 
 def _coerce_float(value: object, default: float) -> float:
@@ -110,3 +194,25 @@ def _coerce_int(value: object, default: int) -> int:
         return int(str(value))
     except (TypeError, ValueError):
         return default
+
+
+_TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off", ""}
+
+
+def _parse_bool(value: object, name: str) -> bool:
+    """Strict boolean parsing for safety knobs: unknown values raise.
+
+    A typo such as ``STATAGENT_REQUIRE_AUTH=tru`` must stop the app rather
+    than silently disable the guard it was meant to enable.
+    """
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if text in _TRUTHY:
+        return True
+    if text in _FALSY:
+        return False
+    raise ValueError(
+        f"{name}={value!r} is not a boolean; use one of 1/true/yes/on or 0/false/no/off"
+    )

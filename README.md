@@ -4,7 +4,9 @@ Conversational A/B test analysis built on a pandas + statsmodels statistical sta
 
 ## Features
 
-- Conversational workflow via LangChain, LangGraph, and Chainlit
+- Conversational workflow via LangChain and LangGraph, served by FastAPI
+- React + TypeScript UI: live progress while the agent works, GFM result tables, CSV drag-and-drop with a data preview, resumable conversation history, dark mode
+- Chart workspace: interactive Plotly charts in tabs or a grid, a chart-type picker, fullscreen, PNG/SVG export
 - Automatic CSV loading and schema inference with pandas
 - Automatic column and treatment/control label inference
 - Frequentist, Bayesian, and experiment-design helpers built around `statsmodels`, `scipy`, and `numpy`
@@ -28,10 +30,11 @@ Conversational A/B test analysis built on a pandas + statsmodels statistical sta
    source .venv/bin/activate
    ```
 
-3. Install the default development environment:
+3. Install the default development environment (Python, plus Node 20.19+ for the UI):
 
    ```bash
    uv sync --extra dev
+   npm ci --prefix frontend
    ```
 
 4. Add your API key to `.env`:
@@ -44,11 +47,16 @@ Conversational A/B test analysis built on a pandas + statsmodels statistical sta
 
 ## Usage
 
-Start the Chainlit app:
+Build the UI and start the server (UI + API on <http://localhost:8000>):
 
 ```bash
-python app.py
+npm run build --prefix frontend
+uv run uvicorn app:app --port 8000
 ```
+
+For UI development with hot reload, run `uv run uvicorn app:app --reload` and
+`npm run dev` in `frontend/` (Vite on <http://localhost:5173>, proxying `/api`).
+See [docs/development.md](docs/development.md).
 
 Generate sample data:
 
@@ -65,8 +73,10 @@ pytest -q
 ## Architecture
 
 ```text
-app.py
+app.py                      uvicorn entrypoint (FastAPI app)
+frontend/                   React + TypeScript UI (Vite)
 src/
+  api/                      REST + SSE endpoints, session registry, uploads, auth
   agent.py                  LangGraph/LLM orchestration
   agent_tools.py            Tool contract exposed to the conversational agent
   agent_reporting.py        User-facing reports and structured error rendering
@@ -83,6 +93,7 @@ src/
 tests/
   test_analyzer_comprehensive.py
   test_agent.py
+  test_api.py
   test_visualizations.py
 ```
 
@@ -109,13 +120,17 @@ CUST_003,treatment,Basic,12.80,7
 
 ## CI
 
-GitHub Actions installs from `uv.lock` (`uv sync --frozen --extra dev`), then runs `compileall`, `ruff check .`, blocking `mypy src app.py`, a smoke analysis on the sample CSV, and `pytest` with a 78% coverage floor.
+GitHub Actions runs two jobs:
+
+- Python: installs from `uv.lock` (`uv sync --frozen --extra dev`), then runs `compileall`, `ruff check .`, blocking `mypy src app.py`, a smoke analysis on the sample CSV, and `pytest` with a 78% coverage floor.
+- Frontend: `npm ci`, then `npm run typecheck`, `npm test`, and `npm run build` in `frontend/`.
 
 ## Related Docs
 
 - [docs/architecture.md](docs/architecture.md)
 - [docs/development.md](docs/development.md)
 - [docs/testing.md](docs/testing.md)
+- [docs/deployment.md](docs/deployment.md)
 
 ## Support
 

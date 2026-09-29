@@ -1,35 +1,33 @@
-"""Optional password-based auth for the Chainlit UI.
+"""Optional password-based auth for the web UI.
 
-Auth activates only when both ``STATAGENT_AUTH_USERNAME`` and
-``STATAGENT_AUTH_PASSWORD`` env vars are set. With neither set, the UI
-runs unauthenticated (the existing dev-time default).
+Auth activates only when ``Config.auth_username`` and ``Config.auth_password``
+(``STATAGENT_AUTH_USERNAME`` / ``STATAGENT_AUTH_PASSWORD``) are both set. With
+neither set, the UI runs unauthenticated (the dev-time default). Callers pass
+the resolved ``Config`` so an injected configuration fully controls auth.
 """
 
 from __future__ import annotations
 
 import hmac
-import os
 from typing import Optional
 
-_USERNAME_ENV = "STATAGENT_AUTH_USERNAME"
-_PASSWORD_ENV = "STATAGENT_AUTH_PASSWORD"
+from src.config import Config
 
 
-def is_auth_enabled() -> bool:
-    """True when both username and password env vars are configured."""
-    return bool(os.environ.get(_USERNAME_ENV)) and bool(os.environ.get(_PASSWORD_ENV))
+def is_auth_enabled(config: Config) -> bool:
+    """True when both a username and a password are configured."""
+    return config.auth_enabled
 
 
-def verify_credentials(username: str, password: str) -> Optional[str]:
+def verify_credentials(config: Config, username: str, password: str) -> Optional[str]:
     """Return the username on a successful match, otherwise None.
 
     Uses ``hmac.compare_digest`` so timing leaks between matched and
-    mismatched values are avoided. When auth is not enabled this
-    function always returns None so callers can treat "auth off" as
-    "no logged-in user".
+    mismatched values are avoided. When auth is not enabled this function
+    always returns None so callers can treat "auth off" as "no logged-in user".
     """
-    expected_username = os.environ.get(_USERNAME_ENV)
-    expected_password = os.environ.get(_PASSWORD_ENV)
+    expected_username = config.auth_username
+    expected_password = config.auth_password
     if not expected_username or not expected_password:
         return None
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
@@ -22,8 +23,28 @@ from .statistics.models import (
 
 _AUDIT_TABLE = "_query_audit"
 _CHAT_HISTORY_TABLE = "_chat_history"
+# Small JSON key/value store for state needed to rebuild a session after a
+# restart (column mapping, group labels, latest charts).
+_STATE_TABLE = "_session_state"
+# State key holding the serialized charts last shown for the session.
+LATEST_CHARTS_STATE_KEY = "latest_charts"
+_RAW_DATA_TABLE = "raw_data"
 _DEFAULT_QUERY_TIMEOUT_SECONDS = 5.0
 _PROGRESS_HANDLER_INTERVAL = 1000
+
+
+logger = logging.getLogger(__name__)
+
+
+def _json_default(value: Any) -> Any:
+    """Serialize numpy scalars (e.g. group labels) and fall back to str."""
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except (TypeError, ValueError):
+            pass
+    return str(value)
 
 
 class QueryTimeoutError(Exception):
@@ -40,6 +61,32 @@ def _normalize_sqlite_value(value: Any) -> Any:
 
 def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return {key: _normalize_sqlite_value(value) for key, value in record.items()}
+
+
+def read_chat_messages(db_path: str | Path) -> Optional[List[Dict[str, str]]]:
+    """Read a store's chat history without creating or initializing it.
+
+    Opens the file read-only (``mode=ro``): a store deleted between a
+    directory listing and this read stays deleted instead of being
+    recreated as an empty session. Returns None when the store is gone or
+    unreadable.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = connection.execute(
+            f"SELECT role, content FROM {_CHAT_HISTORY_TABLE} ORDER BY id ASC"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    return [{"role": row[0], "content": row[1]} for row in rows]
 
 
 class SQLiteQueryStore:
@@ -95,6 +142,50 @@ class SQLiteQueryStore:
                 )
                 """
             )
+            connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {_STATE_TABLE} (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+    # -- session state (restart recovery) ------------------------------------
+
+    def save_state(self, key: str, value: Any) -> None:
+        """Store one JSON-serializable value under ``key`` (replacing it)."""
+        payload = json.dumps(value, default=_json_default)
+        with self._connect() as connection:
+            connection.execute(
+                f"INSERT OR REPLACE INTO {_STATE_TABLE} (key, value, updated_at) VALUES (?, ?, ?)",
+                (key, payload, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def delete_state(self, key: str) -> None:
+        """Remove ``key`` (no-op when absent)."""
+        with self._connect() as connection:
+            connection.execute(f"DELETE FROM {_STATE_TABLE} WHERE key = ?", (key,))
+
+    def load_state(self, key: str) -> Any:
+        """Return the stored value, or None when absent or unreadable."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    f"SELECT value FROM {_STATE_TABLE} WHERE key = ?", (key,)
+                ).fetchone()
+            return json.loads(row[0]) if row else None
+        except (sqlite3.Error, ValueError):
+            logger.warning("Ignoring unreadable session state %r in %s", key, self.db_path, exc_info=True)
+            return None
+
+    def load_raw_dataframe(self) -> Optional[pd.DataFrame]:
+        """Reload the persisted raw upload, or None if none was stored."""
+        if _RAW_DATA_TABLE not in self.list_tables():
+            return None
+        with self._connect() as connection:
+            return pd.read_sql_query(f"SELECT * FROM {_RAW_DATA_TABLE}", connection)
 
     def save_chat_message(self, role: str, content: str) -> None:
         """Append one chat message to the persisted history."""
@@ -164,7 +255,7 @@ class SQLiteQueryStore:
             normalized[column] = normalized[column].map(_normalize_sqlite_value)
 
         with self._connect() as connection:
-            normalized.to_sql("raw_data", connection, index=False, if_exists="replace")
+            normalized.to_sql(_RAW_DATA_TABLE, connection, index=False, if_exists="replace")
 
     def save_segment_results(self, results: Iterable[Any]) -> None:
         rows = [
@@ -212,7 +303,7 @@ class SQLiteQueryStore:
             rows = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
             ).fetchall()
-        hidden = {_AUDIT_TABLE, _CHAT_HISTORY_TABLE}
+        hidden = {_AUDIT_TABLE, _CHAT_HISTORY_TABLE, _STATE_TABLE}
         return [row[0] for row in rows if row[0] not in hidden]
 
     def describe_schema(self) -> str:

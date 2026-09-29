@@ -10,13 +10,16 @@ An intelligent agent that can:
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from uuid import uuid4
 
 import openai
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 
@@ -27,12 +30,25 @@ from .agent_tools import create_agent_tools
 from .config import Config
 from .observability import TokenUsageCallback
 from .prompts import PROMPT_VERSION, load_system_prompt
-from .query_store import SQLiteQueryStore
+from .query_store import LATEST_CHARTS_STATE_KEY, SQLiteQueryStore
 from .statistics import ABTestAnalyzer, ABTestVisualizer
 from .statistics.analyzer_protocol import ABAnalyzerProtocol
 from .statistics.models import ABTestResult, ABTestSummary
 
 load_dotenv()
+
+
+@wrap_model_call
+def _sequential_tool_calls(request: ModelRequest, handler) -> ModelResponse:
+    """Ask the model for one tool call at a time.
+
+    Tools share mutable analyzer state (column mapping, labels, last results),
+    so parallel calls race: e.g. generate_charts reading stale results while
+    run_full_analysis is still re-running. Set per agent model call only; the
+    SQL planner reuses the same LLM without tools, where OpenAI rejects it.
+    """
+    settings = {**request.model_settings, "parallel_tool_calls": False}
+    return handler(request.override(model_settings=settings))
 logger = logging.getLogger(__name__)
 
 
@@ -67,19 +83,35 @@ class ABTestingAgent:
             temperature=resolved_temperature,
             timeout=self.config.llm_request_timeout_seconds,
             max_retries=self.config.llm_max_retries,
+            # Usage totals still arrive when the web UI streams tokens.
+            stream_usage=True,
             callbacks=[self.token_usage],
         )
-        self.runtime = AgentRuntime(analyzer=ABTestAnalyzer())
+        self.runtime = AgentRuntime(
+            analyzer=ABTestAnalyzer(), extra_data_roots=self.config.data_roots
+        )
         self.visualizer = ABTestVisualizer()
         session_kwargs: dict[str, Any] = {
             "llm": self.llm,
             "query_timeout_seconds": self.config.query_timeout_seconds,
             "sql_default_row_limit": self.config.sql_default_row_limit,
         }
-        if query_store_path is not None:
-            session_kwargs["query_store_path"] = query_store_path
+        session_kwargs["query_store_path"] = (
+            query_store_path
+            if query_store_path is not None
+            else Path(self.config.query_store_dir) / f"session-{uuid4().hex}.sqlite"
+        )
         self.session = AgentAnalysisSession(**session_kwargs)
         self._restore_chat_history_from_store()
+        # Analysis state from a previous process, rebuilt lazily on first use
+        # (TODO.md #104) so opening or listing a session stays cheap.
+        self._pending_analysis_state: Optional[Dict[str, Any]] = self._load_analysis_state()
+        # Bumped whenever the data or the current analysis is replaced; the
+        # API compares it to know when previously shown charts went stale.
+        self.analysis_version = 0
+        # True only while the store's raw_data table holds the dataframe the
+        # current analysis ran on; replay state is persisted only then.
+        self._raw_data_persisted = False
         self.agent = self._create_agent()
         self._pending_confirmation = None
         logger.info(
@@ -102,6 +134,87 @@ class ABTestingAgent:
                 self.session.state.chat_history.append(HumanMessage(content=content))
             elif role == "ai":
                 self.session.state.chat_history.append(AIMessage(content=content))
+
+    # -- restart recovery (TODO.md #104) -------------------------------------
+
+    _ANALYSIS_STATE_KEY = "analysis"
+
+    def _load_analysis_state(self) -> Optional[Dict[str, Any]]:
+        try:
+            state = self.session.query_store.load_state(self._ANALYSIS_STATE_KEY)
+        except Exception:
+            logger.exception("Failed to read persisted analysis state; chat-only restore")
+            return None
+        if not isinstance(state, dict) or not isinstance(state.get("column_mapping"), dict):
+            return None
+        return state
+
+    def _persist_analysis_state(self, scope: Optional[Dict[str, Any]] = None) -> None:
+        analyzer: Any = self.runtime.analyzer
+        mapping = getattr(analyzer, "column_mapping", None)
+        if not mapping or getattr(analyzer, "treatment_label", None) is None:
+            return
+        self.session.query_store.save_state(
+            self._ANALYSIS_STATE_KEY,
+            {
+                "column_mapping": dict(mapping),
+                "treatment_label": analyzer.treatment_label,
+                "control_label": analyzer.control_label,
+                "scope": dict(scope) if scope else {"mode": "segmented"},
+            },
+        )
+
+    def _invalidate_analysis(self) -> None:
+        """New data replaced the dataset: drop results, charts and saved state.
+
+        Without this a restart could combine the new dataframe with the
+        previous dataset's mapping/labels and report results nobody asked for.
+        """
+        self._pending_analysis_state = None
+        self.session.state.last_results = None
+        self.session.state.last_summary = None
+        self.session.state.last_charts = {}
+        self.analysis_version += 1
+        self._raw_data_persisted = False
+        # Drop the chart snapshot too: the in-memory chart version resets on
+        # restart, so a stale snapshot would otherwise be served as current.
+        for key in (self._ANALYSIS_STATE_KEY, LATEST_CHARTS_STATE_KEY):
+            try:
+                self.session.query_store.delete_state(key)
+            except Exception:
+                logger.exception("Failed to clear persisted state %r", key)
+
+    def _ensure_analysis_restored(self) -> None:
+        """Rebuild data, mapping, labels and results saved by a previous process."""
+        state = self._pending_analysis_state
+        if state is None:
+            return
+        self._pending_analysis_state = None  # one attempt, even if it fails
+        try:
+            df = self.session.query_store.load_raw_dataframe()
+            if df is None:
+                return
+            analyzer: Any = self.runtime.analyzer
+            analyzer.set_dataframe(df)
+            self._raw_data_persisted = True  # the analyzer now holds the stored table
+            analyzer.set_column_mapping(dict(state["column_mapping"]))
+            analyzer.set_group_labels(state["treatment_label"], state["control_label"])
+            results = self._replay_scope(analyzer, state.get("scope"))
+            self.session.state.last_results = results
+            self.session.state.last_summary = analyzer.generate_summary(results)
+            logger.info("Restored analysis state after restart (segments=%d)", len(results))
+        except Exception:
+            logger.exception("Failed to restore analysis state; continuing chat-only")
+
+    @staticmethod
+    def _replay_scope(analyzer: Any, scope: Any) -> List[ABTestResult]:
+        """Re-run the analysis the way it was last produced (TODO.md #104)."""
+        if isinstance(scope, dict) and scope.get("mode") == "single":
+            segment = scope.get("segment")
+            if segment is None:
+                return [analyzer.run_ab_test()]
+            return [analyzer.run_ab_test(segment_filter=segment)]
+        return analyzer.run_segmented_analysis()
 
     @property
     def analyzer(self) -> ABAnalyzerProtocol:
@@ -129,18 +242,25 @@ class ABTestingAgent:
 
     @property
     def _last_results(self) -> Optional[List[ABTestResult]]:
+        self._ensure_analysis_restored()
         return self.session.state.last_results
 
     @_last_results.setter
     def _last_results(self, value: Optional[List[ABTestResult]]) -> None:
+        self._pending_analysis_state = None  # fresh results supersede a restore
         self.session.state.last_results = value
+        # Charts built from the previous results are stale now.
+        self.session.state.last_charts = {}
+        self.analysis_version += 1
 
     @property
     def _last_summary(self) -> Optional[ABTestSummary]:
+        self._ensure_analysis_restored()
         return self.session.state.last_summary
 
     @_last_summary.setter
     def _last_summary(self, value: Optional[ABTestSummary]) -> None:
+        self._pending_analysis_state = None
         self.session.state.last_summary = value
 
     @property
@@ -167,21 +287,40 @@ class ABTestingAgent:
             persisted = self.session.persist_loaded_data(analyzer)
         except Exception:
             logger.exception("Failed to persist raw dataframe to SQLite query store")
+            self._raw_data_persisted = False
             return False
 
         if not persisted:
             logger.info("Skipping raw-data persistence for non-pandas backend")
+            self._raw_data_persisted = False
             return False
 
         logger.info("Persisted raw dataframe to SQLite query store")
+        self._raw_data_persisted = True
         return True
 
-    def persist_analysis_outputs(self, results: Any, summary: Any) -> None:
-        """Persist analysis outputs to the session query store."""
+    def persist_analysis_outputs(
+        self, results: Any, summary: Any, scope: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Persist analysis outputs (and the state to rebuild them) to the query store."""
         try:
             self.session.persist_analysis_outputs(results, summary)
         except Exception:
             logger.exception("Failed to persist analysis outputs to SQLite query store")
+        if not self._raw_data_persisted:
+            # The stored raw_data may be a previous dataset; replaying this
+            # mapping on it after a restart would report results for data the
+            # analysis never ran on. Restart recovery stays chat-only instead.
+            logger.warning("Raw data not persisted; skipping analysis replay state")
+            try:
+                self.session.query_store.delete_state(self._ANALYSIS_STATE_KEY)
+            except Exception:
+                logger.exception("Failed to clear persisted analysis state")
+            return
+        try:
+            self._persist_analysis_state(scope)
+        except Exception:
+            logger.exception("Failed to persist analysis state; restart recovery will be chat-only")
             return
 
         logger.info("Persisted analysis outputs to SQLite query store")
@@ -200,6 +339,7 @@ class ABTestingAgent:
 
     def _get_active_analyzer(self):
         """Get the active analyzer."""
+        self._ensure_analysis_restored()
         return self.runtime.get_active_analyzer()
 
     def _normalize_shape(self, info: Dict[str, Any]) -> Tuple[int, int]:
@@ -212,7 +352,10 @@ class ABTestingAgent:
         Returns:
             (analyzer, info, file_size_mb)
         """
-        return self.runtime.load_data(filepath)
+        loaded = self.runtime.load_data(filepath)
+        # Only after a successful load: a failed load leaves the old dataset.
+        self._invalidate_analysis()
+        return loaded
 
     def _create_tools(self) -> List[Any]:
         """Create the tools for the agent."""
@@ -224,7 +367,9 @@ class ABTestingAgent:
         tools = self._create_tools()
         system_prompt = load_system_prompt()
         logger.info("System prompt loaded (version=%s)", PROMPT_VERSION)
-        return create_agent(self.llm, tools, system_prompt=system_prompt)
+        return create_agent(
+            self.llm, tools, system_prompt=system_prompt, middleware=[_sequential_tool_calls]
+        )
 
     def _model_bound_history(self) -> List[BaseMessage]:
         """Return the most recent slice of chat history to send to the model.
@@ -281,23 +426,39 @@ class ABTestingAgent:
             )
         return error
 
-    def run(self, message: str) -> str:
+    def run(
+        self,
+        message: str,
+        callbacks: Optional[Sequence[Any]] = None,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> str:
         """Run the agent synchronously.
 
-        Chainlit wraps this with ``cl.make_async(agent.run)`` for async dispatch.
+        The web API runs this in a worker thread. ``callbacks`` are extra
+        LangChain callback handlers for this run only (the API uses one to
+        stream tool progress to the browser). ``on_token`` receives the
+        model's text as it is generated; the full final answer is still
+        returned and persisted exactly as without it.
         """
+        prompt_recorded = False
+        reply_recorded = False
         try:
             self.token_usage.reset()
             logger.info("Agent run started (history_messages=%d)", len(self.chat_history))
             self.chat_history.append(HumanMessage(content=message))
+            prompt_recorded = True
             self.session.query_store.save_chat_message("human", message)
-            result = self.agent.invoke(
-                {"messages": self._model_bound_history()},
-                config={"recursion_limit": self.config.agent_recursion_limit},
-            )
+            run_config: Dict[str, Any] = {"recursion_limit": self.config.agent_recursion_limit}
+            if callbacks:
+                run_config["callbacks"] = list(callbacks)
+            graph_input = {"messages": self._model_bound_history()}
+            if on_token is None:
+                result = self.agent.invoke(graph_input, config=run_config)
+            else:
+                result = self._stream_run(graph_input, run_config, on_token)
             response = result["messages"][-1].content
-            self.chat_history.append(AIMessage(content=response))
-            self.session.query_store.save_chat_message("ai", str(response))
+            reply_recorded = True
+            self._record_reply(response)
             usage = self.token_usage.snapshot()
             logger.info(
                 "Agent run completed (response_chars=%d, llm_calls=%d, "
@@ -311,12 +472,44 @@ class ABTestingAgent:
             return response
         except Exception as e:
             logger.exception("Agent run failed")
-            return render_tool_error(
+            reply = render_tool_error(
                 "Error processing request",
                 self._classify_run_error(e),
                 default_code="AGENT_EXECUTION_FAILED",
                 default_message="Unable to process your request right now.",
             )
+            # Persist the error like any reply: otherwise a reload shows only
+            # the prompt and the next turn sends a dangling human message.
+            if prompt_recorded and not reply_recorded:
+                self._record_reply(reply)
+            return reply
+
+    def _record_reply(self, reply: Any) -> None:
+        """Append the assistant turn to memory and the persisted history."""
+        self.chat_history.append(AIMessage(content=reply))
+        self.session.query_store.save_chat_message("ai", str(reply))
+
+    def _stream_run(
+        self,
+        graph_input: Dict[str, Any],
+        run_config: Dict[str, Any],
+        on_token: Callable[[str], None],
+    ) -> Dict[str, Any]:
+        """Run the graph, forwarding model text chunks; return the final state."""
+        final_state: Dict[str, Any] = {}
+        for mode, payload in self.agent.stream(
+            graph_input, config=run_config, stream_mode=["messages", "values"]
+        ):
+            if mode == "values":
+                final_state = payload
+                continue
+            chunk, _metadata = payload
+            text = _chunk_text(chunk)
+            if text:
+                on_token(text)
+        if not final_state.get("messages"):
+            raise RuntimeError("Agent stream ended without a final state")
+        return final_state
 
     def clear_memory(self):
         """Clear conversation memory (both in-memory and persisted SQLite).
@@ -331,3 +524,18 @@ class ABTestingAgent:
         except Exception:
             logger.exception("Failed to wipe persisted chat history")
 
+
+def _chunk_text(chunk: Any) -> str:
+    """Visible text from a streamed model chunk (never tool-call arguments)."""
+    if not isinstance(chunk, AIMessageChunk) or chunk.tool_call_chunks:
+        return ""
+    content = chunk.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):  # content blocks
+        return "".join(
+            str(block.get("text", "")) if isinstance(block, dict) else str(block)
+            for block in content
+            if not isinstance(block, dict) or block.get("type") in (None, "text")
+        )
+    return ""

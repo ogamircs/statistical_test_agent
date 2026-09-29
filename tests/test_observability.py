@@ -104,3 +104,21 @@ def test_configure_json_logging_swaps_root_formatter() -> None:
         for handler in root.handlers:
             handler.setFormatter(logging.Formatter())
         root.handlers = original
+
+
+def test_token_usage_reads_streamed_usage_metadata() -> None:
+    from types import SimpleNamespace
+
+    from src.observability import TokenUsageCallback
+
+    message = SimpleNamespace(
+        response_metadata={}, usage_metadata={"input_tokens": 11, "output_tokens": 4, "total_tokens": 15}
+    )
+    response = SimpleNamespace(llm_output=None, generations=[[SimpleNamespace(message=message)]])
+    callback = TokenUsageCallback()
+
+    callback.on_llm_end(response)
+
+    assert callback.snapshot()["prompt_tokens"] == 11
+    assert callback.snapshot()["completion_tokens"] == 4
+    assert callback.snapshot()["total_tokens"] == 15

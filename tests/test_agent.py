@@ -229,7 +229,7 @@ def stubbed_agent(monkeypatch):
     monkeypatch.setattr(
         agent_module,
         "create_agent",
-        lambda _llm, _tools, system_prompt=None: _DummyGraphAgent(),
+        lambda _llm, _tools, system_prompt=None, **_kwargs: _DummyGraphAgent(),
     )
     return ABTestingAgent()
 
